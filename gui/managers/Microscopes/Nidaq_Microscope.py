@@ -5,21 +5,60 @@ import numpy as np
 from PySide6.QtCore import Slot
 
 from .Microscope_Backend_Base import MicroscopeBackendBase
+from .Hardware_Manager import (
+    NI_DEVICE_NAME,
+    NI_AO_X,
+    NI_AO_Y,
+    NI_AI_IR,
+    NI_AI_VIS,
+    NI_AI_MIN_V,
+    NI_AI_MAX_V,
+    NI_AI_TERMINAL_MODE,
+)
 
 from ..Scan_Types import ExecutionPlan, FrameReconstructionPlan, SampleFramePlan
 from ..Frame_Builder import FrameBuilder
 from ..Sample_Scan_Manager import SampleScanManager
 
 
+try:
+    import nidaqmx
+    from nidaqmx.constants import (
+        AcquisitionType,
+        TerminalConfiguration,
+        WAIT_INFINITELY,
+    )
+    from nidaqmx.stream_writers import AnalogMultiChannelWriter
+    from nidaqmx.stream_readers import AnalogMultiChannelReader
+    _HAS_NIDAQ = True
+except Exception:
+    nidaqmx = None
+    AcquisitionType = None
+    TerminalConfiguration = None
+    WAIT_INFINITELY = None
+    AnalogMultiChannelWriter = None
+    AnalogMultiChannelReader = None
+    _HAS_NIDAQ = False
+
+
 class NidaqMicroscope(MicroscopeBackendBase):
     """
-    Backend "hardware-like" de transition.
+    Real NI-DAQ backend V1 for DeepLight.
 
-    Objectif architectural :
-    - en mode laser : exécuter l'ExecutionPlan produit par ScanManager
-    - en mode sample : exécuter la logique SampleScanManager
-    - n'inventer que les intensités détecteur
-    - garder des signaux compatibles avec AcquisitionManager / MainWindow
+    Implemented in this V1:
+    - laser scan:
+        * AO0 -> X galvo
+        * AO1 -> Y galvo
+        * AI0 -> PMT IR
+        * AI1 -> PMT Vis
+        * execution strictly driven by ExecutionPlan
+    - sample scan:
+        * software-timed NI reads per pixel
+        * stepper moves still emitted through stepper_move_requested
+
+    Important:
+    - no X/Y stage hardware was specified, so sample scan using X-Stage / Y-Stage
+      will only be fully real once those axes also get real controllers
     """
 
     def __init__(self, scan_parameters=None):
@@ -55,6 +94,18 @@ class NidaqMicroscope(MicroscopeBackendBase):
     def _log(self, msg: str):
         print(f"[NidaqMicroscope] {msg}")
 
+    def _require_nidaq(self):
+        if not _HAS_NIDAQ:
+            raise RuntimeError(
+                "nidaqmx is not installed or NI-DAQmx is unavailable. "
+                "Install nidaqmx and the NI-DAQmx driver."
+            )
+
+    def _terminal_config(self):
+        if NI_AI_TERMINAL_MODE.upper() == "DIFF":
+            return TerminalConfiguration.DIFFERENTIAL
+        return TerminalConfiguration.RSE
+
     def configure(self, scan_parameters: dict):
         super().configure(scan_parameters)
 
@@ -83,7 +134,9 @@ class NidaqMicroscope(MicroscopeBackendBase):
             self.scan_parameters.get("laser_off_between_rep", self.scan_parameters.get("turn_off_laser_between_rep", False))
         )
 
-        self.channels = list(self.scan_parameters.get("active_channels") or ["default"])
+        # Keep the channel names from the UI if present.
+        # If none are supplied, fall back to the two physical PMTs.
+        self.channels = list(self.scan_parameters.get("active_channels") or ["PMT_IR", "PMT_Vis"])
 
         self.bidirectional_scan = bool(self.scan_parameters.get("bidirectional_scan", False))
         self.bidirectional_shift_px = int(self.scan_parameters.get("bidirectional_shift_px", 0) or 0)
@@ -114,8 +167,6 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
             self.dim_fast = max(1, int(self.pixel_values[row_fast]))
             self.dim_slow = max(1, int(self.pixel_values[row_slow]))
-
-            # Fallback de preview si aucun plan n'est injecté.
             self.dim_image_x = self.dim_fast
             self.dim_image_y = self.dim_slow
             self.fast_axis_is_image_x = True
@@ -226,70 +277,133 @@ class NidaqMicroscope(MicroscopeBackendBase):
             fast_axis_is_image_x=bool(self.fast_axis_is_image_x),
         )
 
-    def _make_synthetic_samples(
+    def _ao_voltage_limits(self):
+        mins = self.scan_parameters.get("min_voltages", {})
+        maxs = self.scan_parameters.get("max_voltages", {})
+
+        x_min = float(mins.get("X-Galvo", -5.0))
+        x_max = float(maxs.get("X-Galvo", 5.0))
+        y_min = float(mins.get("Y-Galvo", -5.0))
+        y_max = float(maxs.get("Y-Galvo", 5.0))
+
+        ao_min = min(x_min, y_min)
+        ao_max = max(x_max, y_max)
+        return ao_min, ao_max
+
+    def _active_ai_count(self) -> int:
+        return min(2, max(1, len(self.channels)))
+
+    def _map_ai_to_channels(self, ai_data: np.ndarray, n_samples: int) -> dict[str, np.ndarray]:
+        out = {}
+        n_ai = int(ai_data.shape[0]) if ai_data.ndim == 2 else 1
+
+        for ch_idx, ch in enumerate(self.channels):
+            if ch_idx < n_ai:
+                out[ch] = np.asarray(ai_data[ch_idx], dtype=np.float64)
+            else:
+                out[ch] = np.zeros((n_samples,), dtype=np.float64)
+        return out
+
+    def _read_frame_from_ni(
         self,
         *,
         sample_start: int,
         n_samples: int,
-        frame_useful_samples: int,
-        samples_per_pixel: int,
-        rep_index: int = 0,
-        axis3_index: int = 0,
-        axis4_index: int = 0,
+        ao_x: np.ndarray,
+        ao_y: np.ndarray,
     ) -> dict[str, np.ndarray]:
-        """
-        Génère un signal détecteur synthétique 1D, en respectant la timeline du plan.
-        Les samples "hors zone utile" (turnback, padding) valent 0.
-        """
-        n_samples = max(0, int(n_samples))
-        start = int(sample_start)
-        spp = max(1, int(samples_per_pixel))
-        useful = max(0, int(frame_useful_samples))
+        self._require_nidaq()
 
-        out = {ch: np.zeros((n_samples,), dtype=np.float64) for ch in self.channels}
-        if n_samples <= 0 or useful <= 0:
-            return out
+        if n_samples <= 0:
+            return {ch: np.zeros((0,), dtype=np.float64) for ch in self.channels}
 
-        x_max = max(1, int(self.dim_image_x) - 1)
-        y_max = max(1, int(self.dim_image_y) - 1)
+        ao_min, ao_max = self._ao_voltage_limits()
+        sr = float(self.execution_plan.sample_rate_hz)
 
-        for i in range(n_samples):
-            s = start + i
-            if s < 0 or s >= useful:
-                val = 0.0
-            else:
-                pixel_index = s // spp
-                row = pixel_index // max(1, int(self.dim_fast))
-                col = pixel_index % max(1, int(self.dim_fast))
+        ao_block = np.vstack([ao_x, ao_y]).astype(np.float64, copy=False)
+        ai_count = self._active_ai_count()
 
-                # Coordonnées image logiques
-                if self.fast_axis_is_image_x:
-                    x = col
-                    y = row
-                else:
-                    x = row
-                    y = col
+        ai_result = np.zeros((ai_count, int(n_samples)), dtype=np.float64)
 
-                x = max(0, min(int(x), int(self.dim_image_x) - 1))
-                y = max(0, min(int(y), int(self.dim_image_y) - 1))
+        with nidaqmx.Task("DL_AO_Frame") as ao_task, nidaqmx.Task("DL_AI_Frame") as ai_task:
+            ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
+            ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
 
-                gx = float(x) / float(x_max) if x_max > 0 else 0.0
-                gy = float(y) / float(y_max) if y_max > 0 else 0.0
-
-                # gradient déterministe + légère signature rep/axes
-                val = (
-                    40.0
-                    + 120.0 * gx
-                    + 80.0 * gy
-                    + 7.0 * float(rep_index)
-                    + 3.0 * float(axis3_index)
-                    + 1.5 * float(axis4_index)
+            ai_task.ai_channels.add_ai_voltage_chan(
+                NI_AI_IR,
+                min_val=NI_AI_MIN_V,
+                max_val=NI_AI_MAX_V,
+                terminal_config=self._terminal_config(),
+            )
+            if ai_count >= 2:
+                ai_task.ai_channels.add_ai_voltage_chan(
+                    NI_AI_VIS,
+                    min_val=NI_AI_MIN_V,
+                    max_val=NI_AI_MAX_V,
+                    terminal_config=self._terminal_config(),
                 )
 
-            for ch_index, ch in enumerate(self.channels):
-                out[ch][i] = val + 5.0 * float(ch_index)
+            ao_task.timing.cfg_samp_clk_timing(
+                rate=sr,
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=int(n_samples),
+            )
 
-        return out
+            ai_task.timing.cfg_samp_clk_timing(
+                rate=sr,
+                source=f"/{NI_DEVICE_NAME}/ao/SampleClock",
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=int(n_samples),
+            )
+            ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(f"/{NI_DEVICE_NAME}/ao/StartTrigger")
+
+            writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+            reader = AnalogMultiChannelReader(ai_task.in_stream)
+
+            writer.write_many_sample(ao_block)
+
+            self._emit_step_events_up_to(int(sample_start))
+
+            ai_task.start()
+            ao_task.start()
+
+            ao_task.wait_until_done(WAIT_INFINITELY)
+            reader.read_many_sample(
+                ai_result,
+                number_of_samples_per_channel=int(n_samples),
+                timeout=WAIT_INFINITELY,
+            )
+
+        self.samples_progress.emit(int(n_samples))
+        self._emit_step_events_up_to(int(sample_start + n_samples))
+
+        return self._map_ai_to_channels(ai_result, int(n_samples))
+
+    def _reconstruct_frame(
+        self,
+        *,
+        arrays: dict[str, np.ndarray],
+        samples_by_channel: dict[str, np.ndarray],
+        plan: ExecutionPlan,
+        frame_useful_samples: int,
+    ) -> dict[str, np.ndarray]:
+        reconstruction_plan = self._build_frame_reconstruction_plan(int(plan.samples_per_pixel))
+        builder = FrameBuilder(
+            arrays=arrays,
+            channels=self.channels,
+            reconstruction_plan=reconstruction_plan,
+        )
+        builder.reset()
+
+        trimmed = {}
+        for ch in self.channels:
+            arr = np.asarray(samples_by_channel.get(ch, np.zeros((0,), dtype=np.float64)), dtype=np.float64)
+            if arr.size > frame_useful_samples:
+                arr = arr[:frame_useful_samples]
+            trimmed[ch] = arr
+
+        builder.consume_samples(trimmed)
+        return builder.get_shown_images()
 
     def _acquire_plan_frame(
         self,
@@ -298,78 +412,38 @@ class NidaqMicroscope(MicroscopeBackendBase):
         fs,
         plan: ExecutionPlan,
     ) -> dict[str, np.ndarray]:
-        """
-        Exécute UNE frame laser à partir du plan.
-        Le scan n'est pas inventé ici : on suit frame_slices + sample_rate + step_events.
-        """
-        spp = max(1, int(plan.samples_per_pixel))
-        sr = float(plan.sample_rate_hz)
-        frame_samples = int(fs.sample_stop) - int(fs.sample_start)
+        frame_start = int(fs.sample_start)
+        frame_stop = int(fs.sample_stop)
+        n_samples = frame_stop - frame_start
+
+        ao_x = np.asarray(plan.ao_x[frame_start:frame_stop], dtype=np.float64)
+        ao_y = np.asarray(plan.ao_y[frame_start:frame_stop], dtype=np.float64)
+
+        samples_by_channel = self._read_frame_from_ni(
+            sample_start=frame_start,
+            n_samples=n_samples,
+            ao_x=ao_x,
+            ao_y=ao_y,
+        )
+
         frame_useful_samples = int((plan.metadata or {}).get(
             "frame_useful_samples",
-            self.dim_fast * self.dim_slow * spp
+            self.dim_fast * self.dim_slow * max(1, int(plan.samples_per_pixel))
         ))
 
-        reconstruction_plan = self._build_frame_reconstruction_plan(spp)
-
-        builder = FrameBuilder(
+        return self._reconstruct_frame(
             arrays=arrays,
-            channels=self.channels,
-            reconstruction_plan=reconstruction_plan,
+            samples_by_channel=samples_by_channel,
+            plan=plan,
+            frame_useful_samples=frame_useful_samples,
         )
-        builder.reset()
-
-        self._emit_step_events_up_to(int(fs.sample_start))
-
-        remaining = frame_samples
-        current_sample = 0
-
-        chunk_samples = max(1, min(4096, spp * max(1, int(self.dim_fast // 8 or 1))))
-
-        next_t = time.perf_counter_ns()
-        dt_ns = int((1.0 / sr) * 1e9) if sr > 0 else 0
-
-        while remaining > 0 and not self.acquisition_stop_event.is_set():
-            take = min(chunk_samples, remaining)
-
-            samples_by_channel = self._make_synthetic_samples(
-                sample_start=current_sample,
-                n_samples=take,
-                frame_useful_samples=frame_useful_samples,
-                samples_per_pixel=spp,
-                rep_index=int(fs.rep_index),
-                axis3_index=int(fs.axis3_index),
-                axis4_index=int(fs.axis4_index),
-            )
-
-            builder.consume_samples(samples_by_channel)
-
-            self.samples_progress.emit(int(take))
-
-            if dt_ns > 0:
-                target_t = next_t + take * dt_ns
-                while time.perf_counter_ns() < target_t:
-                    if self.acquisition_stop_event.is_set():
-                        break
-                    time.sleep(0)
-                next_t = target_t
-
-            current_sample += take
-            remaining -= take
-
-        self._emit_step_events_up_to(int(fs.sample_stop))
-
-        return builder.get_shown_images()
 
     def _run_acquisition_from_plan(self):
         plan = self.execution_plan
         if plan is None:
             raise RuntimeError("run_acquisition requires an ExecutionPlan")
 
-        arrays = {
-            ch: self.shared_images[ch]
-            for ch in self.channels
-        }
+        arrays = {ch: self.shared_images[ch] for ch in self.channels}
 
         current_rep = None
         prev_frame_stop = 0
@@ -430,20 +504,12 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 self._emit_step_events_up_to(int(plan.total_samples))
 
     def _run_preview_from_plan(self):
-        """
-        Preview laser :
-        on suit aussi le plan s'il existe, mais on n'accumule pas self.acquired.
-        """
         plan = self.execution_plan
         if plan is None:
             self._log("No execution plan for laser preview -> skipping")
             return
 
-        arrays = {
-            ch: self.shared_images[ch]
-            for ch in self.channels
-        }
-
+        arrays = {ch: self.shared_images[ch] for ch in self.channels}
         self._step_event_cursor = 0
 
         if not plan.frame_slices:
@@ -459,31 +525,52 @@ class NidaqMicroscope(MicroscopeBackendBase):
         if not self.acquisition_stop_event.is_set():
             self.frame_ready.emit(0, tuple(), shown_images)
 
-    def _sample_pixel_value(
-        self,
-        *,
-        ix: int,
-        iy: int,
-        rep_index: int = 0,
-        axis3_index: int = 0,
-        axis4_index: int = 0,
-        channel_index: int = 0,
-    ) -> float:
-        x_max = max(1, int(self.dim_image_x) - 1)
-        y_max = max(1, int(self.dim_image_y) - 1)
+    def _read_single_pixel_from_ai(self, dwell_s: float, samples_per_pixel: int) -> dict[str, float]:
+        self._require_nidaq()
 
-        gx = float(ix) / float(x_max) if x_max > 0 else 0.0
-        gy = float(iy) / float(y_max) if y_max > 0 else 0.0
+        dwell_s = max(1e-6, float(dwell_s))
+        spp = max(1, int(samples_per_pixel))
+        rate = max(1000.0, float(spp) / dwell_s)
+        ai_count = self._active_ai_count()
 
-        return (
-            40.0
-            + 120.0 * gx
-            + 80.0 * gy
-            + 7.0 * float(rep_index)
-            + 3.0 * float(axis3_index)
-            + 1.5 * float(axis4_index)
-            + 5.0 * float(channel_index)
-        )
+        ai_result = np.zeros((ai_count, spp), dtype=np.float64)
+
+        with nidaqmx.Task("DL_AI_Pixel") as ai_task:
+            ai_task.ai_channels.add_ai_voltage_chan(
+                NI_AI_IR,
+                min_val=NI_AI_MIN_V,
+                max_val=NI_AI_MAX_V,
+                terminal_config=self._terminal_config(),
+            )
+            if ai_count >= 2:
+                ai_task.ai_channels.add_ai_voltage_chan(
+                    NI_AI_VIS,
+                    min_val=NI_AI_MIN_V,
+                    max_val=NI_AI_MAX_V,
+                    terminal_config=self._terminal_config(),
+                )
+
+            ai_task.timing.cfg_samp_clk_timing(
+                rate=rate,
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=spp,
+            )
+
+            reader = AnalogMultiChannelReader(ai_task.in_stream)
+            ai_task.start()
+            reader.read_many_sample(
+                ai_result,
+                number_of_samples_per_channel=spp,
+                timeout=max(1.0, dwell_s * 5.0),
+            )
+
+        values = {}
+        for ch_idx, ch in enumerate(self.channels):
+            if ch_idx < ai_result.shape[0]:
+                values[ch] = float(np.mean(ai_result[ch_idx]))
+            else:
+                values[ch] = 0.0
+        return values
 
     def _emit_sample_axis_move(self, axis_name: str, target_rel: float, reason: str, t_sched_ms: float):
         self.stepper_move_requested.emit(
@@ -498,10 +585,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
         if frame_plan is None:
             frame_plan = SampleFramePlan()
 
-        arrays = {
-            ch: self.shared_images[ch]
-            for ch in self.channels
-        }
+        arrays = {ch: self.shared_images[ch] for ch in self.channels}
 
         for arr in arrays.values():
             arr.fill(0.0)
@@ -557,22 +641,13 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 "sample_pixel_y",
             )
 
-            for ch_index, ch in enumerate(self.channels):
-                arrays[ch][int(event.iy), int(event.ix)] = self._sample_pixel_value(
-                    ix=event.ix,
-                    iy=event.iy,
-                    rep_index=rep_index,
-                    axis3_index=frame_plan.axis3_index,
-                    axis4_index=frame_plan.axis4_index,
-                    channel_index=ch_index,
-                )
-
-            pixel_dt = dwell_s
-            if pixel_dt > 0:
-                time.sleep(pixel_dt)
-
             if settle_s > 0:
                 time.sleep(settle_s)
+
+            pixel_values = self._read_single_pixel_from_ai(dwell_s=dwell_s if dwell_s > 0 else 1e-4, samples_per_pixel=spp)
+
+            for ch in self.channels:
+                arrays[ch][int(event.iy), int(event.ix)] = float(pixel_values.get(ch, 0.0))
 
             progress_accum += spp
             flush_accum += 1
@@ -587,7 +662,6 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 flush_accum = 0
 
         self.sample_image_flush_requested.emit()
-
         return {ch: arr.copy() for ch, arr in arrays.items()}
 
     def _run_sample_acquisition(self):
@@ -598,7 +672,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             frame_plans = [SampleFramePlan()]
 
         n_reps = max(1, int(self.repetitions))
-        
+
         for rep in range(n_reps):
             if self.acquisition_stop_event.is_set():
                 break

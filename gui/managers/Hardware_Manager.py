@@ -1,15 +1,555 @@
+from __future__ import annotations
+
+import os
+import time
+from decimal import Decimal
+from typing import Optional
+
 from PySide6.QtCore import QObject, Slot
 
-from .Positioner_Manager import MockPositionerManager, HardwarePositionerManager
+from .Positioner_Manager import MockPositionerManager, PositionerManager
 
+
+# =============================================================================
+# HARD-CODED HARDWARE CONFIG
+# =============================================================================
+
+NI_DEVICE_NAME = "Dev1"
+
+# NI AO / AI channels
+NI_AO_X = f"{NI_DEVICE_NAME}/ao0"
+NI_AO_Y = f"{NI_DEVICE_NAME}/ao1"
+NI_AI_IR = f"{NI_DEVICE_NAME}/ai0"
+NI_AI_VIS = f"{NI_DEVICE_NAME}/ai1"
+
+# AI default range / config
+NI_AI_MIN_V = -10.0
+NI_AI_MAX_V = 10.0
+NI_AI_TERMINAL_MODE = "DIFF"  # requested: differential
+
+# Thorlabs serials (replace later)
+THORLABS_SHUTTER_SERIAL = "0000"
+THORLABS_ROTATOR_SERIAL = "0000"
+
+# PI serial (replace later)
+PI_V308_SERIAL = "0000"
+
+# Kinesis path
+THORLABS_KINESIS_PATH = r"C:\Program Files\Thorlabs\Kinesis"
+
+# Mira900 power mapping (requested for now: 0° = 0%, 180° = 100%)
+MIRA_POWER_MIN_PERCENT = 0.0
+MIRA_POWER_MAX_PERCENT = 100.0
+MIRA_ROTATOR_MIN_DEG = 0.0
+MIRA_ROTATOR_MAX_DEG = 180.0
+
+# PI Z defaults
+PI_Z_AXIS_ID = 1
+PI_Z_DEFAULT_VEL_MM_S = 0.5
+
+# If your PRM controller class differs, change this later.
+# Common values depending on controller family:
+# - "KCubeDCServo"
+# - "KCubeStepperMotor"
+THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
+
+
+# =============================================================================
+# OPTIONAL IMPORTS
+# =============================================================================
+
+try:
+    from pipython import GCSDevice, GCSError
+    _HAS_PI = True
+except Exception:
+    GCSDevice = None
+    GCSError = Exception
+    _HAS_PI = False
+
+try:
+    import clr  # pythonnet
+    _HAS_CLR = True
+except Exception:
+    clr = None
+    _HAS_CLR = False
+
+
+# =============================================================================
+# THORLABS KINESIS LOADER
+# =============================================================================
+
+class _KinesisLoader:
+    _loaded = False
+
+    DeviceManagerCLI = None
+    KCubeSolenoid = None
+    SolenoidStatus = None
+    KCubeDCServo = None
+    KCubeStepperMotor = None
+
+    @classmethod
+    def ensure_loaded(cls):
+        if cls._loaded:
+            return
+
+        if not _HAS_CLR:
+            raise RuntimeError("pythonnet / clr is not installed. Install pythonnet to use Thorlabs Kinesis devices.")
+
+        dll_path = THORLABS_KINESIS_PATH
+        if not os.path.isdir(dll_path):
+            raise RuntimeError(
+                f"Thorlabs Kinesis path not found: {dll_path!r}. "
+                "Install Kinesis or update THORLABS_KINESIS_PATH."
+            )
+
+        clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.DeviceManagerCLI.dll"))
+        clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.SolenoidCLI.dll"))
+
+        # Optional controller families for the PRM mount
+        try:
+            clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.DCServoCLI.dll"))
+        except Exception:
+            pass
+
+        try:
+            clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.StepperMotorCLI.dll"))
+        except Exception:
+            pass
+
+        from Thorlabs.MotionControl.DeviceManagerCLI import DeviceManagerCLI
+        from Thorlabs.MotionControl.KCube.SolenoidCLI import KCubeSolenoid, SolenoidStatus
+
+        cls.DeviceManagerCLI = DeviceManagerCLI
+        cls.KCubeSolenoid = KCubeSolenoid
+        cls.SolenoidStatus = SolenoidStatus
+
+        try:
+            from Thorlabs.MotionControl.KCube.DCServoCLI import KCubeDCServo
+            cls.KCubeDCServo = KCubeDCServo
+        except Exception:
+            cls.KCubeDCServo = None
+
+        try:
+            from Thorlabs.MotionControl.KCube.StepperMotorCLI import KCubeStepperMotor
+            cls.KCubeStepperMotor = KCubeStepperMotor
+        except Exception:
+            cls.KCubeStepperMotor = None
+
+        cls.DeviceManagerCLI.BuildDeviceList()
+        cls._loaded = True
+
+
+# =============================================================================
+# LOW-LEVEL CONTROLLERS
+# =============================================================================
+
+class _ThorlabsShutterController:
+    def __init__(self, serial: str):
+        self.serial = str(serial)
+        self.device = None
+        self.connected = False
+
+    def connect(self):
+        _KinesisLoader.ensure_loaded()
+
+        self.device = _KinesisLoader.KCubeSolenoid.CreateKCubeSolenoid(self.serial)
+        self.device.Connect(self.serial)
+
+        if not self.device.IsSettingsInitialized():
+            self.device.WaitForSettingsInitialized(10000)
+
+        self.device.StartPolling(250)
+        self.device.EnableDevice()
+        self.device.SetOperatingMode(_KinesisLoader.SolenoidStatus.OperatingModes.Manual)
+
+        self.connected = True
+
+    def set_open(self, open_: bool):
+        if not self.connected:
+            self.connect()
+
+        state = (
+            _KinesisLoader.SolenoidStatus.OperatingStates.Active
+            if bool(open_)
+            else _KinesisLoader.SolenoidStatus.OperatingStates.Inactive
+        )
+        self.device.SetOperatingState(state)
+
+    def close(self):
+        try:
+            if self.device is not None:
+                self.device.StopPolling()
+                self.device.Disconnect()
+        finally:
+            self.device = None
+            self.connected = False
+
+
+class _PIVoiceCoilController:
+    def __init__(self, serial: str):
+        self.serial = str(serial)
+        self.device = None
+        self.axis = PI_Z_AXIS_ID
+        self.connected = False
+
+    def connect(self):
+        if not _HAS_PI:
+            raise RuntimeError("pipython is not installed. Install pipython to use the PI V-308.")
+
+        self.device = GCSDevice()
+        self.device.ConnectUSB(serialnum=self.serial)
+
+        if not self.device.IsConnected():
+            raise RuntimeError(f"Failed to connect to PI device {self.serial!r}.")
+
+        try:
+            self.device.SVO(self.axis, 1)
+        except Exception:
+            pass
+
+        try:
+            self.device.VEL(self.axis, float(PI_Z_DEFAULT_VEL_MM_S))
+        except Exception:
+            pass
+
+        self.connected = True
+
+    def get_abs_um(self) -> float:
+        if not self.connected:
+            self.connect()
+
+        pos = self.device.qPOS(self.axis)
+        if isinstance(pos, dict):
+            value_mm = float(pos[self.axis])
+        else:
+            value_mm = float(pos)
+
+        return value_mm * 1000.0
+
+    def move_abs_um(self, target_um: float, speed_mm_s: Optional[float] = None, blocking: bool = True):
+        if not self.connected:
+            self.connect()
+
+        if speed_mm_s is not None:
+            try:
+                self.device.VEL(self.axis, float(speed_mm_s))
+            except Exception:
+                pass
+
+        target_mm = float(target_um) / 1000.0
+        self.device.MOV(self.axis, target_mm)
+
+        if blocking:
+            self.wait_until_stopped(target_mm)
+
+    def move_rel_um(self, delta_um: float, speed_mm_s: Optional[float] = None, blocking: bool = True):
+        cur_um = self.get_abs_um()
+        self.move_abs_um(cur_um + float(delta_um), speed_mm_s=speed_mm_s, blocking=blocking)
+
+    def stop(self):
+        if self.connected and self.device is not None:
+            try:
+                self.device.STP()
+            except Exception:
+                pass
+
+    def wait_until_stopped(self, target_mm: float, timeout_s: float = 30.0):
+        t0 = time.time()
+        while True:
+            moving = False
+            try:
+                moving = bool(self.device.IsMoving(self.axis))
+            except Exception:
+                pass
+
+            try:
+                pos = self.device.qPOS(self.axis)
+                cur_mm = float(pos[self.axis]) if isinstance(pos, dict) else float(pos)
+            except Exception:
+                cur_mm = target_mm
+
+            if (not moving) and abs(cur_mm - target_mm) < 1e-4:
+                break
+
+            if time.time() - t0 > timeout_s:
+                raise RuntimeError("Timeout while waiting for PI V-308 motion to complete.")
+
+            time.sleep(0.02)
+
+    def close(self):
+        try:
+            if self.device is not None:
+                self.device.CloseConnection()
+        finally:
+            self.device = None
+            self.connected = False
+
+
+class _ThorlabsRotationController:
+    """
+    Best-effort V1 adapter for the PRM1MZ8 + K-cube.
+
+    Important:
+    - the exact Kinesis class can differ depending on the controller family
+    - change THORLABS_ROTATOR_CONTROLLER_KIND if needed
+    - this V1 assumes MoveTo(real-world angle) is accepted by the controller once settings are initialized
+    """
+    def __init__(self, serial: str):
+        self.serial = str(serial)
+        self.device = None
+        self.connected = False
+        self._last_angle_deg = 0.0
+
+    def connect(self):
+        _KinesisLoader.ensure_loaded()
+
+        if THORLABS_ROTATOR_CONTROLLER_KIND == "KCubeStepperMotor":
+            device_cls = _KinesisLoader.KCubeStepperMotor
+        else:
+            device_cls = _KinesisLoader.KCubeDCServo
+
+        if device_cls is None:
+            raise RuntimeError(
+                f"Kinesis class {THORLABS_ROTATOR_CONTROLLER_KIND!r} is not available. "
+                "Adjust THORLABS_ROTATOR_CONTROLLER_KIND or install the matching Kinesis DLLs."
+            )
+
+        create_name = None
+        for name in dir(device_cls):
+            if name.startswith("Create"):
+                create_name = name
+                break
+
+        if create_name is None:
+            raise RuntimeError(f"Could not find a Kinesis Create* factory on {device_cls!r}.")
+
+        self.device = getattr(device_cls, create_name)(self.serial)
+        self.device.Connect(self.serial)
+
+        if not self.device.IsSettingsInitialized():
+            self.device.WaitForSettingsInitialized(10000)
+
+        self.device.StartPolling(250)
+        self.device.EnableDevice()
+        self.connected = True
+
+    def move_to_angle_deg(self, angle_deg: float, blocking: bool = True):
+        if not self.connected:
+            self.connect()
+
+        angle_deg = max(MIRA_ROTATOR_MIN_DEG, min(MIRA_ROTATOR_MAX_DEG, float(angle_deg)))
+        self._last_angle_deg = angle_deg
+
+        # Many Kinesis motor classes accept Decimal for MoveTo in real-world units.
+        self.device.MoveTo(Decimal(str(angle_deg)), 60000 if blocking else 0)
+
+    def stop(self):
+        if self.connected and self.device is not None:
+            try:
+                self.device.StopImmediate()
+            except Exception:
+                try:
+                    self.device.StopPolling()
+                    self.device.StartPolling(250)
+                except Exception:
+                    pass
+
+    def get_angle_deg(self) -> float:
+        return float(self._last_angle_deg)
+
+    def set_power_percent(self, percent: float):
+        percent = max(MIRA_POWER_MIN_PERCENT, min(MIRA_POWER_MAX_PERCENT, float(percent)))
+        angle = MIRA_ROTATOR_MIN_DEG + (percent / 100.0) * (MIRA_ROTATOR_MAX_DEG - MIRA_ROTATOR_MIN_DEG)
+        self.move_to_angle_deg(angle, blocking=True)
+
+    def get_power_percent(self) -> float:
+        angle = self.get_angle_deg()
+        if MIRA_ROTATOR_MAX_DEG == MIRA_ROTATOR_MIN_DEG:
+            return 0.0
+        return 100.0 * (angle - MIRA_ROTATOR_MIN_DEG) / (MIRA_ROTATOR_MAX_DEG - MIRA_ROTATOR_MIN_DEG)
+
+    def close(self):
+        try:
+            if self.device is not None:
+                self.device.StopPolling()
+                self.device.Disconnect()
+        finally:
+            self.device = None
+            self.connected = False
+
+
+# =============================================================================
+# REAL POSITIONER MANAGER
+# =============================================================================
+
+class RealHardwarePositionerManager(PositionerManager):
+    """
+    Real V1 hardware positioner manager.
+
+    Implemented:
+    - z -> PI V-308 via USB
+    - p -> Thorlabs rotation mount (degrees)
+
+    Not implemented in this V1:
+    - x / y stages, because no hardware/controller was provided for them
+    """
+
+    def __init__(
+        self,
+        axes: list[str],
+        *,
+        z_controller: Optional[_PIVoiceCoilController] = None,
+        p_controller: Optional[_ThorlabsRotationController] = None,
+        parent=None,
+    ):
+        super().__init__(axes, parent=parent)
+        self._z = z_controller
+        self._p = p_controller
+
+        # Initialize abs positions from hardware when possible
+        self._refresh_from_hardware("z")
+        self._refresh_from_hardware("p")
+
+    def _log(self, msg: str):
+        print(f"[RealHardwarePositioner] {msg}")
+
+    def _refresh_from_hardware(self, axis: str):
+        try:
+            if axis == "z" and self._z is not None:
+                self._state["z"].abs_pos = float(self._z.get_abs_um())
+                self._emit_positions("z")
+            elif axis == "p" and self._p is not None:
+                self._state["p"].abs_pos = float(self._p.get_angle_deg())
+                self._emit_positions("p")
+        except Exception as e:
+            self._log(f"refresh failed axis={axis}: {e}")
+
+    def _move_abs(self, axis: str, target_abs: float, speed: float):
+        self._require_axis(axis)
+        st = self._state[axis]
+
+        if not self._validate_move(axis, float(target_abs), float(speed)):
+            return
+
+        if axis == "z":
+            if self._z is None:
+                self._log("axis z requested but no PI V-308 controller is available.")
+                return
+
+            st.moving = True
+            self.movingChanged.emit(axis, True)
+            try:
+                self._z.move_abs_um(float(target_abs), speed_mm_s=float(speed), blocking=True)
+                st.abs_pos = float(self._z.get_abs_um())
+            finally:
+                st.moving = False
+                self.movingChanged.emit(axis, False)
+                self._emit_positions(axis)
+            return
+
+        if axis == "p":
+            if self._p is None:
+                self._log("axis p requested but no Thorlabs rotation controller is available.")
+                return
+
+            st.moving = True
+            self.movingChanged.emit(axis, True)
+            try:
+                self._p.move_to_angle_deg(float(target_abs), blocking=True)
+                st.abs_pos = float(self._p.get_angle_deg())
+            finally:
+                st.moving = False
+                self.movingChanged.emit(axis, False)
+                self._emit_positions(axis)
+            return
+
+        # x / y not provided in the hardware description
+        self._log(f"axis {axis!r} requested, but no real controller is implemented in this V1.")
+
+    @Slot(str, float, float)
+    def move_to_rel(self, axis: str, rel_target: float, speed: float):
+        st = self._state[axis]
+        target_abs = float(st.zero_offset) + float(rel_target)
+        self._move_abs(axis, target_abs=target_abs, speed=float(speed))
+
+    @Slot(str, float, float)
+    def move_relative(self, axis: str, delta: float, speed: float):
+        st = self._state[axis]
+        target_abs = float(st.abs_pos) + float(delta)
+        self._move_abs(axis, target_abs=target_abs, speed=float(speed))
+
+    @Slot(str, float, float, float, float, float, str)
+    def move_from_scan(
+        self,
+        axis_name: str,
+        target_rel: float,
+        vel_um_s: float,
+        acc_um_s2: float,
+        jerk_um_s3: float,
+        t_sched_ms: float,
+        reason: str
+    ):
+        axis = self.axis_from_scan_name(axis_name)
+        if axis is None or axis not in self._state:
+            return
+
+        st = self._state[axis]
+        target_abs = float(st.zero_offset) + float(target_rel)
+
+        if axis == "z":
+            # PositionerWidget uses mm/s; scan sends µm/s -> convert
+            speed = max(0.001, float(vel_um_s) / 1000.0)
+        elif axis == "p":
+            # p axis is degrees in your UI/positioner model
+            speed = max(0.001, float(vel_um_s))
+        else:
+            speed = 0.1
+
+        self._move_abs(axis, target_abs=target_abs, speed=speed)
+
+    @Slot(str)
+    def home(self, axis: str):
+        st = self._state[axis]
+        self._move_abs(axis, target_abs=float(st.zero_offset), speed=max(0.01, float(st.max_speed)))
+
+    @Slot(str)
+    def stop(self, axis: str):
+        if axis == "z" and self._z is not None:
+            self._z.stop()
+        elif axis == "p" and self._p is not None:
+            self._p.stop()
+
+        st = self._state[axis]
+        if st.moving:
+            st.moving = False
+            self.movingChanged.emit(axis, False)
+
+        self._refresh_from_hardware(axis)
+
+    @Slot(str)
+    def set_zero(self, axis: str):
+        self._refresh_from_hardware(axis)
+        st = self._state[axis]
+        st.zero_offset = st.abs_pos
+        self._emit_positions(axis)
+
+
+# =============================================================================
+# HARDWARE MANAGER
+# =============================================================================
 
 class HardwareManager(QObject):
     """
-    Façade / factory hardware.
+    Real hardware facade / factory for DeepLight.
 
-    Rôle :
-    - exposer les actions instrumentales communes (ex: shutter)
-    - fournir les managers concrets selon le backend choisi
+    Provides:
+    - shutter open/close
+    - real hardware positioner manager for z / p
+    - Mira900 power mapping via rotation mount
+
+    Current V1 scope:
+    - NI channels are hard-coded here for easy editing
+    - serials are hard-coded here for easy editing
     """
 
     def __init__(self, backend_name: str = "mock", parent=None):
@@ -17,20 +557,65 @@ class HardwareManager(QObject):
         self.backend_name = (backend_name or "mock").lower()
         self._positioner_axes = ["x", "y", "z", "p"]
 
+        self._shutter = None
+        self._z_controller = None
+        self._rotator = None
+
+    def _ensure_real_devices(self):
+        if self.backend_name != "nidaq":
+            return
+
+        if self._shutter is None:
+            self._shutter = _ThorlabsShutterController(THORLABS_SHUTTER_SERIAL)
+
+        if self._z_controller is None:
+            self._z_controller = _PIVoiceCoilController(PI_V308_SERIAL)
+
+        if self._rotator is None:
+            self._rotator = _ThorlabsRotationController(THORLABS_ROTATOR_SERIAL)
+
     def create_positioner_manager(self, parent=None):
-        """
-        Retourne le manager de positionnement adapté au backend courant.
-        """
         if self.backend_name == "nidaq":
-            return HardwarePositionerManager(self._positioner_axes, parent=parent)
+            self._ensure_real_devices()
+            return RealHardwarePositionerManager(
+                self._positioner_axes,
+                z_controller=self._z_controller,
+                p_controller=self._rotator,
+                parent=parent,
+            )
 
         return MockPositionerManager(self._positioner_axes, parent=parent)
 
     @Slot(bool)
     def set_shutter(self, open_: bool):
-        if self.backend_name == "nidaq":
-            # TODO: brancher ici la vraie commande hardware shutter
-            pass
-        else:
-            # mock / no-op
-            pass
+        if self.backend_name != "nidaq":
+            return
+
+        self._ensure_real_devices()
+        self._shutter.set_open(bool(open_))
+
+    def set_mira_power_percent(self, percent: float):
+        """
+        0% -> 0°
+        100% -> 180°
+        """
+        if self.backend_name != "nidaq":
+            return
+
+        self._ensure_real_devices()
+        self._rotator.set_power_percent(float(percent))
+
+    def get_mira_power_percent(self) -> float:
+        if self.backend_name != "nidaq":
+            return 0.0
+
+        self._ensure_real_devices()
+        return float(self._rotator.get_power_percent())
+
+    def close(self):
+        for dev in (self._shutter, self._z_controller, self._rotator):
+            try:
+                if dev is not None:
+                    dev.close()
+            except Exception:
+                pass
