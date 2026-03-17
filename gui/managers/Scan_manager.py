@@ -12,18 +12,12 @@ class ScanManager(QObject):
     Génère les signaux analogiques X/Y pour un raster scan (pixel-clocked),
     et les expose via un signal pour visualisation et futur envoi NI-DAQ.
     """
-    # ---- Visualizer-friendly stream ----
-    # axis_name, t_ms(np.ndarray), pos_um(np.ndarray)
-    stepper_waveform_chunk = Signal(str, object, object)
-
     # streaming oscillo analogique (t_ms, x_v, y_v)
     analog_waveforms_chunk = Signal(object, object, object)
 
     # waveform complet (t_ms, x_v, y_v)
     analog_waveforms_ready = Signal(object, object, object)
 
-    # request visualizers/hardware to return all axes to 0
-    outputs_return_to_zero = Signal()
     xy_frame_duration_ready = Signal(float)
 
     def __init__(self, parent=None):
@@ -1021,13 +1015,6 @@ class ScanManager(QObject):
             self._pending_y.clear()
 
             self.analog_waveforms_chunk.emit(t_ms, x_v, y_v)
-
-    def return_all_axes_to_zero(self):
-        """
-        Signal de retour explicite des sorties à 0.
-        Les steppers sont désormais gérés hors du ScanManager.
-        """
-        self.outputs_return_to_zero.emit()
 
     def stop_stream(self):
         self._t_ms = None

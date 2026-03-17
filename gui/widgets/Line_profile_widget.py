@@ -386,8 +386,7 @@ class LineProfileWidget(QWidget):
         x0, y0 = start_pos.x(), start_pos.y()
         x1, y1 = end_pos.x(), end_pos.y()
 
-        length_pixels = np.hypot(x1 - x0, y1 - y0)
-        length_um = length_pixels * self.scale_um_per_pixel
+        length_um = np.hypot(x1 - x0, y1 - y0)
 
         profile = self.extract_line_profile(image_data, start_pos, end_pos)
         if profile.size == 0:
@@ -401,15 +400,14 @@ class LineProfileWidget(QWidget):
     def extract_line_profile(self, image_data, start_pos, end_pos):
         img_item = self.image_view.getImageItem()
 
-        inv_transform, ok = img_item.sceneTransform().inverted()
-        if not ok:
-            return np.array([])
+        tr = img_item.transform()
+        scale_x = tr.m11() if tr.m11() != 0 else 1.0
+        scale_y = tr.m22() if tr.m22() != 0 else 1.0
 
-        p0 = inv_transform.map(start_pos)
-        p1 = inv_transform.map(end_pos)
-
-        x0, y0 = p0.x(), p0.y()
-        x1, y1 = p1.x(), p1.y()
+        x0 = start_pos.x() / scale_x
+        y0 = start_pos.y() / scale_y
+        x1 = end_pos.x() / scale_x
+        y1 = end_pos.y() / scale_y
 
         num_points = max(2, int(np.ceil(np.hypot(x1 - x0, y1 - y0))) + 1)
 

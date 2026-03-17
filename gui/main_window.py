@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
             parent=self
         )
 
-        self._stitching_scan_params = None
+
         self._stitching_geom_um = (1.0, 1.0)
 
         # --- Connexions StitchingManager -> UI / MainWindow ---
@@ -161,8 +161,7 @@ class MainWindow(QMainWindow):
         self._visualizer_flush_timer.setInterval(250)
         self._visualizer_flush_timer.timeout.connect(self._flush_visualizers)
                 
-        self.init_ready = True  # Marque l'initialisation comme terminée
-        QTimer.singleShot(10, self.guiReadyEvent)  # Appelle guiReadyEvent après 10 ms        
+        self.init_ready = True  # Marque l'initialisation comme terminée     
     
     @Slot()
     def on_stitch_acquire_clicked(self):
@@ -207,7 +206,6 @@ class MainWindow(QMainWindow):
             tile_h_um * overlap_px / float(tile_h_px)
         )
         self._stitching_geom_um = (mosaic_w_um, mosaic_h_um)
-        self._stitching_scan_params = dict(scan_params)
 
         self.stitching_manager.start_run(mosaic_params, scan_params)
 
@@ -998,9 +996,3 @@ class MainWindow(QMainWindow):
             self.positioner_manager.stop_all()
         except Exception:
             pass
-    
-    def guiReadyEvent(self):
-        pass
-
-    def showEvent(self, event):
-        super().showEvent(event)
