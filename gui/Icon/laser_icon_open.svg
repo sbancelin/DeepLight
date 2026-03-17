@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="128"
+   height="128"
+   viewBox="0 0 128 128"
+   version="1.1"
+   id="svg9345"
+   sodipodi:docname="laser_icon_open.svg"
+   inkscape:version="1.2.2 (732a01da63, 2022-12-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs9349" />
+  <sodipodi:namedview
+     id="namedview9347"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="5.2149125"
+     inkscape:cx="50.048778"
+     inkscape:cy="59.34903"
+     inkscape:window-width="2560"
+     inkscape:window-height="1351"
+     inkscape:window-x="-9"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg9345" />
+  <!-- Groupe principal -->
+  <g
+     stroke="#e67800"
+     stroke-width="6"
+     stroke-linecap="round"
+     id="g9341"
+     style="stroke:#ff7700;stroke-opacity:1"
+     transform="translate(-6,-3.6433977)">
+    <!-- Rayons principaux -->
+    <line
+       x1="63.424728"
+       y1="10"
+       x2="63.424728"
+       y2="40"
+       id="line9319"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <line
+       x1="63.424728"
+       y1="88"
+       x2="63.424728"
+       y2="118"
+       id="line9321"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <line
+       x1="9.4247265"
+       y1="64"
+       x2="39.424728"
+       y2="64"
+       id="line9323"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <line
+       x1="87.424728"
+       y1="64"
+       x2="127.42473"
+       y2="64"
+       id="line9325"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <!-- Rayons diagonaux -->
+    <line
+       x1="24.424726"
+       y1="25"
+       x2="44.424728"
+       y2="45"
+       id="line9327"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <line
+       x1="82.424728"
+       y1="83"
+       x2="102.42473"
+       y2="103"
+       id="line9329"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <line
+       x1="24.424726"
+       y1="103"
+       x2="44.424728"
+       y2="83"
+       id="line9331"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <line
+       x1="82.424728"
+       y1="45"
+       x2="102.42473"
+       y2="25"
+       id="line9333"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <!-- Rayons intermédiaires -->
+    <line
+       x1="63.424728"
+       y1="20"
+       x2="63.424728"
+       y2="30"
+       id="line9335"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <line
+       x1="63.424728"
+       y1="98"
+       x2="63.424728"
+       y2="108"
+       id="line9337"
+       style="stroke:#ff7700;stroke-opacity:1" />
+    <!-- Ligne laser droite -->
+    <line
+       x1="63.564438"
+       y1="64"
+       x2="130.54491"
+       y2="64"
+       id="line9339"
+       style="stroke:#ff7700;stroke-width:6.13812;stroke-opacity:1" />
+  </g>
+  <!-- Centre blanc -->
+  <circle
+     cx="57.424728"
+     cy="60.356598"
+     r="14"
+     fill="#e67800"
+     stroke="#e67800"
+     stroke-width="4"
+     id="circle9343"
+     style="fill:#ff7700;fill-opacity:1;stroke:#ff7700;stroke-opacity:1" />
+</svg>

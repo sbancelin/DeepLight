@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environnements
+.venv/
+venv/
+env/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Qt / IDE
+*.log
+.vscode/
+.idea/
+
+# Tests / caches
+.pytest_cache/
+.mypy_cache/
+
+# Données locales / acquisitions
+data/
+output/
+exports/
+tmp/
+temp/
+
+# OS
+.DS_Store
+Thumbs.db

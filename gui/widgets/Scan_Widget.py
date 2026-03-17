@@ -1,0 +1,1734 @@
+from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGroupBox, QPushButton, QGridLayout, QLabel,
+                              QLineEdit, QComboBox, QCheckBox, QWidget, QMessageBox, QSizePolicy)
+from PySide6.QtCore import Signal, Qt
+from ..managers.Scan_Types import SCAN_AXIS_DEFAULTS, STEPPER_AXIS_DEFAULTS
+
+GROUPBOX_STYLE = """
+    QGroupBox {
+        border: 1px solid #444;
+        border-radius: 4px;
+        margin-top: 2px;
+    }
+"""
+
+EDITABLE_LINEEDIT_STYLE = """
+    QLineEdit {
+        background-color: #333;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 3px;
+        padding: 2px;
+        min-height: 20px;
+    }
+"""
+
+READONLY_LINEEDIT_STYLE = """
+    QLineEdit {
+        background-color: #252525;
+        color: #888;
+        border: 1px solid #444;
+        border-radius: 3px;
+        padding: 2px;
+        min-height: 20px;
+    }
+"""
+
+HEADER_LABEL_STYLE = "color: white; font-weight: bold; padding-bottom: 5px;"
+
+BUTTON_STYLE = """
+    QPushButton {
+        background-color: #333;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 3px;
+        padding: 2px;
+        font-weight: bold;
+        min-height: 20px;
+    }
+    QPushButton:hover {
+        background-color: #444;
+    }
+"""
+
+APPLY_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #333;
+        color: white;
+        border: 2px solid #2E8B57;
+        border-radius: 3px;
+        padding: 2px;
+        font-weight: bold;
+        min-height: 20px;
+    }
+    QPushButton:hover {
+        background-color: #444;
+    }
+"""
+
+BIDIRECTIONAL_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #333;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 3px;
+        padding: 2px;
+        font-weight: bold;
+        min-height: 20px;
+    }
+    QPushButton:checked {
+        background-color: #2E8B57;
+    }
+    QPushButton:hover {
+        background-color: #444;
+    }
+    QPushButton:checked:hover {
+        background-color: #3AB16F;
+    }
+"""
+
+CHECKBOX_STYLE = """
+    QCheckBox::indicator {
+        width: 12px;
+        height: 12px;
+        background-color: #333;
+        border: 1px solid #555;
+        border-radius: 3px;
+    }
+    QCheckBox::indicator:checked {
+        background-color: #2E8B57;
+        border: 1px solid #555;
+        border-radius: 3px;
+    }
+    QCheckBox::indicator:checked:hover {
+        border: 1px solid #777;
+        background-color: #3AB16F;
+    }
+    QCheckBox::indicator:unchecked:hover {
+        background-color: #444;
+        border: 1px solid #777;
+    }
+"""
+
+LASER_MODE_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #333;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 6px;
+        padding: 6px;
+        font-weight: bold;
+    }
+    QPushButton:checked {
+        background-color: #2E8B57;
+        border: 1px solid #58d68d;
+    }
+    QPushButton:hover {
+        background-color: #3AB16F;
+    }
+"""
+
+SAMPLE_MODE_BUTTON_STYLE = """
+    QPushButton {
+        background-color: #333;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 6px;
+        padding: 6px;
+        font-weight: bold;
+    }
+    QPushButton:checked {
+        background-color: #ff8c00;
+        border: 1px solid #ffb347;
+    }
+    QPushButton:hover {
+        background-color: #444;
+    }
+"""
+
+def setup_scan_settings_dialog(dialog):
+    """Construit le dialogue des réglages avancés des axes de scan."""
+    scan_widget = dialog.parent()
+    axes = ["X-Galvo", "Y-Galvo"]
+
+    for index, axis_name in enumerate(axes):
+        axis_conversion_container = QWidget()
+        axis_conversion_layout = QVBoxLayout(axis_conversion_container)
+        axis_conversion_layout.setContentsMargins(0, 0, 0, 0)
+        axis_conversion_layout.setSpacing(2)
+
+        axis_label = QLabel(f"<b>{axis_name} Axis</b>")
+        axis_conversion_layout.addWidget(axis_label)
+
+        separator = QLabel()
+        separator.setFrameShape(QLabel.HLine)
+        separator.setFrameShadow(QLabel.Sunken)
+        separator.setStyleSheet("color: #555; margin-top: 0px; margin-bottom: 0px;")
+        dialog.add_widget(separator)
+
+        axis_cfg = {}
+        if scan_widget is not None and scan_widget.axis_settings_manager is not None:
+            axis_cfg = scan_widget.axis_settings_manager.get_axis_settings(axis_name)
+
+        defaults = SCAN_AXIS_DEFAULTS.get(axis_name, {})
+
+        cur_conv = axis_cfg.get("conv_um_per_v", defaults.get("conv_um_per_v"))
+        cur_vmin = axis_cfg.get("vmin", defaults.get("vmin", -5.0))
+        cur_vmax = axis_cfg.get("vmax", defaults.get("vmax", 5.0))
+        cur_tb   = axis_cfg.get("turnback_px", defaults.get("turnback_px", 0))
+        cur_vel  = axis_cfg.get("vel_max", defaults.get("vel_max", 1.0))
+        cur_acc  = axis_cfg.get("acc_max", defaults.get("acc_max", 1.0))
+        cur_jerk = axis_cfg.get("jerk", defaults.get("jerk", 1.0))
+
+        conversion_layout = QHBoxLayout()
+        conversion_label = QLabel("Conversion Factor (µm/V):")
+        conversion_edit = QLineEdit(str(cur_conv))
+        conversion_edit.setObjectName(f"conv_edit_{axis_name.replace('-', '_')}")
+        conversion_layout.addWidget(conversion_label)
+        conversion_layout.addWidget(conversion_edit)
+        axis_conversion_layout.addLayout(conversion_layout)
+
+        dialog.add_widget(axis_conversion_container)
+
+        voltage_layout = QHBoxLayout()
+        min_voltage_label = QLabel("Min Voltage (V):")
+        max_voltage_label = QLabel("Max Voltage (V):")
+        min_voltage_edit = QLineEdit(str(cur_vmin))
+        max_voltage_edit = QLineEdit(str(cur_vmax))
+        min_voltage_edit.setObjectName(f"vmin_edit_{axis_name.replace('-', '_')}")
+        max_voltage_edit.setObjectName(f"vmax_edit_{axis_name.replace('-', '_')}")
+        voltage_layout.addWidget(min_voltage_label)
+        voltage_layout.addWidget(min_voltage_edit)
+        voltage_layout.addWidget(max_voltage_label)
+        voltage_layout.addWidget(max_voltage_edit)
+        dialog.add_layout(voltage_layout)
+
+        dyn_layout_1 = QHBoxLayout()
+        vel_edit = QLineEdit(str(cur_vel))
+        vel_edit.setObjectName(f"vel_edit_{axis_name.replace('-', '_')}")
+        dyn_layout_1.addWidget(QLabel("Velocity max (mm/s):"))
+        dyn_layout_1.addWidget(vel_edit)
+
+        acc_edit = QLineEdit(str(cur_acc))
+        acc_edit.setObjectName(f"acc_edit_{axis_name.replace('-', '_')}")
+        dyn_layout_1.addWidget(QLabel("Acceleration (mm/s²):"))
+        dyn_layout_1.addWidget(acc_edit)
+        dialog.add_layout(dyn_layout_1)
+
+        dyn_layout_2 = QHBoxLayout()
+        jerk_edit = QLineEdit(str(cur_jerk))
+        jerk_edit.setObjectName(f"jerk_edit_{axis_name.replace('-', '_')}")
+        dyn_layout_2.addWidget(QLabel("Jerk (mm/s³):"))
+        dyn_layout_2.addWidget(jerk_edit)
+
+        tb_edit = QLineEdit(str(cur_tb))
+        tb_edit.setObjectName(f"turnback_edit_{axis_name.replace('-', '_')}")
+        dyn_layout_2.addWidget(QLabel("Turnback (px):"))
+        dyn_layout_2.addWidget(tb_edit)
+        dialog.add_layout(dyn_layout_2)
+
+        if index < len(axes) - 1:
+            vertical_spacer = QLabel()
+            vertical_spacer.setFixedHeight(10)
+            dialog.add_widget(vertical_spacer)
+
+    def _read_float(le: QLineEdit, default: float) -> float:
+        try:
+            return float(le.text().replace(",", "."))
+        except Exception:
+            return float(default)
+
+    def _read_int(le: QLineEdit, default: int) -> int:
+        try:
+            return int(float(le.text().replace(",", ".")))
+        except Exception:
+            return int(default)
+
+    def on_dialog_accepted():
+        if scan_widget is None or scan_widget.axis_settings_manager is None:
+            return
+
+        for axis_name in axes:
+            key = axis_name.replace("-", "_")
+
+            conv_edit = dialog.findChild(QLineEdit, f"conv_edit_{key}")
+            vmin_edit = dialog.findChild(QLineEdit, f"vmin_edit_{key}")
+            vmax_edit = dialog.findChild(QLineEdit, f"vmax_edit_{key}")
+            vel_edit  = dialog.findChild(QLineEdit, f"vel_edit_{key}")
+            acc_edit  = dialog.findChild(QLineEdit, f"acc_edit_{key}")
+            jerk_edit = dialog.findChild(QLineEdit, f"jerk_edit_{key}")
+            tb_edit   = dialog.findChild(QLineEdit, f"turnback_edit_{key}")
+
+            if not all([conv_edit, vmin_edit, vmax_edit, vel_edit, acc_edit, jerk_edit, tb_edit]):
+                continue
+
+            old = scan_widget.axis_settings_manager.get_axis_settings(axis_name)
+            defaults = SCAN_AXIS_DEFAULTS.get(axis_name, {})
+
+            old_conv = float(old.get("conv_um_per_v", defaults.get("conv_um_per_v")))
+            old_vmin = float(old.get("vmin", defaults.get("vmin", -5.0)))
+            old_vmax = float(old.get("vmax", defaults.get("vmax", 5.0)))
+            old_tb   = int(old.get("turnback_px", defaults.get("turnback_px", 0)))
+            old_vel  = float(old.get("vel_max", defaults.get("vel_max", 1.0)))
+            old_acc  = float(old.get("acc_max", defaults.get("acc_max", 1.0)))
+            old_jerk = float(old.get("jerk", defaults.get("jerk", 1.0)))
+
+            conv = _read_float(conv_edit, old_conv)
+            vmin = _read_float(vmin_edit, old_vmin)
+            vmax = _read_float(vmax_edit, old_vmax)
+            tb   = _read_int(tb_edit, old_tb)
+            vel  = _read_float(vel_edit, old_vel)
+            acc  = _read_float(acc_edit, old_acc)
+            jerk = _read_float(jerk_edit, old_jerk)
+
+            ok, msg = scan_widget.validate_axis_setting_values(axis_name, conv, vmin, vmax, tb, vel, acc, jerk)
+            if not ok:
+                QMessageBox.warning(scan_widget, "Invalid scan setting", msg)
+                conv_edit.setText(str(old_conv))
+                vmin_edit.setText(str(old_vmin))
+                vmax_edit.setText(str(old_vmax))
+                tb_edit.setText(str(old_tb))
+                vel_edit.setText(str(old_vel))
+                acc_edit.setText(str(old_acc))
+                jerk_edit.setText(str(old_jerk))
+                continue
+
+            scan_widget.axis_settings_manager.update_axis_settings(
+                axis_name,
+                conv_um_per_v=conv,
+                vmin=vmin,
+                vmax=vmax,
+                turnback_px=tb,
+                vel_max=vel,
+                acc_max=acc,
+                jerk=jerk,
+            )
+
+        scan_widget.axis_settings = scan_widget.axis_settings_manager.get_all_axis_settings()
+
+    dialog.accepted.connect(on_dialog_accepted)
+
+class ScanWidget(QWidget):
+    """Widget pour les contrôles de scan."""
+    view_update_requested = Signal(object)   # pix_x, pix_y
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(2, 2, 2, 2)
+        self.main_layout.setSpacing(4)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        
+        self.axis_settings_manager = None
+
+        self.params_changed = False
+
+        # Valeurs par défaut (modifiables dans popup settings)
+        self.axis_settings = {}
+
+        # Valeurs par défaut UI pour chaque axe
+        self.default_values = {
+            "X-Galvo": {"size": "100", "pixels": "256", "offset": "0"},
+            "Y-Galvo": {"size": "100", "pixels": "256", "offset": "0"},
+            "X-Stage": {"size": "100", "pixels": "64", "offset": "0"},
+            "Y-Stage": {"size": "100", "pixels": "64", "offset": "0"},
+            "Z-Vcoil": {"size": "10", "pixels": "10", "offset": "0"},
+            "Polarization": {"size": "180", "pixels": "18", "offset": "0"},
+        }
+
+        self.scan_kind = "laser"
+
+        # =========================
+        # Scan mode group
+        # =========================
+        mode_group = QGroupBox("", self)
+        mode_group.setMinimumWidth(0)
+        mode_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        mode_group.setStyleSheet(GROUPBOX_STYLE)
+
+        mode_layout = QHBoxLayout(mode_group)
+        mode_layout.setContentsMargins(6, 6, 6, 6)
+        mode_layout.setSpacing(6)
+
+        self.laser_mode_button = QPushButton("Laser scanning")
+        self.laser_mode_button.setCheckable(True)
+        self.laser_mode_button.setChecked(True)
+
+        self.sample_mode_button = QPushButton("Sample scanning")
+        self.sample_mode_button.setCheckable(True)
+        self.sample_mode_button.setChecked(False)
+
+        for btn in (self.laser_mode_button, self.sample_mode_button):
+            btn.setMinimumHeight(30)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        mode_layout.addWidget(self.laser_mode_button)
+        mode_layout.addWidget(self.sample_mode_button)
+
+        self.main_layout.addWidget(mode_group)
+
+        # =========================
+        # Spatial parameters group
+        # =========================
+        spatial_group = QGroupBox("", self)
+        spatial_group.setMinimumWidth(0)
+        spatial_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spatial_group.setStyleSheet(GROUPBOX_STYLE)
+
+        spatial_layout = QVBoxLayout(spatial_group)
+        spatial_layout.setContentsMargins(6, 6, 6, 6)
+        spatial_layout.setSpacing(4)
+
+        grid_layout = QGridLayout()
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        grid_layout.setHorizontalSpacing(6)
+        grid_layout.setVerticalSpacing(4)
+
+        grid_layout.setColumnMinimumWidth(0, 10)   # Axis
+        grid_layout.setColumnMinimumWidth(1, 10)   # Size
+        grid_layout.setColumnMinimumWidth(2, 10)   # Pix
+        grid_layout.setColumnMinimumWidth(3, 10)   # Step
+        grid_layout.setColumnMinimumWidth(4, 10)   # Offset
+
+        grid_layout.setColumnStretch(0, 0)
+        grid_layout.setColumnStretch(1, 1)
+        grid_layout.setColumnStretch(2, 1)
+        grid_layout.setColumnStretch(3, 1)
+        grid_layout.setColumnStretch(4, 1)
+
+        # En-têtes
+        headers = ["Axis", "Size (µm)", "# Pix", "Step (µm)", "Offset (µm)"]
+        for col, header in enumerate(headers):
+            label = QLabel(header)
+            label.setStyleSheet(HEADER_LABEL_STYLE)
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            grid_layout.addWidget(label, 0, col)
+
+        # Dimension et champs éditables
+        self.initial_axes = ["X-Galvo", "Y-Galvo", "None", "None"]
+        defaut_axes = list(self.initial_axes)
+
+        # Listes widgets
+        self.pixel_edits = []
+        self.scan_dim_combos = []
+        self.size_edits = []
+        self.step_edits = []
+        self.offset_edits = []
+
+        for row, pos in enumerate(defaut_axes, 1):
+            # Colonne 0: Scan dim
+            scan_dim_combo = QComboBox()
+            scan_dim_combo.addItems(["None"])
+            scan_dim_combo.setCurrentText(pos)
+            scan_dim_combo.setProperty("prev_text", scan_dim_combo.currentText())
+            scan_dim_combo.setStyleSheet("""
+                QComboBox {
+                    background-color: #333;
+                    color: white;
+                    border: 1px solid #555;
+                    border-radius: 3px;
+                    padding: 2px;
+                    min-height: 20px;
+                }
+            """)
+            scan_dim_combo.setMinimumWidth(0)
+            scan_dim_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            grid_layout.addWidget(scan_dim_combo, row, 0)
+            setattr(self, f"scan_dim_combo_{pos.replace('-', '_')}", scan_dim_combo)
+            self.scan_dim_combos.append(scan_dim_combo)
+
+            # Colonne 1: Size
+            size_edit = QLineEdit("" if pos == "None" else self.default_values.get(pos, {}).get("size", "100"))
+            self._set_editable_lineedit_style(size_edit)
+            size_edit.setMinimumWidth(0)
+            size_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            grid_layout.addWidget(size_edit, row, 1)
+            setattr(self, f"size_edit_{pos.replace('-', '_')}", size_edit)
+            size_edit.setProperty("last_valid_text", size_edit.text())
+            self.size_edits.append(size_edit)
+
+            # Colonne 2: Pixels
+            pixel_edit = QLineEdit("" if pos == "None" else self.default_values.get(pos, {}).get("pixels", "256"))
+            self._set_editable_lineedit_style(pixel_edit)
+            pixel_edit.setMinimumWidth(0)
+            pixel_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            grid_layout.addWidget(pixel_edit, row, 2)
+            setattr(self, f"pixels_label_{pos.replace('-', '_')}", pixel_edit)
+            pixel_edit.setProperty("last_valid_text", pixel_edit.text())
+            self.pixel_edits.append(pixel_edit)
+
+            # Colonne 3: Step size
+            step_edit = QLineEdit()
+            step_edit.setReadOnly(True)
+            self._set_disabled_lineedit_style(step_edit)
+            step_edit.setMinimumWidth(0)
+            step_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            grid_layout.addWidget(step_edit, row, 3)
+            setattr(self, f"step_edit_{pos.replace('-', '_')}", step_edit)
+            self.step_edits.append(step_edit)
+
+            # Colonne 4: Offset
+            offset_edit = QLineEdit("" if pos == "None" else self.default_values.get(pos, {}).get("offset", "0"))
+            self._set_editable_lineedit_style(offset_edit)
+            offset_edit.setMinimumWidth(0)
+            offset_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            grid_layout.addWidget(offset_edit, row, 4)
+            setattr(self, f"offset_edit_{pos.replace('-', '_')}", offset_edit)
+            offset_edit.setProperty("last_valid_text", offset_edit.text())
+            self.offset_edits.append(offset_edit)
+
+            self._update_steps(size_edit, pixel_edit, step_edit)
+
+            i = row - 1
+
+            size_edit.textChanged.connect(lambda _=None, idx=i: self._on_param_changed_if_xy(idx))
+            pixel_edit.textChanged.connect(lambda _=None, idx=i: self._on_param_changed_if_xy(idx))
+            scan_dim_combo.currentTextChanged.connect(lambda _=None, idx=i: self._on_param_changed_if_xy(idx))
+            size_edit.textChanged.connect(
+                lambda _=None, s=size_edit, p=pixel_edit, st=step_edit: self._update_steps(s, p, st)
+            )
+            pixel_edit.textChanged.connect(
+                lambda _=None, s=size_edit, p=pixel_edit, st=step_edit: self._update_steps(s, p, st)
+            )
+
+            scan_dim_combo.currentTextChanged.connect(
+                lambda text, combo=scan_dim_combo, p=pixel_edit: self._on_scan_axis_changed(combo, p, text)
+            )
+
+            size_edit.textChanged.connect(self._update_total_pixels)
+            pixel_edit.textChanged.connect(self._update_total_pixels)
+            scan_dim_combo.currentTextChanged.connect(self._update_total_pixels)
+
+            size_edit.textChanged.connect(self._update_scan_duration)
+            pixel_edit.textChanged.connect(self._update_scan_duration)
+            scan_dim_combo.currentTextChanged.connect(self._update_scan_duration)
+
+            size_edit.returnPressed.connect(lambda idx=i: self._validate_row_and_revert_if_needed(idx))
+            pixel_edit.returnPressed.connect(lambda idx=i: self._validate_row_and_revert_if_needed(idx))
+            offset_edit.returnPressed.connect(lambda idx=i: self._validate_row_and_revert_if_needed(idx))
+
+            if pos == "None":
+                self._disable_axis_fields(i)
+
+        # Ligne boutons spatiaux
+        self.bidirectional_button = QPushButton("Bidirect.")
+        self.bidirectional_button.setCheckable(True)
+        self.bidirectional_button.setChecked(False)
+        self.bidirectional_button.setStyleSheet(BIDIRECTIONAL_BUTTON_STYLE)
+        grid_layout.addWidget(self.bidirectional_button, 5, 0)
+
+        bidirectional_shift_label = QLabel("Back shift (px)")
+        bidirectional_shift_label.setStyleSheet("color: white;")
+        bidirectional_shift_label.setMinimumWidth(0)
+        bidirectional_shift_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        grid_layout.addWidget(bidirectional_shift_label, 5, 1)
+
+        self.bidirectional_shift_edit = QLineEdit("0")
+        self.bidirectional_shift_edit.setEnabled(False)
+        self._set_disabled_lineedit_style(self.bidirectional_shift_edit)
+        self.bidirectional_shift_edit.setProperty("last_valid_text", "0")
+        self.bidirectional_shift_edit.setToolTip("Integer pixel shift applied only on reverse lines.")
+        self.bidirectional_shift_edit.setMinimumWidth(0)
+        self.bidirectional_shift_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        grid_layout.addWidget(self.bidirectional_shift_edit, 5, 2)
+
+        self.apply_button = QPushButton("Update")
+        self.apply_button.setStyleSheet(BUTTON_STYLE)
+        self.apply_button.setMinimumWidth(0)
+        self.apply_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        grid_layout.addWidget(self.apply_button, 5, 3)
+
+        self.reset_button = QPushButton("Reset")
+        self.reset_button.setStyleSheet(BUTTON_STYLE)
+        self.reset_button.setMinimumWidth(0)
+        self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        grid_layout.addWidget(self.reset_button, 5, 4)
+
+        spatial_layout.addLayout(grid_layout)
+
+        # ==========================
+        # Temporal parameters group
+        # ==========================
+        temporal_group = QGroupBox("", self)
+        temporal_group.setMinimumWidth(0)
+        temporal_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        temporal_group.setStyleSheet(GROUPBOX_STYLE)
+
+        temporal_layout = QGridLayout(temporal_group)
+        temporal_layout.setHorizontalSpacing(6)
+        temporal_layout.setVerticalSpacing(4)
+        temporal_layout.setContentsMargins(6, 6, 6, 6)
+
+        for col in range(4):
+            temporal_layout.setColumnMinimumWidth(col, 20)
+            temporal_layout.setColumnStretch(col, 1)
+
+        dwell_label = QLabel("Dwell T. (µs)")
+        dwell_label.setStyleSheet("color: white;")
+        dwell_label.setMinimumWidth(0)
+        dwell_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(dwell_label, 0, 0)
+
+        self.dwell_edit = QLineEdit("10")
+        self._set_editable_lineedit_style(self.dwell_edit)
+        self.dwell_edit.returnPressed.connect(self._on_dwell_return_pressed)
+        self.dwell_edit.setProperty("last_valid_text", self.dwell_edit.text())
+        self.dwell_edit.setMinimumWidth(0)
+        self.dwell_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(self.dwell_edit, 1, 0)
+
+        spp_label = QLabel("Sampling")
+        spp_label.setStyleSheet("color: white;")
+        spp_label.setMinimumWidth(0)
+        spp_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(spp_label, 0, 1)
+
+        self.samples_per_pixel_edit = QLineEdit("1")
+        self._set_editable_lineedit_style(self.samples_per_pixel_edit)
+        self.samples_per_pixel_edit.returnPressed.connect(self._on_samples_per_pixel_return_pressed)
+        self.samples_per_pixel_edit.setProperty("last_valid_text", self.samples_per_pixel_edit.text())
+        self.samples_per_pixel_edit.setMinimumWidth(0)
+        self.samples_per_pixel_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(self.samples_per_pixel_edit, 1, 1)
+
+        total_pixels_label = QLabel("# of Pixels")
+        total_pixels_label.setStyleSheet("color: white;")
+        total_pixels_label.setMinimumWidth(0)
+        total_pixels_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(total_pixels_label, 0, 2)
+
+        self.total_pixels_edit = QLineEdit()
+        self.total_pixels_edit.setReadOnly(True)
+        self._set_disabled_lineedit_style(self.total_pixels_edit)
+        self.total_pixels_edit.setMinimumWidth(0)
+        self.total_pixels_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(self.total_pixels_edit, 1, 2)
+
+        duration_label = QLabel("Duration (s)")
+        duration_label.setStyleSheet("color: white;")
+        duration_label.setMinimumWidth(0)
+        duration_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(duration_label, 0, 3)
+
+        self.duration_edit = QLineEdit()
+        self.duration_edit.setReadOnly(True)
+        self._set_disabled_lineedit_style(self.duration_edit)
+        self.duration_edit.setMinimumWidth(0)
+        self.duration_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(self.duration_edit, 1, 3)
+
+        rep_mode_label = QLabel("Repetitions")
+        rep_mode_label.setStyleSheet("color: white;")
+        rep_mode_label.setMinimumWidth(0)
+        rep_mode_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(rep_mode_label, 2, 0)
+
+        rep_label = QLabel("# of Repetitions")
+        rep_label.setStyleSheet("color: white;")
+        rep_label.setAlignment(Qt.AlignCenter)
+        rep_label.setMinimumWidth(0)
+        rep_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(rep_label, 2, 1)
+
+        delay_label = QLabel("Delay (s)")
+        delay_label.setStyleSheet("color: white;")
+        delay_label.setMinimumWidth(0)
+        delay_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(delay_label, 2, 2)
+
+        laser_label = QLabel("Laser off between Rep")
+        laser_label.setStyleSheet("color: white;")
+        laser_label.setMinimumWidth(0)
+        laser_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(laser_label, 2, 3)
+
+        self.rep_checkbox = QCheckBox()
+        self.rep_checkbox.setChecked(False)
+        self.rep_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        temporal_layout.addWidget(self.rep_checkbox, 3, 0, Qt.AlignCenter)
+
+        self.rep_edit = QLineEdit("1")
+        self._set_editable_lineedit_style(self.rep_edit)
+        self.rep_edit.setEnabled(False)
+        self._set_disabled_lineedit_style(self.rep_edit)
+        self.rep_edit.setProperty("last_valid_text", self.rep_edit.text())
+        self.rep_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(self.rep_edit, 3, 1)
+
+        self.delay_edit = QLineEdit("0")
+        self._set_editable_lineedit_style(self.delay_edit)
+        self.delay_edit.setEnabled(False)
+        self._set_disabled_lineedit_style(self.delay_edit)
+        self.delay_edit.setProperty("last_valid_text", self.delay_edit.text())
+        self.delay_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        temporal_layout.addWidget(self.delay_edit, 3, 2)
+
+        self.laser_checkbox = QCheckBox()
+        self.laser_checkbox.setChecked(True)
+        self.laser_checkbox.setEnabled(False)
+        self.laser_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        temporal_layout.addWidget(self.laser_checkbox, 3, 3, Qt.AlignCenter)
+
+        # Ajout des deux group box au layout principal du widget
+        self.main_layout.addWidget(spatial_group)
+        self.main_layout.addWidget(temporal_group)
+        self.main_layout.addStretch()
+
+        # Connexion des signaux
+        self.apply_button.clicked.connect(self._on_update_view_clicked)
+        self.reset_button.clicked.connect(self._reset_to_defaults)
+        self.bidirectional_button.toggled.connect(self._on_bidirectional_toggled)
+        self.bidirectional_shift_edit.returnPressed.connect(self._on_bidirectional_shift_return_pressed)
+
+        self.rep_checkbox.toggled.connect(self._on_rep_checkbox_toggled)
+        self.rep_checkbox.toggled.connect(self._update_scan_duration)
+
+        self.rep_edit.returnPressed.connect(self._on_rep_return_pressed)
+        self.delay_edit.returnPressed.connect(self._on_delay_return_pressed)
+
+        self.laser_checkbox.toggled.connect(self._on_param_changed)
+        self.laser_checkbox.toggled.connect(self._update_scan_duration)
+
+        self.laser_mode_button.clicked.connect(lambda: self._set_scan_kind("laser", apply_defaults=True))
+        self.sample_mode_button.clicked.connect(lambda: self._set_scan_kind("sample", apply_defaults=True))
+
+        # Initialisation des champs calculés
+        self._refresh_scan_axis_combos()
+        self._update_total_pixels()
+        self._update_scan_duration()
+        self._update_button_style()
+        self._update_scan_mode_buttons()
+
+    def _on_rep_return_pressed(self):
+        rep = self._read_int_edit(self.rep_edit, 1)
+
+        if rep <= 0:
+            QMessageBox.warning(self, "Invalid repetitions", "# of Repetitions must be > 0.")
+            old = self.rep_edit.property("last_valid_text")
+            if old is not None:
+                self.rep_edit.blockSignals(True)
+                self.rep_edit.setText(str(old))
+                self.rep_edit.blockSignals(False)
+            self._update_scan_duration()
+            return
+
+        self.rep_edit.setText(str(rep))
+        self.rep_edit.setProperty("last_valid_text", str(rep))
+        self._update_scan_duration()
+        self._on_param_changed()
+
+    def _on_delay_return_pressed(self):
+        delay = self._read_float_edit(self.delay_edit, 0.0)
+
+        if delay < 0:
+            QMessageBox.warning(self, "Invalid delay", "Delay between repetitions must be >= 0 s.")
+            old = self.delay_edit.property("last_valid_text")
+            if old is not None:
+                self.delay_edit.blockSignals(True)
+                self.delay_edit.setText(str(old))
+                self.delay_edit.blockSignals(False)
+            self._update_scan_duration()
+            return
+
+        self.delay_edit.setText(str(delay))
+        self.delay_edit.setProperty("last_valid_text", str(delay))
+        self._update_scan_duration()
+        self._on_param_changed()
+    
+    def open_settings_dialog(self):
+        from .Dialogs import SettingsDialog
+        dialog = SettingsDialog("Scan - Settings", self)
+        setup_scan_settings_dialog(dialog)
+        dialog.exec()
+    
+    def set_axis_settings_manager(self, manager):
+        """Injection du AxisSettingsManager partagé."""
+        self.axis_settings_manager = manager
+
+        for axis_name, defaults in SCAN_AXIS_DEFAULTS.items():
+            if not self.axis_settings_manager.get_axis_settings(axis_name):
+                self.axis_settings_manager.update_axis_settings(axis_name, **defaults)
+
+        self.axis_settings = self.axis_settings_manager.get_all_axis_settings()
+    
+    def _on_bidirectional_shift_return_pressed(self):
+        value = self._read_int_edit(self.bidirectional_shift_edit, 0)
+
+        # borne large volontaire, à ajuster si besoin
+        if value < -100000 or value > 100000:
+            QMessageBox.warning(
+                self,
+                "Invalid bidirectional shift",
+                "Bidirectional shift must be a reasonable integer value."
+            )
+            old = self.bidirectional_shift_edit.property("last_valid_text")
+            if old is not None:
+                self.bidirectional_shift_edit.blockSignals(True)
+                self.bidirectional_shift_edit.setText(str(old))
+                self.bidirectional_shift_edit.blockSignals(False)
+            return
+
+        self.bidirectional_shift_edit.setText(str(value))
+        self.bidirectional_shift_edit.setProperty("last_valid_text", str(value))
+        self._on_param_changed()
+    
+    def _count_active_scan_dimensions_except(self, excluded_combo: QComboBox) -> int:
+        count = 0
+        for cb in self.scan_dim_combos:
+            if cb is excluded_combo:
+                continue
+            if cb.currentText() != "None":
+                count += 1
+        return count
+    
+    def _get_active_scan_axes(self) -> list[str]:
+        return [cb.currentText() for cb in self.scan_dim_combos if cb.currentText() != "None"]
+
+    def _count_active_scan_dimensions(self) -> int:
+        return len(self._get_active_scan_axes())
+
+    def _would_exceed_dimension_limit(self, extra_dim: int = 0, replacing_none: bool = False) -> bool:
+        """
+        Channel occupe déjà 1 dimension.
+        Il reste donc max 4 dimensions pour le scan :
+        X, Y, Z, P, Rep
+
+        extra_dim = 1 pour tester l'ajout d'une nouvelle dimension
+        replacing_none = True si on passe de None -> axe actif
+        """
+        active_dims = self._count_active_scan_dimensions()
+        rep_dim = 1 if self.rep_checkbox.isChecked() else 0
+
+        # Si on remplace un axe déjà actif par un autre axe actif, on n'ajoute pas de dimension.
+        add_axis_dim = 1 if replacing_none else 0
+
+        total_scan_dims = active_dims + rep_dim + add_axis_dim + extra_dim
+        return total_scan_dims > 4
+    
+    def _mode_primary_axes(self) -> tuple[str, str]:
+        if self.scan_kind == "sample":
+            return "X-Stage", "Y-Stage"
+        return "X-Galvo", "Y-Galvo"
+
+    def _set_combo_items(self, combo: QComboBox, items: list[str], preferred: str | None = None):
+        current = combo.currentText()
+
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(items)
+
+        if preferred in items:
+            combo.setCurrentText(preferred)
+        elif current in items:
+            combo.setCurrentText(current)
+        elif items:
+            combo.setCurrentText(items[0])
+
+        combo.setProperty("prev_text", combo.currentText())
+        combo.blockSignals(False)
+
+    def _get_allowed_axes_for_row(self, row_index: int) -> list[str]:
+        ax_x, ax_y = self._mode_primary_axes()
+        current = [cb.currentText() for cb in self.scan_dim_combos]
+        a0, a1, a2, a3 = current
+
+        if row_index == 0:
+            return [ax_x, ax_y]
+
+        if row_index == 1:
+            if a0 == ax_x:
+                return [ax_y, "Z-Vcoil"]
+            if a0 == ax_y:
+                return [ax_x, "Z-Vcoil"]
+            return [ax_x, ax_y, "Z-Vcoil"]
+
+        pair = (a0, a1)
+        pair_set = {a0, a1}
+
+        is_xy_family = pair_set == {ax_x, ax_y}
+        is_xz_or_yz_family = pair in ((ax_x, "Z-Vcoil"), (ax_y, "Z-Vcoil"))
+
+        if row_index == 2:
+            if is_xy_family:
+                return ["Z-Vcoil", "Polarization", "None"]
+            if is_xz_or_yz_family:
+                return ["None"]
+            return ["None"]
+
+        if row_index == 3:
+            if is_xy_family:
+                if a2 == "Z-Vcoil":
+                    return ["Polarization", "None"]
+                if a2 == "Polarization":
+                    return ["Z-Vcoil", "None"]
+                return ["None"]
+            return ["None"]
+
+        return ["None"]
+
+    def _refresh_scan_axis_combos(self):
+        for i, combo in enumerate(self.scan_dim_combos):
+            old_text = combo.currentText()
+            allowed = self._get_allowed_axes_for_row(i)
+
+            self._set_combo_items(combo, allowed, preferred=old_text)
+
+            axis = combo.currentText()
+            if axis == "None":
+                self._disable_axis_fields(i)
+            else:
+                self.size_edits[i].setEnabled(True)
+                self.pixel_edits[i].setEnabled(True)
+                self.offset_edits[i].setEnabled(True)
+
+                self._set_editable_lineedit_style(self.size_edits[i])
+                self._set_editable_lineedit_style(self.pixel_edits[i])
+                self._set_editable_lineedit_style(self.offset_edits[i])
+
+                if not self.size_edits[i].text():
+                    self.size_edits[i].setText(self.default_values[axis]["size"])
+                if not self.pixel_edits[i].text():
+                    self.pixel_edits[i].setText(self.default_values[axis]["pixels"])
+                if not self.offset_edits[i].text():
+                    self.offset_edits[i].setText(self.default_values[axis]["offset"])
+
+                self.size_edits[i].setProperty("last_valid_text", self.size_edits[i].text())
+                self.pixel_edits[i].setProperty("last_valid_text", self.pixel_edits[i].text())
+                self.offset_edits[i].setProperty("last_valid_text", self.offset_edits[i].text())
+
+                self._update_steps(self.size_edits[i], self.pixel_edits[i], self.step_edits[i])
+        
+    def _update_scan_mode_buttons(self):
+        self.laser_mode_button.blockSignals(True)
+        self.sample_mode_button.blockSignals(True)
+
+        self.laser_mode_button.setChecked(self.scan_kind == "laser")
+        self.sample_mode_button.setChecked(self.scan_kind == "sample")
+
+        self.laser_mode_button.setStyleSheet(LASER_MODE_BUTTON_STYLE)
+        self.sample_mode_button.setStyleSheet(SAMPLE_MODE_BUTTON_STYLE)
+
+        self.laser_mode_button.blockSignals(False)
+        self.sample_mode_button.blockSignals(False)
+    
+    def _set_scan_kind(self, scan_kind: str, apply_defaults: bool = False):
+        self.scan_kind = "sample" if str(scan_kind) == "sample" else "laser"
+
+        if apply_defaults:
+            if self.scan_kind == "sample":
+                self._apply_sample_mode_defaults()
+            else:
+                self._apply_laser_mode_defaults()
+
+        self._refresh_scan_axis_combos()
+        self._update_scan_mode_buttons()
+        self._update_total_pixels()
+        self._update_scan_duration()
+        self._on_param_changed()
+
+    def _apply_sample_mode_defaults(self):
+        sample_axes = ["X-Stage", "Y-Stage", "None", "None"]
+
+        for i, axis in enumerate(sample_axes):
+            combo = self.scan_dim_combos[i]
+            combo.blockSignals(True)
+            combo.setCurrentText(axis)
+            combo.setProperty("prev_text", axis)
+            combo.blockSignals(False)
+
+            if axis == "None":
+                self._disable_axis_fields(i)
+            else:
+                self._enable_axis_fields(i, axis)
+
+        # defaults prudents
+        self.size_edits[0].setText("100")
+        self.size_edits[1].setText("100")
+        self.pixel_edits[0].setText("64")
+        self.pixel_edits[1].setText("64")
+        self.offset_edits[0].setText("0")
+        self.offset_edits[1].setText("0")
+
+        self.dwell_edit.setText("1000")   # 1 ms
+        self.dwell_edit.setProperty("last_valid_text", "1000")
+
+        self.samples_per_pixel_edit.setText("1")
+        self.samples_per_pixel_edit.setProperty("last_valid_text", "1")
+
+        self.bidirectional_button.setChecked(False)
+        self.bidirectional_shift_edit.setText("0")
+        self.bidirectional_shift_edit.setEnabled(False)
+        self._set_disabled_lineedit_style(self.bidirectional_shift_edit)
+        self.bidirectional_shift_edit.setProperty("last_valid_text", "0")
+
+        for i in range(2):
+            self.size_edits[i].setProperty("last_valid_text", self.size_edits[i].text())
+            self.pixel_edits[i].setProperty("last_valid_text", self.pixel_edits[i].text())
+            self.offset_edits[i].setProperty("last_valid_text", self.offset_edits[i].text())
+            self._update_steps(self.size_edits[i], self.pixel_edits[i], self.step_edits[i])
+
+    def _apply_laser_mode_defaults(self):
+        laser_axes = ["X-Galvo", "Y-Galvo", "None", "None"]
+
+        for i, axis in enumerate(laser_axes):
+            combo = self.scan_dim_combos[i]
+            combo.blockSignals(True)
+            combo.setCurrentText(axis)
+            combo.setProperty("prev_text", axis)
+            combo.blockSignals(False)
+
+            if axis == "None":
+                self._disable_axis_fields(i)
+            else:
+                self._enable_axis_fields(i, axis)
+
+        self.size_edits[0].setText("100")
+        self.size_edits[1].setText("100")
+        self.pixel_edits[0].setText("256")
+        self.pixel_edits[1].setText("256")
+        self.offset_edits[0].setText("0")
+        self.offset_edits[1].setText("0")
+
+        self.dwell_edit.setText("10")
+        self.dwell_edit.setProperty("last_valid_text", "10")
+
+        self.samples_per_pixel_edit.setText("1")
+        self.samples_per_pixel_edit.setProperty("last_valid_text", "1")
+
+        self.bidirectional_button.setChecked(False)
+        self.bidirectional_shift_edit.setText("0")
+        self.bidirectional_shift_edit.setEnabled(False)
+        self._set_disabled_lineedit_style(self.bidirectional_shift_edit)
+        self.bidirectional_shift_edit.setProperty("last_valid_text", "0")
+
+        for i in range(2):
+            self.size_edits[i].setProperty("last_valid_text", self.size_edits[i].text())
+            self.pixel_edits[i].setProperty("last_valid_text", self.pixel_edits[i].text())
+            self.offset_edits[i].setProperty("last_valid_text", self.offset_edits[i].text())
+            self._update_steps(self.size_edits[i], self.pixel_edits[i], self.step_edits[i])
+    
+    def get_scan_kind(self) -> str:
+        return self.scan_kind
+
+    def _is_stage_axis(self, axis_name: str) -> bool:
+        return axis_name in ("X-Stage", "Y-Stage", "Z-Vcoil", "Polarization")
+    
+    def _reset_to_defaults(self):
+        """Réinitialise complètement le widget selon le mode courant."""
+        if self.scan_kind == "sample":
+            self._apply_sample_mode_defaults()
+        else:
+            self._apply_laser_mode_defaults()
+
+        self.rep_checkbox.setChecked(False)
+        self.rep_edit.setText("1")
+        self.delay_edit.setText("0")
+        self.rep_edit.setProperty("last_valid_text", "1")
+        self.delay_edit.setProperty("last_valid_text", "0")
+        self.laser_checkbox.setChecked(True)
+
+        self.rep_edit.setEnabled(False)
+        self.delay_edit.setEnabled(False)
+        self.laser_checkbox.setEnabled(False)
+
+        self._set_disabled_lineedit_style(self.rep_edit)
+        self._set_disabled_lineedit_style(self.delay_edit)
+
+        self._refresh_scan_axis_combos()
+        self._update_total_pixels()
+        self._update_scan_duration()
+        self._on_param_changed()
+
+    def _on_bidirectional_toggled(self, checked):
+        """Gère l'état du bouton Bidirectional."""
+        if checked:
+            self.bidirectional_shift_edit.setEnabled(True)
+            self._set_editable_lineedit_style(self.bidirectional_shift_edit)
+        else:
+            self.bidirectional_shift_edit.setText("0")
+            self.bidirectional_shift_edit.setEnabled(False)
+            self._set_disabled_lineedit_style(self.bidirectional_shift_edit)
+            self.bidirectional_shift_edit.setProperty("last_valid_text", "0")
+
+        self._on_param_changed()
+
+    def _set_editable_lineedit_style(self, line_edit: QLineEdit):
+        line_edit.setStyleSheet(EDITABLE_LINEEDIT_STYLE)
+
+    def _set_disabled_lineedit_style(self, line_edit: QLineEdit):
+        line_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
+    
+    def _on_rep_checkbox_toggled(self, checked):
+        """Active/désactive les champs liés aux répétitions avec contrôle de limite de dimensions."""
+        if checked:
+            # Activer Rep ajoute 1 dimension de scan.
+            if self._count_active_scan_dimensions() >= 4:
+                QMessageBox.warning(
+                    self,
+                    "Invalid configuration",
+                    "You cannot enable Repetitions here.\n"
+                    "Channel already reserves one dimension, so only 4 scan dimensions are allowed.\n"
+                    "Please disable one scan axis first."
+                )
+                self.rep_checkbox.blockSignals(True)
+                self.rep_checkbox.setChecked(False)
+                self.rep_checkbox.blockSignals(False)
+                checked = False
+
+        if checked:
+            self.rep_edit.setEnabled(True)
+            self.delay_edit.setEnabled(True)
+            self.laser_checkbox.setEnabled(True)
+
+            self._set_editable_lineedit_style(self.rep_edit)
+            self._set_editable_lineedit_style(self.delay_edit)
+        else:
+            self.rep_edit.setText("1")
+            self.delay_edit.setText("0")
+            self.laser_checkbox.setChecked(True)
+
+            self.rep_edit.setEnabled(False)
+            self.delay_edit.setEnabled(False)
+            self.laser_checkbox.setEnabled(False)
+
+            self._set_disabled_lineedit_style(self.rep_edit)
+            self._set_disabled_lineedit_style(self.delay_edit)
+
+        self._on_param_changed()
+    
+    def _on_update_view_clicked(self):
+        params = self.get_scan_parameters()
+        self.view_update_requested.emit(params)
+        self._reset_button_style()
+
+    def _update_scan_duration(self):
+        """Met à jour la durée de scan."""
+        try:
+            dwell_us = float(self.dwell_edit.text() or "0")
+            total_pixels = int(float(self.total_pixels_edit.text() or "0"))
+            samples_per_pixel = int(float(self.samples_per_pixel_edit.text() or "1"))
+
+            if dwell_us <= 0 or total_pixels <= 0 or samples_per_pixel <= 0:
+                self.duration_edit.setText("0")
+                return
+
+            # stepper instantané => même formule pour XY / XZ / YZ
+            base_duration = dwell_us * total_pixels * samples_per_pixel / 1_000_000
+
+            if self.rep_checkbox.isChecked():
+                repetitions = self._read_int_edit(self.rep_edit, 1)
+                delay = self._read_float_edit(self.delay_edit, 0.0)
+
+                if repetitions <= 0:
+                    repetitions = 1
+                if delay < 0:
+                    delay = 0.0
+
+                duration = base_duration * repetitions + max(0, repetitions - 1) * delay
+            else:
+                duration = base_duration
+
+            self.duration_edit.setText(f"{duration:.3f}")
+
+        except ValueError:
+            self.duration_edit.setText("0")
+
+    def validate_axis_scan_vs_limits(self, axis_name: str, conv: float, vmin: float, vmax: float) -> tuple[bool, str]:
+        # lire size/offset actuellement affichés dans la grille pour cet axe
+        size_edit = getattr(self, f"size_edit_{axis_name.replace('-', '_')}", None)
+        offset_edit = getattr(self, f"offset_edit_{axis_name.replace('-', '_')}", None)
+        if size_edit is None or offset_edit is None:
+            return True, ""  # si axe pas dans la grille (ou renommage), on skip
+
+        try:
+            size_um = float(size_edit.text().replace(",", "."))
+            rel_off_um = float(offset_edit.text().replace(",", "."))
+        except Exception:
+            return True, ""
+
+        current_pos_um = self._get_axis_current_position_um(axis_name)
+        center_um = current_pos_um + rel_off_um
+
+        lo_v = (center_um - size_um / 2.0) / conv
+        hi_v = (center_um + size_um / 2.0) / conv
+
+        if lo_v < vmin or hi_v > vmax:
+            return False, (
+                f"{axis_name}: scan requires [{lo_v:.2f}, {hi_v:.2f}] V "
+                f"but limits are [{vmin:.2f}, {vmax:.2f}] V "
+                f"(size={size_um}µm, current_pos={current_pos_um}µm, "
+                f"relative_offset={rel_off_um}µm, center={center_um}µm, conv={conv}µm/V)"
+            )
+        return True, ""
+    
+    def validate_axis_setting_values(
+        self,
+        axis_name: str,
+        conv: float,
+        vmin: float,
+        vmax: float,
+        turnback_px: int,
+        vel: float,
+        acc: float,
+        jerk: float
+    ) -> tuple[bool, str]:
+        if conv <= 0:
+            return False, f"{axis_name}: Conversion factor must be > 0 (µm/V)."
+
+        if vmin >= vmax:
+            return False, f"{axis_name}: Min Voltage must be < Max Voltage."
+
+        if turnback_px < 0:
+            return False, f"{axis_name}: Turnback Offset must be >= 0 (pixels)."
+
+        if vel <= 0:
+            return False, f"{axis_name}: Velocity max must be > 0 (mm/s)."
+
+        if acc <= 0:
+            return False, f"{axis_name}: Acceleration must be > 0 (mm/s²)."
+
+        if jerk <= 0:
+            return False, f"{axis_name}: Jerk must be > 0 (mm/s³)."
+
+        return True, ""
+    
+    def _on_param_changed_if_xy(self, changed_row: int):
+        ix, iy = self._get_xy_row_indices()
+        # si pas 2 axes actifs, on ne force pas le bouton (ou tu peux choisir de l’allumer)
+        if ix is None:
+            return
+        if changed_row in (ix, iy):
+            self._on_param_changed()   # allume le bouton
+    
+    def _get_xy_row_indices(self):
+        """Retourne les indices de lignes (0..3) qui correspondent aux 2 premiers axes actifs."""
+        active_rows = [i for i, cb in enumerate(self.scan_dim_combos) if cb.currentText() != "None"]
+        if len(active_rows) < 2:
+            return None, None
+        return active_rows[0], active_rows[1]
+
+    def get_xy_pixels(self):
+        """Retourne pix_x, pix_y (basé sur les 2 premiers axes actifs)."""
+        ix, iy = self._get_xy_row_indices()
+        if ix is None:
+            return 1, 1
+        try:
+            pix_x = int(float(self.pixel_edits[ix].text() or "1"))
+            pix_y = int(float(self.pixel_edits[iy].text() or "1"))
+        except ValueError:
+            pix_x, pix_y = 1, 1
+        return pix_x, pix_y
+    
+    def _read_float_edit(self, edit: QLineEdit, default: float = 0.0) -> float:
+        try:
+            return float((edit.text() or str(default)).replace(",", "."))
+        except Exception:
+            return float(default)
+
+    def _get_axis_current_position_um(self, axis_name: str) -> float:
+        """Retourne la position actuelle partagée de l'axe (issue du Positioner)."""
+        if axis_name == "None":
+            return 0.0
+        if self.axis_settings_manager is None:
+            return 0.0
+        return float(self.axis_settings_manager.get_axis_position_um(axis_name))
+    
+    def _read_int_edit(self, edit: QLineEdit, default: int = 1) -> int:
+        try:
+            return int(float((edit.text() or str(default)).replace(",", ".")))
+        except Exception:
+            return int(default)
+    
+    def _validate_scan_row_values(self, row_index: int) -> tuple[bool, str]:
+        axis_name = self.scan_dim_combos[row_index].currentText()
+
+        if axis_name == "None":
+            return True, ""
+
+        size_um = self._read_float_edit(self.size_edits[row_index], 0.0)
+        pixels = self._read_int_edit(self.pixel_edits[row_index], 1)
+        offset_um = self._read_float_edit(self.offset_edits[row_index], 0.0)
+        dwell_us = self._read_float_edit(self.dwell_edit, 0.0)
+
+        if size_um < 0:
+            return False, f"{axis_name}: Size must be >= 0 µm."
+        if pixels <= 0:
+            return False, f"{axis_name}: # Pix must be > 0."
+        if dwell_us <= 0:
+            return False, "Dwell Time must be > 0 µs."
+
+        if self._is_stage_axis(axis_name):
+            settings = self.axis_settings_manager.get_axis_settings(axis_name) if self.axis_settings_manager is not None else {}
+            defaults = STEPPER_AXIS_DEFAULTS.get(axis_name, {})
+
+            min_um = float(settings.get("min_um", defaults.get("min_um", -1e9)))
+            max_um = float(settings.get("max_um", defaults.get("max_um", 1e9)))
+            vel_max_mm_s = float(settings.get("vel_max", defaults.get("vel_max", 1.0)))
+
+            current_pos_um = self._get_axis_current_position_um(axis_name)
+            center_um = current_pos_um + offset_um
+
+            lo_um = center_um - size_um / 2.0
+            hi_um = center_um + size_um / 2.0
+
+            if lo_um < min_um or hi_um > max_um:
+                return False, (
+                    f"{axis_name}: requested scan exceeds stage limits.\n"
+                    f"Current position = {current_pos_um:.2f} µm, relative offset = {offset_um:.2f} µm\n"
+                    f"Requested range = [{lo_um:.2f}, {hi_um:.2f}] µm\n"
+                    f"Allowed range = [{min_um:.2f}, {max_um:.2f}] µm."
+                )
+
+            step_um = size_um / pixels if pixels > 0 else 0.0
+            dwell_s = dwell_us * 1e-6
+            speed_um_s = step_um / dwell_s if dwell_s > 0 else float("inf")
+            speed_mm_s = speed_um_s / 1000.0
+
+            if speed_mm_s > vel_max_mm_s:
+                return False, (
+                    f"{axis_name}: requested speed is too high.\n"
+                    f"Step = {step_um:.4f} µm, Dwell = {dwell_us:.4f} µs\n"
+                    f"Estimated speed = {speed_mm_s:.4f} mm/s\n"
+                    f"Velocity max = {vel_max_mm_s:.4f} mm/s."
+                )
+
+            return True, ""
+
+        s = self.axis_settings_manager.get_axis_settings(axis_name) if self.axis_settings_manager is not None else {}
+        conv = float(s.get("conv_um_per_v", 20.0))
+        vmin = float(s.get("vmin", -5.0))
+        vmax = float(s.get("vmax", 5.0))
+        vel_max_mm_s = float(s.get("vel_max", 1.0))
+
+        if conv <= 0:
+            return False, f"{axis_name}: invalid conversion factor."
+
+        current_pos_um = self._get_axis_current_position_um(axis_name)
+        center_um = current_pos_um + offset_um
+
+        lo_um = center_um - size_um / 2.0
+        hi_um = center_um + size_um / 2.0
+        lo_v = lo_um / conv
+        hi_v = hi_um / conv
+
+        if lo_v < vmin or hi_v > vmax:
+            max_span_um = (vmax - vmin) * conv
+            return False, (
+                f"{axis_name}: requested scan exceeds hardware limits.\n"
+                f"Current position = {current_pos_um:.2f} µm, relative offset = {offset_um:.2f} µm\n"
+                f"Scan center = {center_um:.2f} µm\n"
+                f"Requested range = [{lo_um:.2f}, {hi_um:.2f}] µm "
+                f"-> [{lo_v:.2f}, {hi_v:.2f}] V\n"
+                f"Allowed voltage range = [{vmin:.2f}, {vmax:.2f}] V\n"
+                f"With conv = {conv:.2f} µm/V, max full span is {max_span_um:.2f} µm."
+            )
+
+        step_um = size_um / pixels if pixels > 0 else 0.0
+        dwell_s = dwell_us * 1e-6
+        speed_um_s = step_um / dwell_s if dwell_s > 0 else float("inf")
+        speed_mm_s = speed_um_s / 1000.0
+
+        if speed_mm_s > vel_max_mm_s:
+            return False, (
+                f"{axis_name}: requested speed is too high.\n"
+                f"Step = {step_um:.4f} µm, Dwell = {dwell_us:.4f} µs\n"
+                f"Estimated speed = {speed_mm_s:.4f} mm/s\n"
+                f"Velocity max = {vel_max_mm_s:.4f} mm/s."
+            )
+
+        return True, ""
+    
+    def _validate_row_and_revert_if_needed(self, row_index: int):
+        axis_name = self.scan_dim_combos[row_index].currentText()
+        if axis_name == "None":
+            return
+
+        ok, msg = self._validate_scan_row_values(row_index)
+        if not ok:
+            QMessageBox.warning(self, "Invalid scan parameters", msg)
+
+            for edit in (self.size_edits[row_index], self.pixel_edits[row_index], self.offset_edits[row_index]):
+                old = edit.property("last_valid_text")
+                if old is not None:
+                    edit.blockSignals(True)
+                    edit.setText(str(old))
+                    edit.blockSignals(False)
+
+            self._update_steps(
+                self.size_edits[row_index],
+                self.pixel_edits[row_index],
+                self.step_edits[row_index]
+            )
+            self._update_total_pixels()
+            self._update_scan_duration()
+            return
+
+        # si c'est valide, on mémorise les valeurs
+        self.size_edits[row_index].setProperty("last_valid_text", self.size_edits[row_index].text())
+        self.pixel_edits[row_index].setProperty("last_valid_text", self.pixel_edits[row_index].text())
+        self.offset_edits[row_index].setProperty("last_valid_text", self.offset_edits[row_index].text())
+
+        self._update_steps(
+            self.size_edits[row_index],
+            self.pixel_edits[row_index],
+            self.step_edits[row_index]
+        )
+        self._update_total_pixels()
+        self._update_scan_duration()
+        self._on_param_changed()
+    
+    def _on_dwell_return_pressed(self):
+        dwell_us = self._read_float_edit(self.dwell_edit, 0.0)
+
+        if dwell_us <= 0:
+            QMessageBox.warning(self, "Invalid dwell time", "Dwell Time must be > 0 µs.")
+            old = self.dwell_edit.property("last_valid_text")
+            if old is not None:
+                self.dwell_edit.blockSignals(True)
+                self.dwell_edit.setText(str(old))
+                self.dwell_edit.blockSignals(False)
+            self._update_scan_duration()
+            return
+
+        # Vérifie toutes les lignes actives avec ce nouveau dwell
+        for i, combo in enumerate(self.scan_dim_combos):
+            if combo.currentText() == "None":
+                continue
+            ok, msg = self._validate_scan_row_values(i)
+            if not ok:
+                QMessageBox.warning(self, "Invalid dwell time", msg)
+                old = self.dwell_edit.property("last_valid_text")
+                if old is not None:
+                    self.dwell_edit.blockSignals(True)
+                    self.dwell_edit.setText(str(old))
+                    self.dwell_edit.blockSignals(False)
+                self._update_scan_duration()
+                return
+
+        self.dwell_edit.setProperty("last_valid_text", self.dwell_edit.text())
+        self._update_scan_duration()
+        self._on_param_changed()
+    
+    def _on_samples_per_pixel_return_pressed(self):
+        spp = self._read_int_edit(self.samples_per_pixel_edit, 1)
+
+        if spp <= 0:
+            QMessageBox.warning(self, "Invalid samples/pixel", "Samples / Pixel must be > 0.")
+            old = self.samples_per_pixel_edit.property("last_valid_text")
+            if old is not None:
+                self.samples_per_pixel_edit.blockSignals(True)
+                self.samples_per_pixel_edit.setText(str(old))
+                self.samples_per_pixel_edit.blockSignals(False)
+            self._update_scan_duration()
+            return
+
+        self.samples_per_pixel_edit.setProperty("last_valid_text", self.samples_per_pixel_edit.text())
+        self._update_scan_duration()
+        self._on_param_changed()
+
+    def get_scan_parameters(self):
+        """Récupère tous les paramètres de scan sous forme de dictionnaire."""
+        # Récupérer les valeurs de #Pix pour tous les axes actifs
+        pixel_values = []
+        for pixel_edit in self.pixel_edits:
+            pixel_values.append(int(float(pixel_edit.text() or "1")))
+
+        dwell_time = float(self.dwell_edit.text() or "0") / 1_000_000  # Convertir le dwell_time de microsecondes en secondes
+        samples_per_pixel = int(float(self.samples_per_pixel_edit.text() or "1"))
+
+        # Récupérer tous les axes actifs
+        active_axes = []
+        for combo in self.scan_dim_combos:
+            if combo.currentText() != "None":
+                active_axes.append(combo.currentText())
+
+        # Récupérer les valeurs des champs de conversion factor, min voltage, max voltage, etc.
+        conversion_factors = {}
+        min_voltages = {}
+        max_voltages = {}
+        turnback_offset = {}
+        velocity_max = {}
+        acceleration = {}
+        jerk = {}
+
+        for combo in self.scan_dim_combos:
+            axis_name = combo.currentText()
+            if axis_name == "None":
+                continue
+
+            s = self.axis_settings_manager.get_axis_settings(axis_name) if self.axis_settings_manager is not None else {}
+            conversion_factors[axis_name] = float(s.get("conv_um_per_v", 20))
+            min_voltages[axis_name] = float(s.get("vmin", -5.0))
+            max_voltages[axis_name] = float(s.get("vmax", 5.0))
+            turnback_offset[axis_name] = int(s.get("turnback_px", 0))
+            velocity_max[axis_name] = float(s.get("vel_max", 1.0))
+            acceleration[axis_name] = float(s.get("acc_max", 1.0))
+            jerk[axis_name] = float(s.get("jerk", 1.0))
+
+        # Récupérer les autres paramètres
+        bidirectional_scan = self.bidirectional_button.isChecked()
+        bidirectional_shift_px = self._read_int_edit(self.bidirectional_shift_edit, 0) if bidirectional_scan else 0
+        if self.rep_checkbox.isChecked():
+            repetitions = int(self.rep_edit.text() or "1")
+            delay_between_rep = float(self.delay_edit.text() or "0")
+            laser_off_between_rep = self.laser_checkbox.isChecked()
+        else:
+            repetitions = 1
+            delay_between_rep = 0.0
+            laser_off_between_rep = False
+
+        # Récupérer sizes/offsets/steps de manière robuste (par ligne)
+        rows = []
+        sizes = {}
+        offsets = {}    # offsets absolus utilisés par le scan
+        relative_offsets = {}    # offsets relatifs saisis dans le widget
+        current_positions = {}   # positions actuelles venant du Positioner
+        step_sizes = {}
+
+        axis_order = [cb.currentText() for cb in self.scan_dim_combos]
+
+        for i, combo in enumerate(self.scan_dim_combos):
+            axis = combo.currentText()
+
+            # pixels
+            try:
+                px = int(float(self.pixel_edits[i].text() or "1"))
+            except Exception:
+                px = 1
+
+            # size
+            try:
+                sz = float((self.size_edits[i].text() or "0").replace(",", "."))
+            except Exception:
+                sz = 0.0
+
+            # offset relatif saisi dans le ScanWidget
+            try:
+                rel_off = float((self.offset_edits[i].text() or "0").replace(",", "."))
+            except Exception:
+                rel_off = 0.0
+
+            current_pos = self._get_axis_current_position_um(axis) if axis != "None" else 0.0
+            off = current_pos + rel_off
+
+            # step (champ non éditable déjà calculé dans le widget)
+            try:
+                step = float((self.step_edits[i].text() or "0").replace(",", "."))
+            except Exception:
+                step = 0.0
+
+            rows.append({
+                "axis": axis,
+                "pixels": px,
+                "size_um": sz,
+                "offset_um": off,                # offset absolu utilisé par le scan
+                "relative_offset_um": rel_off,   # offset relatif saisi dans l'UI
+                "current_position_um": current_pos,
+                "step_um": step,
+            })
+
+            if axis != "None":
+                sizes[axis] = sz
+                offsets[axis] = off
+                relative_offsets[axis] = rel_off
+                current_positions[axis] = current_pos
+                step_sizes[axis] = step
+
+        total_pixels = 1
+        for row in rows:
+            if row["axis"] != "None":
+                total_pixels *= max(1, int(row["pixels"]))
+
+        return {
+            "rows": rows,
+            "pixel_values": pixel_values,
+            "dwell_time": dwell_time,
+            "samples_per_pixel": samples_per_pixel,
+            "scan_kind": self.scan_kind,
+            "pixel_source_kind": "analog_integrating",
+            "sample_settle_time_s": 0.0,
+            "active_axes": active_axes,
+            "axis_order": axis_order,
+            "conversion_factors": conversion_factors,
+            "min_voltages": min_voltages,
+            "max_voltages": max_voltages,
+            "velocity_max": velocity_max,
+            "acceleration_max": acceleration,
+            "jerk": jerk,
+            "turnback_offset": turnback_offset,
+            "bidirectional_scan": bidirectional_scan,
+            "bidirectional_shift_px": bidirectional_shift_px,
+            "repetitions": repetitions,
+            "delay_between_rep": delay_between_rep,
+            "laser_off_between_rep": laser_off_between_rep,
+            "sizes": sizes,
+            "offsets": offsets,                       # absolus
+            "relative_offsets": relative_offsets,     # UI
+            "current_positions": current_positions,   # positioner
+            "initial_relative_positions": dict(current_positions),
+            "step_sizes": step_sizes,
+            "total_pixels": total_pixels,
+        }
+
+    def _reset_button_style(self):
+        """Réinitialise le style du bouton quand on clique dessus."""
+        self.params_changed = False
+        self._update_button_style()
+
+    def _update_total_pixels(self):
+        """Calcule le nombre total de pixels en multipliant les dimensions actives."""
+        total_pixels = 1
+
+        for i, combo in enumerate(self.scan_dim_combos):
+            pixel_edit = self.pixel_edits[i]
+            if combo.currentText() != "None":
+                try:
+                    pixels = int(float(pixel_edit.text() or "1"))
+                    total_pixels *= pixels
+                except ValueError:
+                    pass
+
+        self.total_pixels_edit.setText(str(total_pixels))
+        self._update_scan_duration()
+
+    def _update_pixel_default(self, pixel_edit, selected_dim):
+        """Met à jour la valeur par défaut du champ # Pix selon l'axe sélectionné."""
+        if selected_dim == "None":
+            pixel_edit.setText("")
+        else:
+            pixel_edit.setText(self.default_values[selected_dim]["pixels"])
+
+        self._update_total_pixels()
+
+    def _is_xyzp_active(self) -> bool:
+        active_axes = [c.currentText() for c in self.scan_dim_combos if c.currentText() != "None"]
+        return ("Z-Vcoil" in active_axes) and ("Polarization" in active_axes)
+
+    def _on_scan_axis_changed(self, combo: QComboBox, pixel_edit: QLineEdit, new_text: str):
+        prev = combo.property("prev_text") or "None"
+        row_index = self.scan_dim_combos.index(combo)
+
+        allowed = self._get_allowed_axes_for_row(row_index)
+        if new_text not in allowed:
+            combo.blockSignals(True)
+            combo.setCurrentText(prev if prev in allowed else allowed[0])
+            combo.blockSignals(False)
+            return
+
+        prev_was_none = (prev == "None")
+        new_is_none = (new_text == "None")
+
+        if new_is_none:
+            self._disable_axis_fields(row_index)
+            combo.setProperty("prev_text", new_text)
+            self._refresh_scan_axis_combos()
+            self._update_total_pixels()
+            self._update_scan_duration()
+            self._on_param_changed()
+            return
+
+        if prev_was_none:
+            rep_dim = 1 if self.rep_checkbox.isChecked() else 0
+            active_axes_except_current = self._count_active_scan_dimensions_except(combo)
+
+            if active_axes_except_current + 1 + rep_dim > 4:
+                QMessageBox.warning(
+                    self,
+                    "Invalid configuration",
+                    "You cannot activate this scan axis.\n"
+                    "Channel already reserves one dimension, so only 4 scan dimensions are allowed.\n"
+                    "Please disable Repetitions or one scan axis first."
+                )
+                combo.blockSignals(True)
+                combo.setCurrentText(prev)
+                combo.blockSignals(False)
+                return
+
+        self.size_edits[row_index].setEnabled(True)
+        self.pixel_edits[row_index].setEnabled(True)
+        self.offset_edits[row_index].setEnabled(True)
+
+        self._set_editable_lineedit_style(self.size_edits[row_index])
+        self._set_editable_lineedit_style(self.pixel_edits[row_index])
+        self._set_editable_lineedit_style(self.offset_edits[row_index])
+
+        if prev != new_text:
+            self.size_edits[row_index].setText(self.default_values[new_text]["size"])
+            self.pixel_edits[row_index].setText(self.default_values[new_text]["pixels"])
+            self.offset_edits[row_index].setText(self.default_values[new_text]["offset"])
+
+        self.size_edits[row_index].setProperty("last_valid_text", self.size_edits[row_index].text())
+        self.pixel_edits[row_index].setProperty("last_valid_text", self.pixel_edits[row_index].text())
+        self.offset_edits[row_index].setProperty("last_valid_text", self.offset_edits[row_index].text())
+
+        self._update_steps(
+            self.size_edits[row_index],
+            self.pixel_edits[row_index],
+            self.step_edits[row_index]
+        )
+
+        combo.setProperty("prev_text", new_text)
+
+        self._refresh_scan_axis_combos()
+        self._update_total_pixels()
+        self._update_scan_duration()
+        self._on_param_changed()
+        
+    def _enable_axis_fields(self, row_index, axis):
+        """Active les champs pour les axes actifs avec les valeurs par défaut."""
+        self.size_edits[row_index].setEnabled(True)
+        self._set_editable_lineedit_style(self.size_edits[row_index])
+        self.pixel_edits[row_index].setEnabled(True)
+        self._set_editable_lineedit_style(self.pixel_edits[row_index])
+        self.offset_edits[row_index].setEnabled(True)
+        self._set_editable_lineedit_style(self.offset_edits[row_index])
+
+        self.size_edits[row_index].setText(self.default_values[axis]["size"])
+        self.pixel_edits[row_index].setText(self.default_values[axis]["pixels"])
+        self.offset_edits[row_index].setText(self.default_values[axis]["offset"])
+
+        self.size_edits[row_index].setProperty("last_valid_text", self.size_edits[row_index].text())
+        self.pixel_edits[row_index].setProperty("last_valid_text", self.pixel_edits[row_index].text())
+        self.offset_edits[row_index].setProperty("last_valid_text", self.offset_edits[row_index].text())
+
+        self._update_steps(self.size_edits[row_index], self.pixel_edits[row_index], self.step_edits[row_index])
+    
+    def _disable_axis_fields(self, row_index):
+        """Désactive et grise les champs pour les axes non actifs."""
+        self.size_edits[row_index].setEnabled(False)
+        self._set_disabled_lineedit_style(self.size_edits[row_index])
+        self.pixel_edits[row_index].setEnabled(False)
+        self._set_disabled_lineedit_style(self.pixel_edits[row_index])
+        self.offset_edits[row_index].setEnabled(False)
+        self._set_disabled_lineedit_style(self.offset_edits[row_index])
+
+        self.size_edits[row_index].clear()
+        self.pixel_edits[row_index].clear()
+        self.offset_edits[row_index].clear()
+        self.step_edits[row_index].clear()
+    
+    def _on_param_changed(self):
+        """Marque que les paramètres ont changé."""
+        self.params_changed = True
+        self._update_button_style()
+
+    def _update_steps(self, size_edit, pixel_edit, step_edit):
+        """Met à jour la taille de pas (µm) à partir de Size et # Pix."""
+        try:
+            size = float(size_edit.text() or "0")
+            pixel = float(pixel_edit.text() or "1")
+            if pixel != 0:
+                step = size / pixel
+                step_edit.setText(f"{step:.3f}")
+            else:
+                step_edit.setText("0")
+        except ValueError:
+            step_edit.setText("0")
+
+    def _update_button_style(self):
+        """Met à jour le style du bouton en fonction des changements."""
+        if hasattr(self, "params_changed") and self.params_changed:
+            self.apply_button.setStyleSheet(APPLY_BUTTON_STYLE)
+        else:
+            self.apply_button.setStyleSheet(BUTTON_STYLE)

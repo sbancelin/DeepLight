@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128"
+     xmlns="http://www.w3.org/2000/svg">
+
+  <g stroke="white" stroke-width="6" stroke-linecap="round">
+
+    <!-- Rayons verticaux -->
+    <line x1="64" y1="14" x2="64" y2="44"/>
+    <line x1="64" y1="84" x2="64" y2="114"/>
+
+    <!-- Rayon horizontal gauche -->
+    <line x1="14" y1="64" x2="44" y2="64"/>
+
+    <!-- Rayon laser droite (plus long) -->
+    <line x1="64" y1="64" x2="124" y2="64"/>
+
+    <!-- Diagonales légèrement plus courtes -->
+    <line x1="30" y1="30" x2="46" y2="46"/>
+    <line x1="82" y1="82" x2="98" y2="98"/>
+    <line x1="30" y1="98" x2="46" y2="82"/>
+    <line x1="82" y1="46" x2="98" y2="30"/>
+
+  </g>
+
+  <!-- Centre blanc -->
+  <circle cx="64" cy="64" r="12"
+          fill="white"
+          stroke="white"
+          stroke-width="2"/>
+
+</svg>

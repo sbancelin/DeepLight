@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="128"
+   height="128"
+   viewBox="0 0 128 128"
+   version="1.1"
+   id="svg28"
+   sodipodi:docname="Laser_icon_closed.svg"
+   inkscape:version="1.2.2 (732a01da63, 2022-12-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs32" />
+  <sodipodi:namedview
+     id="namedview30"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="7.375"
+     inkscape:cx="51.525424"
+     inkscape:cy="71.118644"
+     inkscape:window-width="2560"
+     inkscape:window-height="1351"
+     inkscape:window-x="-9"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="g24" />
+  <!-- Groupe principal -->
+  <g
+     stroke="#ffffff"
+     stroke-width="6"
+     stroke-linecap="round"
+     id="g24"
+     transform="translate(-6.6101695,0.40677966)">
+    <!-- Rayons principaux -->
+    <line
+       x1="64.13559"
+       y1="6.7457628"
+       x2="64.13559"
+       y2="36.745762"
+       id="line2" />
+    <line
+       x1="64.13559"
+       y1="84.745766"
+       x2="64.13559"
+       y2="114.74577"
+       id="line4" />
+    <line
+       x1="10.135593"
+       y1="60.745762"
+       x2="40.135593"
+       y2="60.745762"
+       id="line6" />
+    <line
+       x1="88.13559"
+       y1="60.745762"
+       x2="128.13557"
+       y2="60.745762"
+       id="line8" />
+    <!-- Rayons diagonaux -->
+    <line
+       x1="25.135593"
+       y1="21.745762"
+       x2="45.135593"
+       y2="41.745762"
+       id="line10" />
+    <line
+       x1="83.13559"
+       y1="79.745766"
+       x2="103.1356"
+       y2="99.745766"
+       id="line12" />
+    <line
+       x1="25.135593"
+       y1="99.745766"
+       x2="45.135593"
+       y2="79.745766"
+       id="line14" />
+    <line
+       x1="83.13559"
+       y1="41.745762"
+       x2="103.1356"
+       y2="21.745762"
+       id="line16" />
+    <!-- Rayons intermédiaires -->
+    <line
+       x1="64.13559"
+       y1="16.745762"
+       x2="64.13559"
+       y2="26.745762"
+       id="line18" />
+    <line
+       x1="64.13559"
+       y1="94.745766"
+       x2="64.13559"
+       y2="104.74577"
+       id="line20" />
+    <!-- Ligne laser droite -->
+    <line
+       x1="64.275055"
+       y1="60.745762"
+       x2="131.25037"
+       y2="60.745762"
+       id="line22"
+       style="stroke-width:6.13788" />
+  </g>
+  <!-- Centre -->
+  <circle
+     cx="57.525421"
+     cy="61.152538"
+     r="14"
+     fill="#ffffff"
+     stroke="#ffffff"
+     stroke-width="4"
+     id="circle26" />
+</svg>

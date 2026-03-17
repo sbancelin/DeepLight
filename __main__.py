@@ -1,0 +1,54 @@
+print("Launch Software MultiPhoton Microscope")
+
+if __name__ == "__main__":
+    import sys
+    import os
+    import ctypes
+    import argparse
+    from pathlib import Path
+    from .gui.managers.Microscopes import create_microscope_backend
+
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
+
+    parser = argparse.ArgumentParser(description="Launch DeepLight")
+    parser.add_argument(
+        "--backend",
+        choices=["mock", "nidaq"],
+        default="mock",
+        help="Microscope backend to use"
+    )
+    parser.add_argument(
+        "--positioner-backend",
+        choices=["mock", "hardware"],
+        default=None,
+        help="Positioner backend to use"
+    )
+
+    args, qt_args = parser.parse_known_args()
+
+    path = Path(__file__).parent.absolute()
+    os.chdir(path)
+
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "DeepLight.Microscope.App.1.0"
+        )
+
+    from .gui import MainWindow
+
+    os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+
+    qt_argv = [sys.argv[0]] + qt_args
+    if sys.platform == "win32":
+        qt_argv += ["-platform", "windows:darkmode=2"]
+
+    app = QApplication(qt_argv)
+    app.setStyle("Fusion")
+    app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+
+    microscope_backend = create_microscope_backend(args.backend)
+    window = MainWindow(args, microscope_backend=microscope_backend)
+    window.show()
+
+    sys.exit(app.exec())
