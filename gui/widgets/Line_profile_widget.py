@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import (QVBoxLayout, QWidget, QLabel, QHBoxLayout, QPushButton, QComboBox, QSizePolicy)
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
 
@@ -66,7 +67,8 @@ class LineProfileWidget(QWidget):
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(6)
 
-        self.toggle_btn = QPushButton("Line Profile")
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setIcon(QIcon("gui/Icons/line.svg"))
         self.toggle_btn.setCheckable(True)
         self.toggle_btn.setFixedHeight(22)
         self.toggle_btn.setStyleSheet(button_style)

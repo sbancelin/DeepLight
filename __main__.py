@@ -18,12 +18,6 @@ if __name__ == "__main__":
         default="mock",
         help="Microscope backend to use"
     )
-    parser.add_argument(
-        "--positioner-backend",
-        choices=["mock", "hardware"],
-        default=None,
-        help="Positioner backend to use"
-    )
 
     args, qt_args = parser.parse_known_args()
 

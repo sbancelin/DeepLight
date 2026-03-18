@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QMainWindow
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QGuiApplication
 from PySide6.QtCore import Slot, QTimer, Qt
 
 import numpy as np
@@ -11,7 +11,7 @@ from .managers.Acquisition_Manager import AcquisitionManager
 from .managers.Hardware_Manager import HardwareManager
 from .managers.Save_Manager import SaveManager
 from .managers.Scan_manager import ScanManager
-from .managers.Axis_Settings_Manager import AxisSettingsManager
+from .managers.Settings_Manager import SettingsManager
 from .managers.Stitching_Manager import StitchingManager
 
 
@@ -31,17 +31,30 @@ class MainWindow(QMainWindow):
 
         self.args = args
         self.backend_name = getattr(args, "backend", "mock")
-        self.positioner_backend_name = getattr(args, "positioner_backend", None) or self.backend_name
         self.microscope_backend = microscope_backend
 
         self.ui = Ui_MainWindowDesign()
         self.ui.setupUi(self)  # Appeler setupUi pour initialiser les attributs
-        self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        #self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
-        self.axis_settings_manager = AxisSettingsManager()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry()
+
+        half_width = available.width() // 2
+
+        self.showNormal()
+        self.setGeometry(
+            available.x() + half_width,
+            available.y() + 30,
+            half_width,
+            available.height() - 30
+        )
+
+        self.settings_manager = SettingsManager()
         
-        self.ui.scan_widget.set_axis_settings_manager(self.axis_settings_manager)
-        self.ui.positioner_widget.set_axis_settings_manager(self.axis_settings_manager)
+        self.ui.scan_widget.set_settings_manager(self.settings_manager)
+        self.ui.positioner_widget.set_settings_manager(self.settings_manager)
+        self.ui.laser_widget.set_settings_manager(self.settings_manager)
 
         self.setDockOptions(
             QMainWindow.AnimatedDocks |
@@ -61,10 +74,11 @@ class MainWindow(QMainWindow):
         
         # Définir le titre de la fenêtre
         self.setWindowTitle(f"DeepLight [{self.backend_name.upper()}]")
-        self.setWindowIcon(QIcon("./gui/Icon/Microscope_icon_green.ico"))
+        self.setWindowIcon(QIcon("./gui/Icons/Microscope_icon_green.ico"))
 
         self.user_shutter_override = None  # None=no override, True/False=user forced state
-        self.hardware = HardwareManager(backend_name=self.positioner_backend_name, parent=self)
+        self.hardware = HardwareManager(backend_name=self.backend_name, settings_manager=self.settings_manager, parent=self)
+        self._connect_laser_controls()
         self.save_manager = SaveManager()
         self.positioner_manager = self.hardware.create_positioner_manager(parent=self)
         self.scan_manager = ScanManager(self)
@@ -107,7 +121,6 @@ class MainWindow(QMainWindow):
         self._update_frc_channels()
         self.ui.frc_widget.request_single_frame.connect(self.on_frc_request_single_frame)
         self.acquisition_manager.shutter_requested.connect(self.on_shutter_requested)
-
         self.acquisition_manager.shutter_requested.connect(self.hardware.set_shutter)
         self.acquisition_manager.acquisition_done.connect(self.on_acquisition_done)
         self.ui.detector_widget.detectors_changed.connect(lambda _: self._update_estimated_stack_size())
@@ -132,10 +145,7 @@ class MainWindow(QMainWindow):
             image_getter=lambda ch: self.last_images.get(ch),
             parent=self
         )
-
-
         self._stitching_geom_um = (1.0, 1.0)
-
         # --- Connexions StitchingManager -> UI / MainWindow ---
         self.stitching_manager.request_preview_single.connect(self._start_stitch_preview_single)
         self.stitching_manager.request_global_stop.connect(self._stop_stitching_hardware)
@@ -162,6 +172,19 @@ class MainWindow(QMainWindow):
         self._visualizer_flush_timer.timeout.connect(self._flush_visualizers)
                 
         self.init_ready = True  # Marque l'initialisation comme terminée     
+    
+    def _on_laser_power_changed(self, laser_name: str, value: int):
+        cfg = self.settings_manager.get_laser_settings(laser_name)
+
+        speed = int(cfg.get("speed", 429410))
+        steps_per_degree = float(cfg.get("steps_per_degree", 1919.14))
+
+        self.hardware.set_laser_power_percent(
+            laser_name,
+            float(value),
+            speed=speed,
+            steps_per_degree=steps_per_degree,
+        )
     
     @Slot()
     def on_stitch_acquire_clicked(self):
@@ -710,7 +733,7 @@ class MainWindow(QMainWindow):
         btn.blockSignals(False)
 
         if open_:
-            btn.setIcon(QIcon("./gui/Icon/laser_icon_open.svg"))
+            btn.setIcon(QIcon("./gui/Icons/laser_icon_open.svg"))
         else:
             btn.setIcon(QIcon(None))
 
@@ -721,6 +744,7 @@ class MainWindow(QMainWindow):
         Si acquisition en cours -> override.
         Sinon -> commande normale.
         """
+        print(f"[MainWindow] shutterButtonClicked({checked})")
         if self.acquisition_manager.is_running:
             self.user_shutter_override = checked
         else:
@@ -996,3 +1020,35 @@ class MainWindow(QMainWindow):
             self.positioner_manager.stop_all()
         except Exception:
             pass
+
+    def _connect_laser_controls(self):
+        lw = self.ui.laser_widget
+
+        for laser_name in ("Mira 900", "Tumecs"):
+            controls = lw.laser_controls.get(laser_name)
+            if not controls:
+                continue
+
+            slider = controls["slider"]
+            spin = controls["spin"]
+            button = controls["button"]
+
+            self.ui.laser_widget.laser_power_changed.connect(self._on_laser_power_changed)
+
+            # bouton ignoré pour Mira/Tumecs
+            button.setChecked(True)
+            button.setEnabled(False)
+
+    def _on_laser_power_changed(self, laser_name: str, value: int):
+        cfg = self.settings_manager.get_laser_settings(laser_name)
+
+        if "speed" not in cfg or "steps_per_degree" not in cfg or "offset_deg" not in cfg:
+            raise RuntimeError(f"Missing laser settings for {laser_name!r}")
+
+        self.hardware.set_laser_power_percent(
+            laser_name,
+            float(value),
+            speed=int(cfg["speed"]),
+            steps_per_degree=float(cfg["steps_per_degree"]),
+            offset_deg=float(cfg["offset_deg"]),
+        )

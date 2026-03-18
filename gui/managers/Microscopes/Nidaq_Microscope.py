@@ -5,7 +5,7 @@ import numpy as np
 from PySide6.QtCore import Slot
 
 from .Microscope_Backend_Base import MicroscopeBackendBase
-from .Hardware_Manager import (
+from ..Hardware_Manager import (
     NI_DEVICE_NAME,
     NI_AO_X,
     NI_AO_Y,
@@ -102,9 +102,18 @@ class NidaqMicroscope(MicroscopeBackendBase):
             )
 
     def _terminal_config(self):
-        if NI_AI_TERMINAL_MODE.upper() == "DIFF":
-            return TerminalConfiguration.DIFFERENTIAL
-        return TerminalConfiguration.RSE
+        mode = str(NI_AI_TERMINAL_MODE).upper()
+
+        if mode == "DIFF":
+            return TerminalConfiguration.DIFF
+        if mode == "NRSE":
+            return TerminalConfiguration.NRSE
+        if mode == "RSE":
+            return TerminalConfiguration.RSE
+        if mode in {"PSEUDO_DIFF", "PSEUDODIFF"}:
+            return TerminalConfiguration.PSEUDO_DIFF
+
+        raise ValueError(f"Unsupported NI_AI_TERMINAL_MODE: {NI_AI_TERMINAL_MODE!r}")
 
     def configure(self, scan_parameters: dict):
         super().configure(scan_parameters)
@@ -290,6 +299,23 @@ class NidaqMicroscope(MicroscopeBackendBase):
         ao_max = max(x_max, y_max)
         return ao_min, ao_max
 
+    def _write_ao_idle_zero(self):
+        """
+        Force immédiatement les sorties AO X/Y à 0 V.
+        Utilisé en fin de run pour éviter de laisser les galvos
+        sur la dernière valeur du waveform fini.
+        """
+        self._require_nidaq()
+
+        ao_min, ao_max = self._ao_voltage_limits()
+
+        with nidaqmx.Task("DL_AO_IdleZero") as ao_task:
+            ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
+            ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
+
+            # écriture software-timed d'un sample par canal
+            ao_task.write([0.0, 0.0], auto_start=True)
+    
     def _active_ai_count(self) -> int:
         return min(2, max(1, len(self.channels)))
 
@@ -311,6 +337,10 @@ class NidaqMicroscope(MicroscopeBackendBase):
         n_samples: int,
         ao_x: np.ndarray,
         ao_y: np.ndarray,
+        arrays: dict[str, np.ndarray],
+        plan: ExecutionPlan,
+        frame_useful_samples: int,
+        chunk_samples: int = 4096,
     ) -> dict[str, np.ndarray]:
         self._require_nidaq()
 
@@ -323,7 +353,18 @@ class NidaqMicroscope(MicroscopeBackendBase):
         ao_block = np.vstack([ao_x, ao_y]).astype(np.float64, copy=False)
         ai_count = self._active_ai_count()
 
-        ai_result = np.zeros((ai_count, int(n_samples)), dtype=np.float64)
+        reconstruction_plan = self._build_frame_reconstruction_plan(int(plan.samples_per_pixel))
+        builder = FrameBuilder(
+            arrays=arrays,
+            channels=self.channels,
+            reconstruction_plan=reconstruction_plan,
+        )
+        builder.reset()
+
+        collected = {ch: [] for ch in self.channels}
+        remaining = int(n_samples)
+        chunk_samples = max(1, int(chunk_samples))
+        sample_cursor = int(sample_start)
 
         with nidaqmx.Task("DL_AO_Frame") as ao_task, nidaqmx.Task("DL_AI_Frame") as ai_task:
             ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
@@ -367,43 +408,45 @@ class NidaqMicroscope(MicroscopeBackendBase):
             ai_task.start()
             ao_task.start()
 
+            while remaining > 0 and not self.acquisition_stop_event.is_set():
+                take = min(chunk_samples, remaining)
+                ai_chunk = np.zeros((ai_count, int(take)), dtype=np.float64)
+
+                reader.read_many_sample(
+                    ai_chunk,
+                    number_of_samples_per_channel=int(take),
+                    timeout=WAIT_INFINITELY,
+                )
+
+                mapped = self._map_ai_to_channels(ai_chunk, int(take))
+
+                for ch in self.channels:
+                    collected[ch].append(mapped[ch])
+
+                trimmed = {}
+                for ch in self.channels:
+                    arr = mapped[ch]
+                    useful_remaining = max(0, int(frame_useful_samples) - int(builder.raw_samples_consumed))
+                    if useful_remaining <= 0:
+                        trimmed[ch] = np.zeros((0,), dtype=np.float64)
+                    elif arr.size > useful_remaining:
+                        trimmed[ch] = arr[:useful_remaining]
+                    else:
+                        trimmed[ch] = arr
+
+                builder.consume_samples(trimmed)
+
+                self.samples_progress.emit(int(take))
+                sample_cursor += int(take)
+                self._emit_step_events_up_to(int(sample_cursor))
+                remaining -= int(take)
+
             ao_task.wait_until_done(WAIT_INFINITELY)
-            reader.read_many_sample(
-                ai_result,
-                number_of_samples_per_channel=int(n_samples),
-                timeout=WAIT_INFINITELY,
-            )
 
-        self.samples_progress.emit(int(n_samples))
-        self._emit_step_events_up_to(int(sample_start + n_samples))
-
-        return self._map_ai_to_channels(ai_result, int(n_samples))
-
-    def _reconstruct_frame(
-        self,
-        *,
-        arrays: dict[str, np.ndarray],
-        samples_by_channel: dict[str, np.ndarray],
-        plan: ExecutionPlan,
-        frame_useful_samples: int,
-    ) -> dict[str, np.ndarray]:
-        reconstruction_plan = self._build_frame_reconstruction_plan(int(plan.samples_per_pixel))
-        builder = FrameBuilder(
-            arrays=arrays,
-            channels=self.channels,
-            reconstruction_plan=reconstruction_plan,
-        )
-        builder.reset()
-
-        trimmed = {}
-        for ch in self.channels:
-            arr = np.asarray(samples_by_channel.get(ch, np.zeros((0,), dtype=np.float64)), dtype=np.float64)
-            if arr.size > frame_useful_samples:
-                arr = arr[:frame_useful_samples]
-            trimmed[ch] = arr
-
-        builder.consume_samples(trimmed)
-        return builder.get_shown_images()
+        return {
+            ch: np.concatenate(collected[ch]).astype(np.float64, copy=False) if collected[ch] else np.zeros((0,), dtype=np.float64)
+            for ch in self.channels
+        }
 
     def _acquire_plan_frame(
         self,
@@ -419,24 +462,23 @@ class NidaqMicroscope(MicroscopeBackendBase):
         ao_x = np.asarray(plan.ao_x[frame_start:frame_stop], dtype=np.float64)
         ao_y = np.asarray(plan.ao_y[frame_start:frame_stop], dtype=np.float64)
 
-        samples_by_channel = self._read_frame_from_ni(
-            sample_start=frame_start,
-            n_samples=n_samples,
-            ao_x=ao_x,
-            ao_y=ao_y,
-        )
-
         frame_useful_samples = int((plan.metadata or {}).get(
             "frame_useful_samples",
             self.dim_fast * self.dim_slow * max(1, int(plan.samples_per_pixel))
         ))
 
-        return self._reconstruct_frame(
+        self._read_frame_from_ni(
+            sample_start=frame_start,
+            n_samples=n_samples,
+            ao_x=ao_x,
+            ao_y=ao_y,
             arrays=arrays,
-            samples_by_channel=samples_by_channel,
             plan=plan,
             frame_useful_samples=frame_useful_samples,
+            chunk_samples=4096,
         )
+
+        return {ch: arrays[ch].copy() for ch in self.channels}
 
     def _run_acquisition_from_plan(self):
         plan = self.execution_plan
@@ -717,15 +759,23 @@ class NidaqMicroscope(MicroscopeBackendBase):
     def run_single(self):
         self.acquisition_stop_event.clear()
 
-        if self.scan_kind == "sample":
-            shown_images = self._run_sample_frame(rep_index=0)
-            if not self.acquisition_stop_event.is_set():
-                self.frame_ready.emit(0, tuple(), shown_images)
-            self.acquisition_finished.emit()
-            return
+        try:
+            if self.scan_kind == "sample":
+                shown_images = self._run_sample_frame(rep_index=0)
+                if not self.acquisition_stop_event.is_set():
+                    self.frame_ready.emit(0, tuple(), shown_images)
+                return
 
-        self._run_preview_from_plan()
-        self.acquisition_finished.emit()
+            self._run_preview_from_plan()
+
+        finally:
+            if self.scan_kind == "laser":
+                try:
+                    self._write_ao_idle_zero()
+                except Exception as e:
+                    self._log(f"AO idle zero failed after single: {e}")
+
+            self.acquisition_finished.emit()
 
     @Slot()
     def run_continuous(self):
@@ -762,3 +812,9 @@ class NidaqMicroscope(MicroscopeBackendBase):
     def stop(self):
         self._log("stop")
         super().stop()
+
+        if self.scan_kind == "laser":
+            try:
+                self._write_ao_idle_zero()
+            except Exception as e:
+                self._log(f"AO idle zero failed on stop: {e}")

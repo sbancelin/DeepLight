@@ -172,8 +172,8 @@ def setup_scan_settings_dialog(dialog):
         defaults = SCAN_AXIS_DEFAULTS.get(axis_name, {})
 
         cur_conv = axis_cfg.get("conv_um_per_v", defaults.get("conv_um_per_v"))
-        cur_vmin = axis_cfg.get("vmin", defaults.get("vmin", -5.0))
-        cur_vmax = axis_cfg.get("vmax", defaults.get("vmax", 5.0))
+        cur_vmin = axis_cfg.get("vmin", defaults.get("vmin", -10.0))
+        cur_vmax = axis_cfg.get("vmax", defaults.get("vmax", 10.0))
         cur_tb   = axis_cfg.get("turnback_px", defaults.get("turnback_px", 0))
         cur_vel  = axis_cfg.get("vel_max", defaults.get("vel_max", 1.0))
         cur_acc  = axis_cfg.get("acc_max", defaults.get("acc_max", 1.0))
@@ -742,7 +742,7 @@ class ScanWidget(QWidget):
         setup_scan_settings_dialog(dialog)
         dialog.exec()
     
-    def set_axis_settings_manager(self, manager):
+    def set_settings_manager(self, manager):
         """Injection du AxisSettingsManager partagé."""
         self.axis_settings_manager = manager
 
@@ -1459,8 +1459,8 @@ class ScanWidget(QWidget):
 
             s = self.axis_settings_manager.get_axis_settings(axis_name) if self.axis_settings_manager is not None else {}
             conversion_factors[axis_name] = float(s.get("conv_um_per_v", 20))
-            min_voltages[axis_name] = float(s.get("vmin", -5.0))
-            max_voltages[axis_name] = float(s.get("vmax", 5.0))
+            min_voltages[axis_name] = float(s.get("vmin", -10.0))
+            max_voltages[axis_name] = float(s.get("vmax", 10.0))
             turnback_offset[axis_name] = int(s.get("turnback_px", 0))
             velocity_max[axis_name] = float(s.get("vel_max", 1.0))
             acceleration[axis_name] = float(s.get("acc_max", 1.0))

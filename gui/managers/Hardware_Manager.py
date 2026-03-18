@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import os
 import time
-from decimal import Decimal
+import clr  # pythonnet
+from System.Globalization import CultureInfo
+from System import Decimal as SystemDecimal
+from pipython import GCSDevice, GCSError
+
 from typing import Optional
 
 from PySide6.QtCore import QObject, Slot
@@ -27,12 +31,15 @@ NI_AI_MIN_V = -10.0
 NI_AI_MAX_V = 10.0
 NI_AI_TERMINAL_MODE = "DIFF"  # requested: differential
 
-# Thorlabs serials (replace later)
-THORLABS_SHUTTER_SERIAL = "0000"
-THORLABS_ROTATOR_SERIAL = "0000"
+# Thorlabs serials
+THORLABS_SHUTTER_SERIAL = "68800404"
+THORLABS_ROTATOR_SERIALS = {
+    "Mira 900": "27269600",
+    "Tumecs": "27005331",
+}
 
 # PI serial (replace later)
-PI_V308_SERIAL = "0000"
+PI_V308_SERIAL = "123041734"
 
 # Kinesis path
 THORLABS_KINESIS_PATH = r"C:\Program Files\Thorlabs\Kinesis"
@@ -82,6 +89,7 @@ class _KinesisLoader:
     _loaded = False
 
     DeviceManagerCLI = None
+    DeviceConfiguration = None
     KCubeSolenoid = None
     SolenoidStatus = None
     KCubeDCServo = None
@@ -103,23 +111,15 @@ class _KinesisLoader:
             )
 
         clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.DeviceManagerCLI.dll"))
+        clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.GenericMotorCLI.dll"))
         clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.SolenoidCLI.dll"))
+        clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.DCServoCLI.dll"))
 
-        # Optional controller families for the PRM mount
-        try:
-            clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.DCServoCLI.dll"))
-        except Exception:
-            pass
-
-        try:
-            clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.StepperMotorCLI.dll"))
-        except Exception:
-            pass
-
-        from Thorlabs.MotionControl.DeviceManagerCLI import DeviceManagerCLI
+        from Thorlabs.MotionControl.DeviceManagerCLI import DeviceManagerCLI, DeviceConfiguration
         from Thorlabs.MotionControl.KCube.SolenoidCLI import KCubeSolenoid, SolenoidStatus
 
         cls.DeviceManagerCLI = DeviceManagerCLI
+        cls.DeviceConfiguration = DeviceConfiguration
         cls.KCubeSolenoid = KCubeSolenoid
         cls.SolenoidStatus = SolenoidStatus
 
@@ -166,13 +166,14 @@ class _ThorlabsShutterController:
 
     def set_open(self, open_: bool):
         if not self.connected:
-            self.connect()
+            raise RuntimeError("Shutter is not connected.")
 
         state = (
             _KinesisLoader.SolenoidStatus.OperatingStates.Active
             if bool(open_)
             else _KinesisLoader.SolenoidStatus.OperatingStates.Inactive
         )
+
         self.device.SetOperatingState(state)
 
     def close(self):
@@ -288,7 +289,6 @@ class _PIVoiceCoilController:
 class _ThorlabsRotationController:
     """
     Best-effort V1 adapter for the PRM1MZ8 + K-cube.
-
     Important:
     - the exact Kinesis class can differ depending on the controller family
     - change THORLABS_ROTATOR_CONTROLLER_KIND if needed
@@ -303,45 +303,44 @@ class _ThorlabsRotationController:
     def connect(self):
         _KinesisLoader.ensure_loaded()
 
-        if THORLABS_ROTATOR_CONTROLLER_KIND == "KCubeStepperMotor":
-            device_cls = _KinesisLoader.KCubeStepperMotor
-        else:
-            device_cls = _KinesisLoader.KCubeDCServo
-
-        if device_cls is None:
+        if THORLABS_ROTATOR_CONTROLLER_KIND != "KCubeDCServo":
             raise RuntimeError(
-                f"Kinesis class {THORLABS_ROTATOR_CONTROLLER_KIND!r} is not available. "
-                "Adjust THORLABS_ROTATOR_CONTROLLER_KIND or install the matching Kinesis DLLs."
+                f"Unsupported controller kind for KDC101: {THORLABS_ROTATOR_CONTROLLER_KIND!r}"
             )
 
-        create_name = None
-        for name in dir(device_cls):
-            if name.startswith("Create"):
-                create_name = name
-                break
+        device_cls = _KinesisLoader.KCubeDCServo
+        if device_cls is None:
+            raise RuntimeError(
+                "KCubeDCServo class is unavailable. "
+                "Check Kinesis installation and loaded DLLs."
+            )
 
-        if create_name is None:
-            raise RuntimeError(f"Could not find a Kinesis Create* factory on {device_cls!r}.")
-
-        self.device = getattr(device_cls, create_name)(self.serial)
+        self.device = device_cls.CreateKCubeDCServo(self.serial)
         self.device.Connect(self.serial)
 
         if not self.device.IsSettingsInitialized():
             self.device.WaitForSettingsInitialized(10000)
 
+        use_device_settings = _KinesisLoader.DeviceConfiguration.DeviceSettingsUseOptionType.UseDeviceSettings
+        self.device.LoadMotorConfiguration(self.serial, use_device_settings)
+
         self.device.StartPolling(250)
+        time.sleep(0.25)
+
         self.device.EnableDevice()
+        time.sleep(0.25)
+
         self.connected = True
 
-    def move_to_angle_deg(self, angle_deg: float, blocking: bool = True):
+    def move_to_angle_deg(self, angle_deg: float, speed: int, steps_per_degree: float, blocking: bool = True):
         if not self.connected:
             self.connect()
 
         angle_deg = max(MIRA_ROTATOR_MIN_DEG, min(MIRA_ROTATOR_MAX_DEG, float(angle_deg)))
         self._last_angle_deg = angle_deg
 
-        # Many Kinesis motor classes accept Decimal for MoveTo in real-world units.
-        self.device.MoveTo(Decimal(str(angle_deg)), 60000 if blocking else 0)
+        target = SystemDecimal.Parse(str(angle_deg), CultureInfo.InvariantCulture)
+        self.device.MoveTo(target, 60000 if blocking else 0)
 
     def stop(self):
         if self.connected and self.device is not None:
@@ -357,10 +356,18 @@ class _ThorlabsRotationController:
     def get_angle_deg(self) -> float:
         return float(self._last_angle_deg)
 
-    def set_power_percent(self, percent: float):
+    def set_power_percent(self, percent: float, speed: int, steps_per_degree: float, offset_deg: float):
         percent = max(MIRA_POWER_MIN_PERCENT, min(MIRA_POWER_MAX_PERCENT, float(percent)))
-        angle = MIRA_ROTATOR_MIN_DEG + (percent / 100.0) * (MIRA_ROTATOR_MAX_DEG - MIRA_ROTATOR_MIN_DEG)
-        self.move_to_angle_deg(angle, blocking=True)
+        offset_deg = float(offset_deg)
+
+        angle = offset_deg + (percent / 100.0) * (MIRA_ROTATOR_MAX_DEG - MIRA_ROTATOR_MIN_DEG)
+
+        self.move_to_angle_deg(
+            angle,
+            speed=int(speed),
+            steps_per_degree=float(steps_per_degree),
+            blocking=True,
+        )
 
     def get_power_percent(self) -> float:
         angle = self.get_angle_deg()
@@ -385,11 +392,9 @@ class _ThorlabsRotationController:
 class RealHardwarePositionerManager(PositionerManager):
     """
     Real V1 hardware positioner manager.
-
     Implemented:
     - z -> PI V-308 via USB
     - p -> Thorlabs rotation mount (degrees)
-
     Not implemented in this V1:
     - x / y stages, because no hardware/controller was provided for them
     """
@@ -552,35 +557,118 @@ class HardwareManager(QObject):
     - serials are hard-coded here for easy editing
     """
 
-    def __init__(self, backend_name: str = "mock", parent=None):
+    def __init__(self, backend_name: str = "mock", settings_manager=None, parent=None):
         super().__init__(parent)
         self.backend_name = (backend_name or "mock").lower()
         self._positioner_axes = ["x", "y", "z", "p"]
+        self.settings_manager = settings_manager
 
         self._shutter = None
         self._z_controller = None
-        self._rotator = None
+        self._rotators = {}
 
+        self._devices_initialized = False
+        self._shutter_failed = False
+        self._z_failed = False
+        self._rotator_failed = {}
+
+        if self.backend_name == "nidaq":
+            self._ensure_real_devices()
+
+    def _get_laser_runtime_settings(self, laser_name: str) -> dict:
+        if self.settings_manager is None:
+            raise RuntimeError("HardwareManager has no settings_manager.")
+
+        cfg = self.settings_manager.get_laser_settings(laser_name)
+        if not cfg:
+            raise RuntimeError(f"Missing laser settings for {laser_name!r}")
+
+        required = ("speed", "steps_per_degree", "offset_deg")
+        for key in required:
+            if key not in cfg:
+                raise RuntimeError(f"Missing laser setting {key!r} for {laser_name!r}")
+
+        return cfg
+    
+    def _is_real_backend(self) -> bool:
+        return self.backend_name == "nidaq"
+    
     def _ensure_real_devices(self):
         if self.backend_name != "nidaq":
+            return
+
+        if self._devices_initialized:
             return
 
         if self._shutter is None:
             self._shutter = _ThorlabsShutterController(THORLABS_SHUTTER_SERIAL)
 
         if self._z_controller is None:
+            print(f"[HardwareManager] Creating PI V-308 controller serial={PI_V308_SERIAL}")
             self._z_controller = _PIVoiceCoilController(PI_V308_SERIAL)
 
-        if self._rotator is None:
-            self._rotator = _ThorlabsRotationController(THORLABS_ROTATOR_SERIAL)
+        for laser_name, serial in THORLABS_ROTATOR_SERIALS.items():
+            if laser_name not in self._rotators:
+                print(f"[HardwareManager] Creating rotator for {laser_name} serial={serial}")
+                self._rotators[laser_name] = _ThorlabsRotationController(serial)
+
+        try:
+            if self._shutter is not None and not self._shutter.connected:
+                print(f"[HardwareManager] Connecting shutter serial={THORLABS_SHUTTER_SERIAL}...")
+                self._shutter.connect()
+                print(f"[HardwareManager] Connection to shutter serial={THORLABS_SHUTTER_SERIAL} successful")
+            elif self._shutter is not None and self._shutter.connected:
+                print(f"[HardwareManager] Shutter serial={THORLABS_SHUTTER_SERIAL} already connected")
+        except Exception as e:
+            self._shutter_failed = True
+            print(f"[HardwareManager] ERROR connecting shutter serial={THORLABS_SHUTTER_SERIAL}: {e}")
+
+        try:
+            if self._z_controller is not None and not self._z_controller.connected:
+                print(f"[HardwareManager] Connecting PI V-308 serial={PI_V308_SERIAL}...")
+                self._z_controller.connect()
+                print(f"[HardwareManager] Connection to PI V-308 serial={PI_V308_SERIAL} successful")
+            elif self._z_controller is not None and self._z_controller.connected:
+                print(f"[HardwareManager] PI V-308 serial={PI_V308_SERIAL} already connected")
+        except Exception as e:
+            self._z_failed = True
+            print(f"[HardwareManager] ERROR connecting PI V-308 serial={PI_V308_SERIAL}: {e}")
+
+        for laser_name, rot in self._rotators.items():
+            try:
+                if rot is not None and not rot.connected:
+                    serial = THORLABS_ROTATOR_SERIALS.get(laser_name, "unknown")
+                    print(f"[HardwareManager] Connecting rotator for {laser_name} serial={serial}...")
+                    rot.connect()
+                    print(f"[HardwareManager] Connection to rotator {laser_name} serial={serial} successful")
+
+                    cfg = self._get_laser_runtime_settings(laser_name)
+
+                    print(f"[HardwareManager] Initializing rotator {laser_name} to 0%")
+                    rot.set_power_percent(
+                        0.0,
+                        speed=int(cfg["speed"]),
+                        steps_per_degree=float(cfg["steps_per_degree"]),
+                        offset_deg=float(cfg["offset_deg"]),
+                    )
+                    print(f"[HardwareManager] Rotator {laser_name} initialized to 0% successfully")
+
+                elif rot is not None and rot.connected:
+                    serial = THORLABS_ROTATOR_SERIALS.get(laser_name, "unknown")
+                    print(f"[HardwareManager] Rotator {laser_name} serial={serial} already connected")
+            except Exception as e:
+                self._rotator_failed[laser_name] = True
+                print(f"[HardwareManager] ERROR connecting rotator for {laser_name}: {e}")
+
+        self._devices_initialized = True
 
     def create_positioner_manager(self, parent=None):
-        if self.backend_name == "nidaq":
+        if self._is_real_backend():
             self._ensure_real_devices()
             return RealHardwarePositionerManager(
                 self._positioner_axes,
                 z_controller=self._z_controller,
-                p_controller=self._rotator,
+                p_controller=None,
                 parent=parent,
             )
 
@@ -591,29 +679,46 @@ class HardwareManager(QObject):
         if self.backend_name != "nidaq":
             return
 
-        self._ensure_real_devices()
+        if self._shutter is None:
+            raise RuntimeError("Shutter controller is not initialized.")
+        
         self._shutter.set_open(bool(open_))
 
-    def set_mira_power_percent(self, percent: float):
-        """
-        0% -> 0°
-        100% -> 180°
-        """
+    def set_laser_power_percent(self, laser_name: str, percent: float, speed: int, steps_per_degree: float, offset_deg: float):
+        print(
+            f"[HardwareManager] set_laser_power_percent "
+            f"laser={laser_name} percent={percent} speed={speed} "
+            f"steps_per_degree={steps_per_degree} offset_deg={offset_deg}"
+        )
+
         if self.backend_name != "nidaq":
             return
 
-        self._ensure_real_devices()
-        self._rotator.set_power_percent(float(percent))
+        rot = self._rotators.get(str(laser_name))
+        if rot is None:
+            raise KeyError(f"No rotator configured for laser {laser_name!r}")
 
-    def get_mira_power_percent(self) -> float:
+        rot.set_power_percent(
+            float(percent),
+            speed=int(speed),
+            steps_per_degree=float(steps_per_degree),
+            offset_deg=float(offset_deg),
+        )
+
+    def get_laser_power_percent(self, laser_name: str) -> float:
         if self.backend_name != "nidaq":
             return 0.0
 
         self._ensure_real_devices()
-        return float(self._rotator.get_power_percent())
+
+        rot = self._rotators.get(str(laser_name))
+        if rot is None:
+            raise KeyError(f"No rotator configured for laser {laser_name!r}")
+
+        return rot.get_power_percent()
 
     def close(self):
-        for dev in (self._shutter, self._z_controller, self._rotator):
+        for dev in (self._shutter, self._z_controller, *self._rotators.values()):
             try:
                 if dev is not None:
                     dev.close()

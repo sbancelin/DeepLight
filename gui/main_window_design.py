@@ -185,7 +185,7 @@ class Ui_MainWindowDesign:
         self.pushButton_previewSingle.setObjectName(u"pushButton_previewSingle")
         self.pushButton_previewSingle.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
        
-        icon1 = QIcon(QIcon.fromTheme(QIcon.ThemeIcon.MediaPlaybackStart))
+        icon1 = QIcon("gui/Icons/play.svg")
         self.pushButton_previewSingle.setIcon(icon1)
         self.pushButton_previewSingle.setIconSize(QSize(32, 32))
         self.pushButton_previewSingle.setFlat(True)
@@ -201,7 +201,7 @@ class Ui_MainWindowDesign:
         sizePolicy2.setHeightForWidth(self.pushButton_stop.sizePolicy().hasHeightForWidth())
         self.pushButton_stop.setSizePolicy(sizePolicy2)
         self.pushButton_stop.setStyleSheet(TRANSPARENT_ICON_BUTTON_STYLE)
-        icon2 = QIcon(QIcon.fromTheme(QIcon.ThemeIcon.MediaPlaybackStop))
+        icon2 = QIcon("gui/Icons/stop.svg")
         self.pushButton_stop.setIcon(icon2)
         self.pushButton_stop.setIconSize(QSize(32, 32))
         self.pushButton_stop.setFlat(True)
@@ -211,7 +211,7 @@ class Ui_MainWindowDesign:
         self.pushButton_previewcontinuous = QPushButton(self.groupBox_11)
         self.pushButton_previewcontinuous.setObjectName(u"pushButton_previewcontinuous")
         self.pushButton_previewcontinuous.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
-        icon3 = QIcon(QIcon.fromTheme(QIcon.ThemeIcon.MediaPlaylistRepeat))
+        icon3 = QIcon("gui/Icons/repeat.svg")
         self.pushButton_previewcontinuous.setIcon(icon3)
         self.pushButton_previewcontinuous.setIconSize(QSize(32, 32))
         self.pushButton_previewcontinuous.setFlat(True)
@@ -223,7 +223,7 @@ class Ui_MainWindowDesign:
         self.pushButton_acquisitionStart.setObjectName(u"pushButton_acquisitionStart")
         self.pushButton_acquisitionStart.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
 
-        icon4 = QIcon(QIcon.fromTheme(QIcon.ThemeIcon.MediaRecord))
+        icon4 = QIcon("gui/Icons/REC.svg")
         self.pushButton_acquisitionStart.setIcon(icon4)
         self.pushButton_acquisitionStart.setIconSize(QSize(32, 32))
         self.pushButton_acquisitionStart.setFlat(True)
@@ -275,6 +275,7 @@ class Ui_MainWindowDesign:
             title="Laser",
             content_widget=self.laser_widget,
             collapsed=False,
+            settings_callback=self.laser_widget.open_settings_dialog,
             parent=self.left_panel_dock.container
         )
         self.positioner_panel = CollapsiblePanel(
@@ -303,7 +304,7 @@ class Ui_MainWindowDesign:
         self.histogram_widget = HistogramWidget()
         self.frc_widget = FRCWidget()
 
-        self.save_panel = CollapsiblePanel("Save", self.save_widget, collapsed=False, parent=self.right_panel_dock.container)
+        self.save_panel = CollapsiblePanel("Save", self.save_widget, collapsed=False, parent=self.left_panel_dock.container)
         self.analog_panel = CollapsiblePanel("Analog Out", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
         self.stepper_panel = CollapsiblePanel("Stepper", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
@@ -311,7 +312,7 @@ class Ui_MainWindowDesign:
         self.histogram_panel = CollapsiblePanel("Histogram", self.histogram_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
 
-        self.right_panel_dock.add_panel(self.save_panel)
+        self.left_panel_dock.add_panel(self.save_panel)
         self.right_panel_dock.add_panel(self.analog_panel)
         self.right_panel_dock.add_panel(self.stepper_panel)
         self.right_panel_dock.add_panel(self.nyquist_panel)

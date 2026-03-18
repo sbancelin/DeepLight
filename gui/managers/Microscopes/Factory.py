@@ -15,5 +15,5 @@ def create_microscope_backend(name: str, scan_parameters=None):
             f"Unknown backend '{backend_name}'. Expected one of: {', '.join(BACKENDS)}."
         )
 
-    print(f"[BackendFactory] Using {backend_cls.__name__}")
+    print(f"[BackendFactory] {backend_cls.__name__}")
     return backend_cls(scan_parameters=scan_parameters)

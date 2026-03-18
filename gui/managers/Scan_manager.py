@@ -24,9 +24,9 @@ class ScanManager(QObject):
         super().__init__(parent)
 
         # Valeurs par défaut
-        self.voltage_min = -5.0
-        self.voltage_max = +5.0
-        self.default_conv_um_per_v = 20.0  # V = µm / (µm/V)
+        self.voltage_min = -10.0
+        self.voltage_max = +10.0
+        self.default_conv_um_per_v = 100.0  # V = µm / (µm/V)
 
         self._last_scan_params = {}
         self._last_scan_params_obj = None

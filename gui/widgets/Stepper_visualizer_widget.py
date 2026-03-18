@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QPushButton, QHBoxLayout, QLineEdit, QSizePolicy
 )
 from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
 
@@ -117,7 +118,8 @@ class StepperVisualizerWidget(QWidget):
         selector_layout.addWidget(QLabel("ms"))
         selector_layout.addStretch(1)
 
-        self.monitor_btn = QPushButton("Monitor")
+        self.monitor_btn = QPushButton()
+        self.monitor_btn.setIcon(QIcon("gui/Icons/monitor.svg"))
         self.monitor_btn.setCheckable(True)
         self.monitor_btn.setChecked(False)
         self.monitor_btn.setFixedHeight(22)

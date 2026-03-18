@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import (QVBoxLayout, QWidget, QLabel, QCheckBox, QHBoxLayout, QDialog, QFormLayout, QLineEdit, QPushButton, QSizePolicy, QDoubleSpinBox)
 from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
 
@@ -131,7 +132,8 @@ class AnalogOutVisualizerWidget(QWidget):
         Galvo_X_layout.addSpacing(6)
 
         # Bouton Monitor pour Galvo X
-        self.monitor_x_btn = QPushButton("Monitor")
+        self.monitor_x_btn = QPushButton()
+        self.monitor_x_btn.setIcon(QIcon("gui/Icons/monitor.svg"))
         self.monitor_x_btn.setCheckable(True)
         self.monitor_x_btn.setChecked(False)
         self.monitor_x_btn.setFixedHeight(22)
@@ -197,7 +199,8 @@ class AnalogOutVisualizerWidget(QWidget):
         Galvo_Y_layout.addWidget(QLabel("ms"))
         Galvo_Y_layout.addSpacing(6)
 
-        self.monitor_y_btn = QPushButton("Monitor")
+        self.monitor_y_btn = QPushButton()
+        self.monitor_y_btn.setIcon(QIcon("gui/Icons/monitor.svg"))
         self.monitor_y_btn.setCheckable(True)
         self.monitor_y_btn.setChecked(False)
         self.monitor_y_btn.setFixedHeight(22)

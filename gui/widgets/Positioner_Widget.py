@@ -148,15 +148,15 @@ class PositionerWidget(QWidget):
         }
         # Limites par défaut des axes
         self.axis_limits = {
-            "x": {"min": 0, "max": 1000},
-            "y": {"min": 0, "max": 1000},
+            "x": {"min": 0, "max": 10000},
+            "y": {"min": 0, "max": 10000},
             "z": {"min": 0, "max": 7000},
             "p": {"min": 0, "max": 180}
         }
         self.axis_velocity_limits = {
             "x": {"min": 0.01, "max": 1},
             "y": {"min": 0.01, "max": 1},
-            "z": {"min": 0.01, "max": 500},
+            "z": {"min": 0.01, "max": 200},
             "p": {"min": 0.01, "max": 100}
         }
 
@@ -409,7 +409,7 @@ class PositionerWidget(QWidget):
         self.axis_limits[axis]["max"] = max_limit
         self.axis_velocity_limits[axis]["max"] = velocity_limit
     
-    def set_axis_settings_manager(self, manager):
+    def set_settings_manager(self, manager):
         """Injection du AxisSettingsManager partagé."""
         self.axis_settings_manager = manager
 

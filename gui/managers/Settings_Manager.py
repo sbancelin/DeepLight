@@ -1,13 +1,15 @@
 from PySide6.QtCore import QObject
 
 
-class AxisSettingsManager(QObject):
-    """Stockage partagé des réglages et positions courantes des axes."""
+class SettingsManager(QObject):
+    """Stockage partagé des réglages et positions de l'application."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.axis_settings = {}
         self.axis_positions_um = {}
+        self.laser_settings = {}
 
+    # ---------- Axes ----------
     def get_axis_settings(self, axis_name):
         return dict(self.axis_settings.get(axis_name, {}))
 
@@ -23,3 +25,14 @@ class AxisSettingsManager(QObject):
 
     def set_axis_position_um(self, axis_name, value):
         self.axis_positions_um[axis_name] = float(value)
+
+    # ---------- Lasers ----------
+    def get_laser_settings(self, laser_name):
+        return dict(self.laser_settings.get(laser_name, {}))
+
+    def get_all_laser_settings(self):
+        return dict(self.laser_settings)
+
+    def update_laser_settings(self, laser_name, **kwargs):
+        self.laser_settings.setdefault(laser_name, {})
+        self.laser_settings[laser_name].update(kwargs)

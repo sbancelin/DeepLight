@@ -6,3 +6,6 @@ tifffile>=2023.7.10
 zarr
 numcodecs
 ome-zarr
+pipython
+pythonnet
+nidaqmx
