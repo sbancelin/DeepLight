@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Optional
+import math
 import time
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
@@ -14,8 +15,11 @@ class AxisState:
     target_abs: Optional[float] = None
     speed: float = 0.0
     moving: bool = False
+
+    # limites ABSOLUES device / sécurité
     min_pos: float = -1000.0
     max_pos: float = 1000.0
+
     max_speed: float = 1.0
     tolerance: float = 0.1
 
@@ -78,14 +82,27 @@ class PositionerManager(QObject):
         self.relPositionChanged.emit(axis, self.get_rel_pos(axis))
     
     def _validate_move(self, axis: str, target_abs: float, speed: float) -> bool:
-        """Valide si le mouvement est autorisé."""
         st = self._state[axis]
-        if target_abs < st.min_pos or target_abs > st.max_pos:
-            print(f"Position {target_abs} hors limites pour l'axe {axis}.")
+
+        if not math.isfinite(float(target_abs)):
+            print(f"Target position invalide pour l'axe {axis}: {target_abs}")
             return False
-        if speed > st.max_speed:
+
+        if float(target_abs) < float(st.min_pos) or float(target_abs) > float(st.max_pos):
+            print(
+                f"Position absolue {target_abs} hors limites pour l'axe {axis} "
+                f"(range device: {st.min_pos} .. {st.max_pos})."
+            )
+            return False
+
+        if float(speed) < 0:
+            print(f"Vitesse négative invalide pour l'axe {axis}: {speed}")
+            return False
+
+        if float(speed) > float(st.max_speed):
             print(f"Vitesse {speed} trop élevée pour l'axe {axis}.")
             return False
+
         return True
     
     def set_limits(self, axis: str, min_pos: float, max_pos: float, max_speed: float, tolerance: float):
@@ -95,6 +112,25 @@ class PositionerManager(QObject):
         st.max_pos = max_pos
         st.max_speed = max_speed
         st.tolerance = tolerance
+
+    def is_abs_target_allowed(self, axis: str, target_abs: float) -> bool:
+        self._require_axis(axis)
+        st = self._state[axis]
+        return float(st.min_pos) <= float(target_abs) <= float(st.max_pos)
+
+    def is_rel_target_allowed(self, axis: str, target_rel: float) -> bool:
+        self._require_axis(axis)
+        st = self._state[axis]
+        target_abs = float(st.zero_offset) + float(target_rel)
+        return self.is_abs_target_allowed(axis, target_abs)
+
+    def ensure_target_in_range(self, axis: str, target_abs: float):
+        if not self.is_abs_target_allowed(axis, target_abs):
+            st = self._state[axis]
+            raise ValueError(
+                f"Axis {axis}: target_abs={target_abs:.3f} outside device range "
+                f"[{st.min_pos:.3f}, {st.max_pos:.3f}]"
+            )
 
     @Slot(str, float, float)
     def move_relative(self, axis: str, delta: float, speed: float):

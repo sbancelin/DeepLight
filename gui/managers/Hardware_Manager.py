@@ -4,7 +4,7 @@ import os
 import time
 from typing import Optional
 
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, Slot, QTimer
 
 from .Positioner_Manager import MockPositionerManager, PositionerManager
 
@@ -232,6 +232,51 @@ class _PIVoiceCoilController:
 
         return value_mm * 1000.0
 
+    def is_moving(self) -> bool:
+        if not self.connected or self.device is None:
+            return False
+        try:
+            return bool(self.device.IsMoving(self.axis))
+        except Exception:
+            return False
+    
+    def get_travel_range_um(self) -> tuple[float, float]:
+        """
+        Best effort:
+        - qTMN/qTMX are the most common PI travel-limit queries
+        - fallback to qTMN()/qTMX() without axis if controller API differs
+        """
+        if not self.connected:
+            self.connect()
+
+        err = None
+
+        for getter_min_name, getter_max_name in (
+            ("qTMN", "qTMX"),
+            ("TMN", "TMX"),
+        ):
+            try:
+                getter_min = getattr(self.device, getter_min_name)
+                getter_max = getattr(self.device, getter_max_name)
+
+                try:
+                    mn = getter_min(self.axis)
+                    mx = getter_max(self.axis)
+                except TypeError:
+                    mn = getter_min()
+                    mx = getter_max()
+
+                if isinstance(mn, dict):
+                    mn = mn[self.axis]
+                if isinstance(mx, dict):
+                    mx = mx[self.axis]
+
+                return float(mn) * 1000.0, float(mx) * 1000.0
+            except Exception as e:
+                err = e
+
+        raise RuntimeError(f"Unable to query PI travel range from device: {err}")
+    
     def move_abs_um(self, target_um: float, speed_mm_s: Optional[float] = None, blocking: bool = True):
         if not self.connected:
             self.connect()
@@ -239,10 +284,23 @@ class _PIVoiceCoilController:
         if speed_mm_s is not None:
             try:
                 self.device.VEL(self.axis, float(speed_mm_s))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[PIVoiceCoil] VEL failed axis={self.axis} speed={speed_mm_s}: {e}")
 
         target_mm = float(target_um) / 1000.0
+
+        try:
+            cur = self.device.qPOS(self.axis)
+            cur_mm = float(cur[self.axis]) if isinstance(cur, dict) else float(cur)
+        except Exception:
+            cur_mm = None
+
+        print(
+            f"[PIVoiceCoil] MOV axis={self.axis} "
+            f"cur_mm={cur_mm} target_mm={target_mm} speed_mm_s={speed_mm_s} "
+            f"blocking={blocking}"
+        )
+
         self.device.MOV(self.axis, target_mm)
 
         if blocking:
@@ -411,32 +469,122 @@ class RealHardwarePositionerManager(PositionerManager):
         z_controller: Optional[_PIVoiceCoilController] = None,
         p_controller: Optional[_ThorlabsRotationController] = None,
         parent=None,
+        poll_ms: int = 150,
     ):
         super().__init__(axes, parent=parent)
         self._z = z_controller
         self._p = p_controller
+        self._pending_targets_abs = {}
 
         # Initialize abs positions from hardware when possible
         self._refresh_from_hardware("z")
         self._refresh_from_hardware("p")
 
+        # polling pour refléter les moves externes (MikroMove)
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(int(poll_ms))
+        self._poll_timer.timeout.connect(self._poll_hardware_positions)
+        self._poll_timer.start()
+
     def _log(self, msg: str):
         print(f"[RealHardwarePositioner] {msg}")
 
-    def _refresh_from_hardware(self, axis: str):
+    def _refresh_from_hardware(self, axis: str, force_emit: bool = False) -> bool:
         try:
             if axis == "z" and self._z is not None:
-                self._state["z"].abs_pos = float(self._z.get_abs_um())
-                self._emit_positions("z")
+                new_abs = float(self._z.get_abs_um())
             elif axis == "p" and self._p is not None:
-                self._state["p"].abs_pos = float(self._p.get_angle_deg())
-                self._emit_positions("p")
+                new_abs = float(self._p.get_angle_deg())
+            else:
+                return False
+
+            st = self._state[axis]
+            changed = abs(float(st.abs_pos) - new_abs) > max(float(st.tolerance), 1e-6)
+            st.abs_pos = new_abs
+
+            if force_emit or changed:
+                self._emit_positions(axis)
+
+            return changed
+
         except Exception as e:
             self._log(f"refresh failed axis={axis}: {e}")
+            return False
 
+    @Slot()
+    def _poll_hardware_positions(self):
+        for axis in ("z", "p"):
+            if axis not in self._state:
+                continue
+
+            st = self._state[axis]
+
+            # Toujours relire la position réelle
+            self._refresh_from_hardware(axis, force_emit=False)
+
+            if axis == "z" and st.moving and self._z is not None:
+                target = self._pending_targets_abs.get(axis, None)
+                cur = float(st.abs_pos)
+                tol = max(float(st.tolerance), 0.5)
+
+                arrived = False
+                if target is not None and abs(cur - float(target)) <= tol:
+                    arrived = True
+
+                if arrived or (not self._z.is_moving()):
+                    st.moving = False
+                    st.target_abs = None
+                    self._pending_targets_abs.pop(axis, None)
+                    self.movingChanged.emit(axis, False)
+                    self._emit_positions(axis)
+    
+    def validate_scan_targets(self, scan_parameters: dict):
+        """
+        Vérifie que tous les offsets absolus / retours possibles des axes stepper
+        restent dans la plage device.
+        """
+        if not scan_parameters:
+            return
+
+        offsets = dict(scan_parameters.get("offsets", {}) or {})
+        sizes = dict(scan_parameters.get("sizes", {}) or {})
+        initial_rel = dict(scan_parameters.get("initial_relative_positions", {}) or {})
+        axis_order = list(scan_parameters.get("axis_order", []) or [])
+
+        # position fraîche du Z avant toute validation
+        if "z" in self._state:
+            self._refresh_from_hardware("z", force_emit=False)
+
+        # Offsets absolus issus du ScanWidget
+        for scan_axis_name, abs_target in offsets.items():
+            axis = self.axis_from_scan_name(scan_axis_name)
+            if axis is None or axis not in self._state:
+                continue
+            self.ensure_target_in_range(axis, float(abs_target))
+
+            # bornes extrêmes possibles pendant le balayage stepper
+            size_um = float(sizes.get(scan_axis_name, 0.0) or 0.0)
+            half = 0.5 * abs(size_um)
+            self.ensure_target_in_range(axis, float(abs_target) - half)
+            self.ensure_target_in_range(axis, float(abs_target) + half)
+
+        # retour final à la base relative
+        for scan_axis_name, rel_target in initial_rel.items():
+            axis = self.axis_from_scan_name(scan_axis_name)
+            if axis is None or axis not in self._state:
+                continue
+
+            st = self._state[axis]
+            target_abs = float(st.zero_offset) + float(rel_target)
+            self.ensure_target_in_range(axis, target_abs)
+    
     def _move_abs(self, axis: str, target_abs: float, speed: float):
         self._require_axis(axis)
         st = self._state[axis]
+
+        # pour le réel, toujours relire le hardware avant de décider
+        if axis in ("z", "p"):
+            self._refresh_from_hardware(axis, force_emit=False)
 
         if not self._validate_move(axis, float(target_abs), float(speed)):
             return
@@ -446,15 +594,31 @@ class RealHardwarePositionerManager(PositionerManager):
                 self._log("axis z requested but no PI V-308 controller is available.")
                 return
 
+            self._log(
+                f"[Z MOVE] cur_abs={st.abs_pos:.3f} "
+                f"target_abs={float(target_abs):.3f} "
+                f"speed_mm_s={float(speed):.3f} "
+                f"limits=[{st.min_pos:.3f}, {st.max_pos:.3f}] "
+                f"max_speed={st.max_speed:.3f}"
+            )
+
             st.moving = True
+            st.target_abs = float(target_abs)
+            self._pending_targets_abs[axis] = float(target_abs)
             self.movingChanged.emit(axis, True)
+
             try:
-                self._z.move_abs_um(float(target_abs), speed_mm_s=float(speed), blocking=True)
-                st.abs_pos = float(self._z.get_abs_um())
-            finally:
+                self._z.move_abs_um(float(target_abs), speed_mm_s=float(speed), blocking=False)
+            except Exception as e:
                 st.moving = False
+                st.target_abs = None
+                self._pending_targets_abs.pop(axis, None)
                 self.movingChanged.emit(axis, False)
-                self._emit_positions(axis)
+                self._log(f"[Z MOVE] command failed: {e}")
+                raise
+
+            # refresh immédiat après envoi de la commande
+            self._refresh_from_hardware(axis, force_emit=True)
             return
 
         if axis == "p":
@@ -478,12 +642,16 @@ class RealHardwarePositionerManager(PositionerManager):
 
     @Slot(str, float, float)
     def move_to_rel(self, axis: str, rel_target: float, speed: float):
+        self._require_axis(axis)
+        self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
         target_abs = float(st.zero_offset) + float(rel_target)
         self._move_abs(axis, target_abs=target_abs, speed=float(speed))
 
     @Slot(str, float, float)
     def move_relative(self, axis: str, delta: float, speed: float):
+        self._require_axis(axis)
+        self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
         target_abs = float(st.abs_pos) + float(delta)
         self._move_abs(axis, target_abs=target_abs, speed=float(speed))
@@ -493,9 +661,9 @@ class RealHardwarePositionerManager(PositionerManager):
         self,
         axis_name: str,
         target_rel: float,
-        vel_um_s: float,
-        acc_um_s2: float,
-        jerk_um_s3: float,
+        velocity: float,
+        acceleration: float,
+        jerk: float,
         t_sched_ms: float,
         reason: str
     ):
@@ -503,18 +671,22 @@ class RealHardwarePositionerManager(PositionerManager):
         if axis is None or axis not in self._state:
             return
 
+        self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
         target_abs = float(st.zero_offset) + float(target_rel)
 
-        if axis == "z":
-            # PositionerWidget uses mm/s; scan sends µm/s -> convert
-            speed = max(0.001, float(vel_um_s) / 1000.0)
-        elif axis == "p":
-            # p axis is degrees in your UI/positioner model
-            speed = max(0.001, float(vel_um_s))
+        if axis in ("z", "p"):
+            speed = max(0.001, float(velocity))
         else:
             speed = 0.1
 
+        print(
+            f"[RealHardwarePositioner] move_from_scan "
+            f"axis_name={axis_name} axis={axis} "
+            f"target_rel={target_rel} target_abs={target_abs} "
+            f"velocity={velocity} acceleration={acceleration} jerk={jerk} "
+            f"converted_speed={speed} reason={reason}"
+        )
         self._move_abs(axis, target_abs=target_abs, speed=speed)
 
     @Slot(str)
@@ -538,9 +710,9 @@ class RealHardwarePositionerManager(PositionerManager):
 
     @Slot(str)
     def set_zero(self, axis: str):
-        self._refresh_from_hardware(axis)
+        self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
-        st.zero_offset = st.abs_pos
+        st.zero_offset = float(st.abs_pos)
         self._emit_positions(axis)
 
 
@@ -609,17 +781,14 @@ class HardwareManager(QObject):
             self._shutter = _ThorlabsShutterController(THORLABS_SHUTTER_SERIAL)
 
         if self._z_controller is None:
-            print(f"[HardwareManager] Creating PI V-308 controller serial={PI_V308_SERIAL}")
             self._z_controller = _PIVoiceCoilController(PI_V308_SERIAL)
 
         for laser_name, serial in THORLABS_ROTATOR_SERIALS.items():
             if laser_name not in self._rotators:
-                print(f"[HardwareManager] Creating rotator for {laser_name} serial={serial}")
                 self._rotators[laser_name] = _ThorlabsRotationController(serial)
 
         try:
             if self._shutter is not None and not self._shutter.connected:
-                print(f"[HardwareManager] Connecting shutter serial={THORLABS_SHUTTER_SERIAL}...")
                 self._shutter.connect()
                 print(f"[HardwareManager] Connection to shutter serial={THORLABS_SHUTTER_SERIAL} successful")
             elif self._shutter is not None and self._shutter.connected:
@@ -630,7 +799,6 @@ class HardwareManager(QObject):
 
         try:
             if self._z_controller is not None and not self._z_controller.connected:
-                print(f"[HardwareManager] Connecting PI V-308 serial={PI_V308_SERIAL}...")
                 self._z_controller.connect()
                 print(f"[HardwareManager] Connection to PI V-308 serial={PI_V308_SERIAL} successful")
             elif self._z_controller is not None and self._z_controller.connected:
@@ -643,13 +811,11 @@ class HardwareManager(QObject):
             try:
                 if rot is not None and not rot.connected:
                     serial = THORLABS_ROTATOR_SERIALS.get(laser_name, "unknown")
-                    print(f"[HardwareManager] Connecting rotator for {laser_name} serial={serial}...")
                     rot.connect()
                     print(f"[HardwareManager] Connection to rotator {laser_name} serial={serial} successful")
 
                     cfg = self._get_laser_runtime_settings(laser_name)
 
-                    print(f"[HardwareManager] Initializing rotator {laser_name} to 0%")
                     rot.set_power_percent(
                         0.0,
                         speed=int(cfg["speed"]),
@@ -675,10 +841,22 @@ class HardwareManager(QObject):
                 z_controller=self._z_controller,
                 p_controller=None,
                 parent=parent,
+                poll_ms=150,
             )
 
         return MockPositionerManager(self._positioner_axes, parent=parent)
 
+    def validate_scan_positions(self, positioner_manager, scan_parameters: dict):
+        if self.backend_name != "nidaq":
+            return
+
+        if positioner_manager is None:
+            return
+
+        validator = getattr(positioner_manager, "validate_scan_targets", None)
+        if callable(validator):
+            validator(scan_parameters)
+    
     @Slot(bool)
     def set_shutter(self, open_: bool):
         if self.backend_name != "nidaq":

@@ -64,11 +64,12 @@ class FrameBuilder:
         # Cache d'indices pour éviter de recréer des arange tout le temps
         self._pixel_index_cache = np.arange(self.dim_fast, dtype=np.int32)
 
-        self.reset()
+        self.reset(clear_arrays = False)
 
-    def reset(self):
-        for ch in self.channels:
-            self.arrays[ch].fill(0.0)
+    def reset(self, clear_arrays: bool = True):
+        if clear_arrays:
+            for ch in self.channels:
+                self.arrays[ch].fill(0.0)
 
         self.written_pixels = 0
         self.raw_samples_consumed = 0

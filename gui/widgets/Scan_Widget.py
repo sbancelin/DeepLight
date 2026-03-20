@@ -1540,6 +1540,13 @@ class ScanWidget(QWidget):
             if row["axis"] != "None":
                 total_pixels *= max(1, int(row["pixels"]))
 
+        print("[ScanWidget] active_axes =", active_axes)
+        print("[ScanWidget] axis_order =", axis_order)
+        print("[ScanWidget] velocity_max =", velocity_max)
+        print("[ScanWidget] acceleration =", acceleration)
+        print("[ScanWidget] jerk =", jerk)
+        print("[ScanWidget] rows =", rows)
+
         return {
             "rows": rows,
             "pixel_values": pixel_values,

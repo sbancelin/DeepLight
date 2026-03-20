@@ -246,6 +246,7 @@ class MockMicroscope(MicroscopeBackendBase):
         samples_per_pixel: int = 1,
         bidirectional: bool = False,
         bidirectional_shift_px: int = 0,
+        clear_arrays: bool = True,
     ):
         reconstruction_plan = self._build_frame_reconstruction_plan(samples_per_pixel)
         reconstruction_plan.bidirectional = bool(bidirectional)
@@ -256,7 +257,7 @@ class MockMicroscope(MicroscopeBackendBase):
             channels=self.channels,
             reconstruction_plan=reconstruction_plan,
         )
-        builder.reset()
+        builder.reset(clear_arrays=clear_arrays)
 
         self.detector_manager.start_frame(
             channels=self.channels,
@@ -300,7 +301,7 @@ class MockMicroscope(MicroscopeBackendBase):
 
         return builder.get_shown_images()
 
-    def _simulate_acquisition(self):
+    def _simulate_acquisition(self, clear_arrays: bool = True):
         if self.acquisition_stop_event.is_set():
             return
 
@@ -329,6 +330,7 @@ class MockMicroscope(MicroscopeBackendBase):
             samples_per_pixel=spp,
             bidirectional=self.bidirectional_scan,
             bidirectional_shift_px=self.bidirectional_shift_px,
+            clear_arrays=clear_arrays,
         )
 
         if not self.acquisition_stop_event.is_set():
@@ -582,7 +584,7 @@ class MockMicroscope(MicroscopeBackendBase):
             self.acquisition_finished.emit()
             return
 
-        self._simulate_acquisition()
+        self._simulate_acquisition(clear_arrays=True)
         self.acquisition_finished.emit()
 
     @Slot()
@@ -598,7 +600,7 @@ class MockMicroscope(MicroscopeBackendBase):
             return
 
         while not self.acquisition_stop_event.is_set():
-            self._simulate_acquisition()
+            self._simulate_acquisition(clear_arrays=False)
             time.sleep(0)
 
     @Slot()

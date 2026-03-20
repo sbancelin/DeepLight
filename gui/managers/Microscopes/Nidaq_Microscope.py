@@ -19,6 +19,7 @@ from ..Hardware_Manager import (
 from ..Scan_Types import ExecutionPlan, FrameReconstructionPlan, SampleFramePlan
 from ..Frame_Builder import FrameBuilder
 from ..Sample_Scan_Manager import SampleScanManager
+import warnings
 
 
 try:
@@ -30,6 +31,7 @@ try:
     )
     from nidaqmx.stream_writers import AnalogMultiChannelWriter
     from nidaqmx.stream_readers import AnalogMultiChannelReader
+    from nidaqmx.errors import DaqError, DaqWarning
     _HAS_NIDAQ = True
 except Exception:
     nidaqmx = None
@@ -39,6 +41,12 @@ except Exception:
     AnalogMultiChannelWriter = None
     AnalogMultiChannelReader = None
     _HAS_NIDAQ = False
+if _HAS_NIDAQ:
+    warnings.filterwarnings(
+        "ignore",
+        message=".*Finite acquisition or generation has been stopped before the requested number of samples were acquired or generated.*",
+        category=DaqWarning,
+    )
 
 
 class NidaqMicroscope(MicroscopeBackendBase):
@@ -87,10 +95,21 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self.bidirectional_shift_px = 0
         self.turnback_offset_px = 0
 
+        self._active_ao_task = None
+        self._active_ai_task = None
+
         self._step_event_cursor = 0
 
         self.configure(scan_parameters or {})
 
+    def _set_active_tasks(self, ao_task=None, ai_task=None):
+        self._active_ao_task = ao_task
+        self._active_ai_task = ai_task
+
+    def _clear_active_tasks(self):
+        self._active_ao_task = None
+        self._active_ai_task = None
+    
     def _log(self, msg: str):
         print(f"[NidaqMicroscope] {msg}")
 
@@ -247,9 +266,9 @@ class NidaqMicroscope(MicroscopeBackendBase):
             self.stepper_move_requested.emit(
                 str(ev.axis_name),
                 float(ev.target_rel),
-                float(ev.velocity_um_s),
-                float(ev.acceleration_um_s2),
-                float(ev.jerk_um_s3),
+                float(ev.velocity),
+                float(ev.acceleration),
+                float(ev.jerk),
                 float(t_sched_ms),
                 str(ev.reason),
             )
@@ -341,6 +360,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
         plan: ExecutionPlan,
         frame_useful_samples: int,
         chunk_samples: int = 4096,
+        clear_arrays: bool = True,
     ) -> dict[str, np.ndarray]:
         self._require_nidaq()
 
@@ -359,7 +379,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             channels=self.channels,
             reconstruction_plan=reconstruction_plan,
         )
-        builder.reset()
+        builder.reset(clear_arrays=clear_arrays)
 
         collected = {ch: [] for ch in self.channels}
         remaining = int(n_samples)
@@ -367,81 +387,106 @@ class NidaqMicroscope(MicroscopeBackendBase):
         sample_cursor = int(sample_start)
 
         with nidaqmx.Task("DL_AO_Frame") as ao_task, nidaqmx.Task("DL_AI_Frame") as ai_task:
-            ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
-            ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
+            self._set_active_tasks(ao_task=ao_task, ai_task=ai_task)
+            try:
+                ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
+                ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
 
-            ai_task.ai_channels.add_ai_voltage_chan(
-                NI_AI_IR,
-                min_val=NI_AI_MIN_V,
-                max_val=NI_AI_MAX_V,
-                terminal_config=self._terminal_config(),
-            )
-            if ai_count >= 2:
                 ai_task.ai_channels.add_ai_voltage_chan(
-                    NI_AI_VIS,
+                    NI_AI_IR,
                     min_val=NI_AI_MIN_V,
                     max_val=NI_AI_MAX_V,
                     terminal_config=self._terminal_config(),
                 )
+                if ai_count >= 2:
+                    ai_task.ai_channels.add_ai_voltage_chan(
+                        NI_AI_VIS,
+                        min_val=NI_AI_MIN_V,
+                        max_val=NI_AI_MAX_V,
+                        terminal_config=self._terminal_config(),
+                    )
 
-            ao_task.timing.cfg_samp_clk_timing(
-                rate=sr,
-                sample_mode=AcquisitionType.FINITE,
-                samps_per_chan=int(n_samples),
-            )
-
-            ai_task.timing.cfg_samp_clk_timing(
-                rate=sr,
-                source=f"/{NI_DEVICE_NAME}/ao/SampleClock",
-                sample_mode=AcquisitionType.FINITE,
-                samps_per_chan=int(n_samples),
-            )
-            ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(f"/{NI_DEVICE_NAME}/ao/StartTrigger")
-
-            writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
-            reader = AnalogMultiChannelReader(ai_task.in_stream)
-
-            writer.write_many_sample(ao_block)
-
-            self._emit_step_events_up_to(int(sample_start))
-
-            ai_task.start()
-            ao_task.start()
-
-            while remaining > 0 and not self.acquisition_stop_event.is_set():
-                take = min(chunk_samples, remaining)
-                ai_chunk = np.zeros((ai_count, int(take)), dtype=np.float64)
-
-                reader.read_many_sample(
-                    ai_chunk,
-                    number_of_samples_per_channel=int(take),
-                    timeout=WAIT_INFINITELY,
+                ao_task.timing.cfg_samp_clk_timing(
+                    rate=sr,
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=int(n_samples),
                 )
 
-                mapped = self._map_ai_to_channels(ai_chunk, int(take))
+                ai_task.timing.cfg_samp_clk_timing(
+                    rate=sr,
+                    source=f"/{NI_DEVICE_NAME}/ao/SampleClock",
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=int(n_samples),
+                )
+                ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(f"/{NI_DEVICE_NAME}/ao/StartTrigger")
 
-                for ch in self.channels:
-                    collected[ch].append(mapped[ch])
+                writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                reader = AnalogMultiChannelReader(ai_task.in_stream)
 
-                trimmed = {}
-                for ch in self.channels:
-                    arr = mapped[ch]
-                    useful_remaining = max(0, int(frame_useful_samples) - int(builder.raw_samples_consumed))
-                    if useful_remaining <= 0:
-                        trimmed[ch] = np.zeros((0,), dtype=np.float64)
-                    elif arr.size > useful_remaining:
-                        trimmed[ch] = arr[:useful_remaining]
-                    else:
-                        trimmed[ch] = arr
+                writer.write_many_sample(ao_block)
 
-                builder.consume_samples(trimmed)
+                self._emit_step_events_up_to(int(sample_start))
 
-                self.samples_progress.emit(int(take))
-                sample_cursor += int(take)
-                self._emit_step_events_up_to(int(sample_cursor))
-                remaining -= int(take)
+                ai_task.start()
+                ao_task.start()
 
-            ao_task.wait_until_done(WAIT_INFINITELY)
+                while remaining > 0 and not self.acquisition_stop_event.is_set():
+                    take = min(chunk_samples, remaining)
+                    ai_chunk = np.zeros((ai_count, int(take)), dtype=np.float64)
+
+                    try:
+                        reader.read_many_sample(
+                            ai_chunk,
+                            number_of_samples_per_channel=int(take),
+                            timeout=0.1,
+                        )
+                    except DaqWarning as w:
+                        if self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010:
+                            break
+                        raise
+                    except DaqError:
+                        if self.acquisition_stop_event.is_set():
+                            break
+                        raise
+                    except Exception:
+                        if self.acquisition_stop_event.is_set():
+                            break
+                        raise
+
+                    mapped = self._map_ai_to_channels(ai_chunk, int(take))
+
+                    for ch in self.channels:
+                        collected[ch].append(mapped[ch])
+
+                    trimmed = {}
+                    for ch in self.channels:
+                        arr = mapped[ch]
+                        useful_remaining = max(0, int(frame_useful_samples) - int(builder.raw_samples_consumed))
+                        if useful_remaining <= 0:
+                            trimmed[ch] = np.zeros((0,), dtype=np.float64)
+                        elif arr.size > useful_remaining:
+                            trimmed[ch] = arr[:useful_remaining]
+                        else:
+                            trimmed[ch] = arr
+
+                    builder.consume_samples(trimmed)
+
+                    self.samples_progress.emit(int(take))
+                    sample_cursor += int(take)
+                    self._emit_step_events_up_to(int(sample_cursor))
+                    remaining -= int(take)
+
+                if not self.acquisition_stop_event.is_set():
+                    try:
+                        ao_task.wait_until_done(WAIT_INFINITELY)
+                    except DaqWarning as w:
+                        if not (self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010):
+                            raise
+                    except DaqError:
+                        if not self.acquisition_stop_event.is_set():
+                            raise
+            finally: 
+                self._clear_active_tasks()
 
         return {
             ch: np.concatenate(collected[ch]).astype(np.float64, copy=False) if collected[ch] else np.zeros((0,), dtype=np.float64)
@@ -454,6 +499,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
         *,
         fs,
         plan: ExecutionPlan,
+        clear_arrays: bool = True,
     ) -> dict[str, np.ndarray]:
         frame_start = int(fs.sample_start)
         frame_stop = int(fs.sample_stop)
@@ -476,6 +522,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             plan=plan,
             frame_useful_samples=frame_useful_samples,
             chunk_samples=4096,
+            clear_arrays=clear_arrays,
         )
 
         return {ch: arrays[ch].copy() for ch in self.channels}
@@ -545,7 +592,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 self._sleep_delay_samples(tail_gap, float(plan.sample_rate_hz))
                 self._emit_step_events_up_to(int(plan.total_samples))
 
-    def _run_preview_from_plan(self):
+    def _run_preview_from_plan(self, clear_arrays: bool = True):
         plan = self.execution_plan
         if plan is None:
             self._log("No execution plan for laser preview -> skipping")
@@ -559,10 +606,16 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
         fs = plan.frame_slices[0]
 
-        for arr in arrays.values():
-            arr.fill(0.0)
+        if clear_arrays:
+            for arr in arrays.values():
+                arr.fill(0.0)
 
-        shown_images = self._acquire_plan_frame(arrays, fs=fs, plan=plan)
+        shown_images = self._acquire_plan_frame(
+            arrays,
+            fs=fs,
+            plan=plan,
+            clear_arrays=clear_arrays,
+        )
 
         if not self.acquisition_stop_event.is_set():
             self.frame_ready.emit(0, tuple(), shown_images)
@@ -766,7 +819,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
                     self.frame_ready.emit(0, tuple(), shown_images)
                 return
 
-            self._run_preview_from_plan()
+            self._run_preview_from_plan(clear_arrays=True)
 
         finally:
             if self.scan_kind == "laser":
@@ -790,7 +843,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             return
 
         while not self.acquisition_stop_event.is_set():
-            self._run_preview_from_plan()
+            self._run_preview_from_plan(clear_arrays=False)
             time.sleep(0)
 
     @Slot()
@@ -813,8 +866,15 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self._log("stop")
         super().stop()
 
-        if self.scan_kind == "laser":
+        for task in (self._active_ai_task, self._active_ao_task):
+            if task is None:
+                continue
             try:
-                self._write_ao_idle_zero()
-            except Exception as e:
-                self._log(f"AO idle zero failed on stop: {e}")
+                task.stop()
+            except DaqWarning as w:
+                if getattr(w, "error_code", None) != 200010:
+                    raise
+            except DaqError:
+                pass
+            except Exception:
+                pass

@@ -212,6 +212,12 @@ class ScanManager(QObject):
 
         axis_row_map = self._get_axis_row_map(sp)
 
+        print("[ScanManager] build_execution_plan")
+        print("[ScanManager] axis_order =", sp.axis_order)
+        print("[ScanManager] velocity_max =", sp.velocity_max)
+        print("[ScanManager] acceleration_max =", sp.acceleration_max)
+        print("[ScanManager] jerk =", sp.jerk)
+
         row_fast = axis_row_map[fast_axis]
         row_slow = axis_row_map[slow_axis]
         row_img_x = axis_row_map[image_x_axis]
@@ -313,27 +319,43 @@ class ScanManager(QObject):
 
         # Step initial : positionner axis3/axis4 avant la 1ère frame
         if axis3_name is not None and axis3_positions and axis3_positions[0] is not None:
+            print(
+                f"[ScanManager] StepEvent axis3_init "
+                f"axis={axis3_name} "
+                f"target={float(axis3_positions[0])} "
+                f"vel={sp.velocity_max.get(axis3_name, 0.0)} "
+                f"acc={sp.acceleration_max.get(axis3_name, 0.0)} "
+                f"jerk={sp.jerk.get(axis3_name, 0.0)}"
+            )
             step_events.append(
                 StepEvent(
                     sample_index=0,
                     axis_name=axis3_name,
                     target_rel=float(axis3_positions[0]),
-                    velocity_um_s=sp.velocity_max.get(axis3_name, 0.0),
-                    acceleration_um_s2=sp.acceleration_max.get(axis3_name, 0.0),
-                    jerk_um_s3=sp.jerk.get(axis3_name, 0.0),
+                    velocity=sp.velocity_max.get(axis3_name, 0.0),
+                    acceleration=sp.acceleration_max.get(axis3_name, 0.0),
+                    jerk=sp.jerk.get(axis3_name, 0.0),
                     reason="axis3_init",
                 )
             )
 
         if axis4_name is not None and axis4_positions and axis4_positions[0] is not None:
+            print(
+                f"[ScanManager] StepEvent axis4_init "
+                f"axis={axis4_name} "
+                f"target={float(axis4_positions[0])} "
+                f"vel={sp.velocity_max.get(axis4_name, 0.0)} "
+                f"acc={sp.acceleration_max.get(axis4_name, 0.0)} "
+                f"jerk={sp.jerk.get(axis4_name, 0.0)}"
+            )
             step_events.append(
                 StepEvent(
                     sample_index=0,
                     axis_name=axis4_name,
                     target_rel=float(axis4_positions[0]),
-                    velocity_um_s=sp.velocity_max.get(axis4_name, 0.0),
-                    acceleration_um_s2=sp.acceleration_max.get(axis4_name, 0.0),
-                    jerk_um_s3=sp.jerk.get(axis4_name, 0.0),
+                    velocity=sp.velocity_max.get(axis4_name, 0.0),
+                    acceleration=sp.acceleration_max.get(axis4_name, 0.0),
+                    jerk=sp.jerk.get(axis4_name, 0.0),
                     reason="axis4_init",
                 )
             )
@@ -347,9 +369,9 @@ class ScanManager(QObject):
                             sample_index=cursor,
                             axis_name=axis3_name,
                             target_rel=float(axis3_positions[0]),
-                            velocity_um_s=sp.velocity_max.get(axis3_name, 0.0),
-                            acceleration_um_s2=sp.acceleration_max.get(axis3_name, 0.0),
-                            jerk_um_s3=sp.jerk.get(axis3_name, 0.0),
+                            velocity=sp.velocity_max.get(axis3_name, 0.0),
+                            acceleration=sp.acceleration_max.get(axis3_name, 0.0),
+                            jerk=sp.jerk.get(axis3_name, 0.0),
                             reason="axis3_init_rep",
                         )
                     )
@@ -360,9 +382,9 @@ class ScanManager(QObject):
                             sample_index=cursor,
                             axis_name=axis4_name,
                             target_rel=float(axis4_positions[0]),
-                            velocity_um_s=sp.velocity_max.get(axis4_name, 0.0),
-                            acceleration_um_s2=sp.acceleration_max.get(axis4_name, 0.0),
-                            jerk_um_s3=sp.jerk.get(axis4_name, 0.0),
+                            velocity=sp.velocity_max.get(axis4_name, 0.0),
+                            acceleration=sp.acceleration_max.get(axis4_name, 0.0),
+                            jerk=sp.jerk.get(axis4_name, 0.0),
                             reason="axis4_init_rep",
                         )
                     )
@@ -402,14 +424,23 @@ class ScanManager(QObject):
                             next_axis3_reason = None
 
                         if next_axis3_target is not None:
+                            print(
+                                f"[ScanManager] StepEvent {next_axis3_reason} "
+                                f"axis={axis3_name} "
+                                f"target={next_axis3_target} "
+                                f"vel={sp.velocity_max.get(axis3_name, 0.0)} "
+                                f"acc={sp.acceleration_max.get(axis3_name, 0.0)} "
+                                f"jerk={sp.jerk.get(axis3_name, 0.0)} "
+                                f"sample_index={cursor}"
+                            )
                             step_events.append(
                                 StepEvent(
                                     sample_index=cursor,
                                     axis_name=axis3_name,
                                     target_rel=next_axis3_target,
-                                    velocity_um_s=sp.velocity_max.get(axis3_name, 0.0),
-                                    acceleration_um_s2=sp.acceleration_max.get(axis3_name, 0.0),
-                                    jerk_um_s3=sp.jerk.get(axis3_name, 0.0),
+                                    velocity=sp.velocity_max.get(axis3_name, 0.0),
+                                    acceleration=sp.acceleration_max.get(axis3_name, 0.0),
+                                    jerk=sp.jerk.get(axis3_name, 0.0),
                                     reason=next_axis3_reason,
                                 )
                             )
@@ -417,14 +448,23 @@ class ScanManager(QObject):
                     # mouvement axis4 quand le cycle axis3 est fini
                     if axis4_name is not None and i3 == len(axis3_positions) - 1:
                         if i4 < len(axis4_positions) - 1:
+                            print(
+                                f"[ScanManager] StepEvent axis4_step "
+                                f"axis={axis4_name} "
+                                f"target={axis4_positions[i4 + 1]} "
+                                f"vel={sp.velocity_max.get(axis4_name, 0.0)} "
+                                f"acc={sp.acceleration_max.get(axis4_name, 0.0)} "
+                                f"jerk={sp.jerk.get(axis4_name, 0.0)} "
+                                f"sample_index={cursor}"
+                            )
                             step_events.append(
                                 StepEvent(
                                     sample_index=cursor,
                                     axis_name=axis4_name,
                                     target_rel=axis4_positions[i4 + 1],
-                                    velocity_um_s=sp.velocity_max.get(axis4_name, 0.0),
-                                    acceleration_um_s2=sp.acceleration_max.get(axis4_name, 0.0),
-                                    jerk_um_s3=sp.jerk.get(axis4_name, 0.0),
+                                    velocity=sp.velocity_max.get(axis4_name, 0.0),
+                                    acceleration=sp.acceleration_max.get(axis4_name, 0.0),
+                                    jerk=sp.jerk.get(axis4_name, 0.0),
                                     reason="axis4_step",
                                 )
                             )
@@ -442,28 +482,46 @@ class ScanManager(QObject):
         # Step final : retour à la base initiale à la fin du run
         if axis3_name is not None:
             base3 = float(sp.initial_relative_positions.get(axis3_name, 0.0))
+            print(
+                f"[ScanManager] StepEvent axis3_return_to_base "
+                f"axis={axis3_name} "
+                f"target={base3} "
+                f"vel={sp.velocity_max.get(axis3_name, 0.0)} "
+                f"acc={sp.acceleration_max.get(axis3_name, 0.0)} "
+                f"jerk={sp.jerk.get(axis3_name, 0.0)} "
+                f"sample_index={cursor}"
+            )
             step_events.append(
                 StepEvent(
                     sample_index=cursor,
                     axis_name=axis3_name,
                     target_rel=base3,
-                    velocity_um_s=sp.velocity_max.get(axis3_name, 0.0),
-                    acceleration_um_s2=sp.acceleration_max.get(axis3_name, 0.0),
-                    jerk_um_s3=sp.jerk.get(axis3_name, 0.0),
+                    velocity=sp.velocity_max.get(axis3_name, 0.0),
+                    acceleration=sp.acceleration_max.get(axis3_name, 0.0),
+                    jerk=sp.jerk.get(axis3_name, 0.0),
                     reason="axis3_return_to_base",
                 )
             )
 
         if axis4_name is not None:
             base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
+            print(
+                f"[ScanManager] StepEvent axis4_return_to_base "
+                f"axis={axis4_name} "
+                f"target={base4} "
+                f"vel={sp.velocity_max.get(axis4_name, 0.0)} "
+                f"acc={sp.acceleration_max.get(axis4_name, 0.0)} "
+                f"jerk={sp.jerk.get(axis4_name, 0.0)} "
+                f"sample_index={cursor}"
+            )
             step_events.append(
                 StepEvent(
                     sample_index=cursor,
                     axis_name=axis4_name,
                     target_rel=base4,
-                    velocity_um_s=sp.velocity_max.get(axis4_name, 0.0),
-                    acceleration_um_s2=sp.acceleration_max.get(axis4_name, 0.0),
-                    jerk_um_s3=sp.jerk.get(axis4_name, 0.0),
+                    velocity=sp.velocity_max.get(axis4_name, 0.0),
+                    acceleration=sp.acceleration_max.get(axis4_name, 0.0),
+                    jerk=sp.jerk.get(axis4_name, 0.0),
                     reason="axis4_return_to_base",
                 )
             )

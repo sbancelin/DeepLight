@@ -1,0 +1,5 @@
+- clignotement affichage run continuous - DONE
+- Sauvergarde en 16bits ou 32its. Conversion valeurs pixel? - DP?NE: 32bit, pîxel = valeur voltage
+- Stop en cours d'acqusition - Done
+- ZVCoil position absolue dans widget, test valeurs extremes (0-7000), déplacement stepper
+- Z stack 

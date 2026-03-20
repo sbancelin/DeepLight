@@ -7,7 +7,6 @@ from threading import Lock
 
 import tifffile
 import zarr
-from numcodecs import Blosc
 
 NGFF_AXES_TCZYX = [
     {"name": "t", "type": "time"},
@@ -208,13 +207,12 @@ class SaveManager:
         # store zarr (v2 par défaut) + metadata NGFF minimal
         root = zarr.open_group(zarr_path, mode="w")
 
-        compressor = Blosc(cname="zstd", clevel=5, shuffle=Blosc.SHUFFLE)
         arr0 = root.create_dataset(
             "0",
+            shape=data.shape,
             data=data,
             chunks=(1, 1, 1, min(256, data.shape[-2]), min(256, data.shape[-1])),
             dtype=np.float32,
-            compressor=compressor,
             overwrite=True,
         )
 
@@ -307,14 +305,11 @@ class SaveManager:
                 # zarr group
                 root = zarr.open_group(path, mode="w")
 
-                compressor = Blosc(cname="zstd", clevel=5, shuffle=Blosc.SHUFFLE)
-
                 arr0 = root.create_dataset(
                     "0",
-                    shape=(reps, len(self._rec_channels), self._rec_z, Y, X),  # T,C,Z,Y,X
+                    shape=(reps, len(self._rec_channels), self._rec_z, Y, X),
                     chunks=(1, 1, 1, min(256, Y), min(256, X)),
                     dtype=np.float32,
-                    compressor=compressor,
                     overwrite=True,
                 )
 

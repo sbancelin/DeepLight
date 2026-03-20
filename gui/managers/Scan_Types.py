@@ -62,13 +62,19 @@ class ScanParams:
 class StepEvent:
     """
     Evénement discret planifié dans la timeline maître.
+
+    IMPORTANT:
+    - target_rel est exprimé dans l'unité native de l'axe
+      (µm pour X/Y/Z, degrés pour Polarization, etc.)
+    - velocity / acceleration / jerk sont aussi exprimés dans
+      l'unité native de l'axe, par seconde.
     """
     sample_index: int
     axis_name: str
     target_rel: float
-    velocity_um_s: float
-    acceleration_um_s2: float
-    jerk_um_s3: float
+    velocity: float
+    acceleration: float
+    jerk: float
     reason: str
 
 @dataclass
@@ -189,7 +195,7 @@ STEPPER_AXIS_DEFAULTS = {
     "Z-Vcoil": {
         "min_um": 0.0,
         "max_um": 7000.0,
-        "vel_max": 1000.0,
+        "vel_max": 200.0,
         "tolerance": 0.1,
     },
     "Polarization": {

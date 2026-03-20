@@ -121,6 +121,11 @@ class AcquisitionManager(QObject):
         self.microscope.stop()
         self.acquisition_thread.quit()
         self.acquisition_thread.wait()
+        try:
+            if hasattr(self.microscope, "_write_ao_idle_zero") and getattr(self.microscope, "scan_kind", None) == "laser":
+                self.microscope._write_ao_idle_zero()
+        except Exception as e:
+            print(f"[AcquisitionManager] AO idle zero failed after thread stop: {e}")
         self.update_timer.stop()  # Arrête le timer de mise à jour
         self.shutter_requested.emit(False) # Shutter OFF
         self.is_running = False
