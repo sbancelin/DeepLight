@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import os
 import time
-import clr  # pythonnet
-from System.Globalization import CultureInfo
-from System import Decimal as SystemDecimal
-from pipython import GCSDevice, GCSError
-
 from typing import Optional
 
 from PySide6.QtCore import QObject, Slot
@@ -65,6 +60,23 @@ THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
 # OPTIONAL IMPORTS
 # =============================================================================
 
+_HAS_CLR = False
+clr = None
+CultureInfo = None
+SystemDecimal = None
+
+try:
+    import clr  # pythonnet
+    from System.Globalization import CultureInfo
+    from System import Decimal as SystemDecimal
+    _HAS_CLR = True
+except Exception:
+    clr = None
+    CultureInfo = None
+    SystemDecimal = None
+    _HAS_CLR = False
+
+
 try:
     from pipython import GCSDevice, GCSError
     _HAS_PI = True
@@ -72,13 +84,6 @@ except Exception:
     GCSDevice = None
     GCSError = Exception
     _HAS_PI = False
-
-try:
-    import clr  # pythonnet
-    _HAS_CLR = True
-except Exception:
-    clr = None
-    _HAS_CLR = False
 
 
 # =============================================================================

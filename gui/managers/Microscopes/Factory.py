@@ -1,18 +1,17 @@
-from .Mock_Microscope import MockMicroscope
-from .Nidaq_Microscope import NidaqMicroscope
-
-BACKENDS = {
-    "mock": MockMicroscope,
-    "nidaq": NidaqMicroscope,
-}
-
 def create_microscope_backend(name: str, scan_parameters=None):
     backend_name = (name or "mock").lower()
 
-    backend_cls = BACKENDS.get(backend_name)
-    if backend_cls is None:
+    if backend_name == "mock":
+        from .Mock_Microscope import MockMicroscope
+        backend_cls = MockMicroscope
+
+    elif backend_name == "nidaq":
+        from .Nidaq_Microscope import NidaqMicroscope
+        backend_cls = NidaqMicroscope
+
+    else:
         raise ValueError(
-            f"Unknown backend '{backend_name}'. Expected one of: {', '.join(BACKENDS)}."
+            f"Unknown backend '{backend_name}'. Expected one of: mock, nidaq."
         )
 
     print(f"[BackendFactory] {backend_cls.__name__}")

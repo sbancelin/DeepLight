@@ -360,6 +360,8 @@ class LineProfileWidget(QWidget):
             movable=True,
             pen=pg.mkPen(color="#2E8B57", width=2),
         )
+        for h in self.line_segment.getHandles():
+            h.hide()
         self.line_segment.sigRegionChanged.connect(self.update_profile)
 
         try:
