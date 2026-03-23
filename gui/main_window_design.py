@@ -14,6 +14,8 @@ from .widgets.Line_profile_widget import LineProfileWidget
 from .widgets.Histogram_widget import HistogramWidget
 from .widgets.FRC_Widget import FRCWidget
 from .widgets.Stitching_Widget import StitchingWidget
+from .widgets.Camera_Widget import CameraWidget
+from .widgets.Spectro_Widget import SpectroWidget
 from .widgets.Panel_Dock import PanelDock
 from .widgets.Collapsible_Panel import CollapsiblePanel
 
@@ -383,82 +385,17 @@ class Ui_MainWindowDesign:
         self.tabWidget.addTab(self.tab_preview, "Scan")
         self.gridLayout_2.addWidget(self.tabWidget)
 
-################# Onglet Camera ######################
-        self.tab_camera = QWidget()
-        self.tab_camera.setObjectName(u"tab_camera")
-
-        # Layout principal de l'onglet
-        self.gridLayout_camera = QGridLayout(self.tab_camera)
-        self.gridLayout_camera.setObjectName(u"gridLayout_camera")
-
-        # Layout pour l'image (gridLayout_im_camera)
-        self.gridLayout_im_camera = QGridLayout()
-        self.gridLayout_im_camera.setObjectName(u"gridLayout_im_camera")
-
-        # Spacer vertical (pour pousser les éléments vers le haut)
-        self.verticalSpacer_camera = QSpacerItem(20, 30, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        self.gridLayout_im_camera.addItem(self.verticalSpacer_camera, 0, 0, 1, 1)
-
-        # Layout pour les contrôles (gridLayout_controls_camera)
-        self.gridLayout_controls_camera = QGridLayout()
-        self.gridLayout_controls_camera.setObjectName(u"gridLayout_controls_camera")
-
-        # CheckBox pour l'auto-échelle
-        self.checkBox_autoscale_camera = QCheckBox(self.tab_camera)
-        self.checkBox_autoscale_camera.setObjectName(u"checkBox_autoscale_camera")
-        self.checkBox_autoscale_camera.setStyleSheet(CHECKBOX_STYLE)
-        self.checkBox_autoscale_camera.setChecked(True)
-        self.gridLayout_controls_camera.addWidget(self.checkBox_autoscale_camera, 0, 0, 1, 1)
-
-        # Ajouter un espaceur horizontal
-        self.horizontalSpacer_camera = QSpacerItem(30, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.gridLayout_controls_camera.addItem(self.horizontalSpacer_camera, 0, 1, 1, 1)
-
-        # Ajouter les layouts au layout pour l'image
-        self.gridLayout_im_camera.addLayout(self.gridLayout_controls_camera, 2, 0, 1, 1)
-
-        # Ajouter le layout pour l'image au layout principal de l'onglet
-        self.gridLayout_camera.addLayout(self.gridLayout_im_camera, 0, 0, 1, 1)
-
-        # Ajouter l'onglet au QTabWidget avec un titre
-        self.tabWidget.addTab(self.tab_camera, "Camera")
-
-        ################# Onglet Spectro ######################
-        self.tab_spectro = QWidget()
-        self.tab_spectro.setObjectName(u"tab_spectro")
-
-        # Layout principal de l'onglet
-        self.gridLayout_spectro = QGridLayout(self.tab_spectro)
-        self.gridLayout_spectro.setObjectName(u"gridLayout_spectro")
-
-        # Layout pour l'image (gridLayout_im_camera)
-        self.gridLayout_im_spectro = QGridLayout()
-        self.gridLayout_im_spectro.setObjectName(u"gridLayout_im_spectro")
-
-        # Spacer vertical (pour pousser les éléments vers le haut)
-        self.verticalSpacer_spectro = QSpacerItem(20, 30, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        self.gridLayout_im_spectro.addItem(self.verticalSpacer_spectro, 0, 0, 1, 1)
-
-        # Layout pour les contrôles (gridLayout_controls_spectro)
-        self.gridLayout_controls_spectro = QGridLayout()
-        self.gridLayout_controls_spectro.setObjectName(u"gridLayout_controls_spectro")
-
-        # Ajouter un espaceur horizontal
-        self.horizontalSpacer_spectro = QSpacerItem(30, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self.gridLayout_controls_spectro.addItem(self.horizontalSpacer_spectro, 0, 1, 1, 1)
-
-        # Ajouter les layouts au layout pour l'image
-        self.gridLayout_im_spectro.addLayout(self.gridLayout_controls_spectro, 2, 0, 1, 1)
-
-        # Ajouter le layout pour l'image au layout principal de l'onglet
-        self.gridLayout_spectro.addLayout(self.gridLayout_im_spectro, 0, 0, 1, 1)
-
-        # Ajouter l'onglet au QTabWidget avec un titre
-        self.tabWidget.addTab(self.tab_spectro, "Spectro")
-
         ################# Onglet Stitching ######################
         self.stitch_widget = StitchingWidget(self.centralwidget)
         self.tabWidget.addTab(self.stitch_widget, "Stitching")
+
+        ################# Onglet Stitching ######################
+        self.camera_widget = CameraWidget(self.centralwidget)
+        self.tabWidget.addTab(self.camera_widget, "Camera")
+
+        ################# Onglet Spectro ######################
+        self.spectro_widget = SpectroWidget(self.centralwidget)
+        self.tabWidget.addTab(self.spectro_widget, "SPectro")
                 
         ##################  Helpers   ##################
         self.retranslateUi(MainWindowDesign)

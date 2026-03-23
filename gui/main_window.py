@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         self._update_estimated_stack_size()
 
         # Initialisation de l'onglet Camera
-        self.im_widget_plot_item_camera = pg.PlotItem()
+        """self.im_widget_plot_item_camera = pg.PlotItem()
         self.im_widget_plot_item_camera.setLabel("left", "y (pixels)")
         self.im_widget_plot_item_camera.setLabel("bottom", "x (pixels)")
         self.im_widget_camera = pg.ImageView(
@@ -99,10 +99,10 @@ class MainWindow(QMainWindow):
         self.ui.gridLayout_im_camera.addWidget(self.im_widget_camera, 0, 0, 1, 1)
         #self.im_widget_camera.show()
         self.im_widget_camera.getView().showGrid(True, True)
-        self.im_widget_camera.setPredefinedGradient("viridis")  # Choisissez un gradient adapté pour les images RGB
+        self.im_widget_camera.setPredefinedGradient("viridis")  # Choisissez un gradient adapté pour les images RGB"""
 
         # Masquer les éléments intégrés de ImageView
-        self.im_widget_camera.ui.roiBtn.hide()
+        #self.im_widget_camera.ui.roiBtn.hide()
 
         # Connection des signaux
         scan_parameters = self._attach_initial_relative_positions(self.ui.scan_widget.get_scan_parameters())
