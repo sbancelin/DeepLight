@@ -173,8 +173,6 @@ class MockPositionerManager(PositionerManager):
         axis_name: str,
         target_rel: float,
         vel_um_s: float,
-        acc_um_s2: float,
-        jerk_um_s3: float,
         t_sched_ms: float,
         reason: str
     ):
@@ -292,30 +290,33 @@ class HardwarePositionerManager(PositionerManager):
 
         self._emit_positions(axis)
 
-    @Slot(str, float, float, float, float, float, str)
+    @Slot(str, float, float, float, str)
     def move_from_scan(
         self,
         axis_name: str,
         target_rel: float,
         vel_um_s: float,
-        acc_um_s2: float,
-        jerk_um_s3: float,
         t_sched_ms: float,
         reason: str
     ):
+        axis = self.axis_from_scan_name(axis_name)
+        if axis is None:
+            return
+        if axis not in self._state:
+            return
+
         self._log(
             f"[SCAN] axis={axis_name} target={target_rel:.3f} "
             f"vel={vel_um_s} t_sched={t_sched_ms}ms reason={reason}"
         )
 
-        st = self._state[axis_name]
+        st = self._state[axis]
 
-        # simulation simple : on attend le temps prévu
         if t_sched_ms > 0:
             time.sleep(t_sched_ms / 1000.0)
 
-        st.abs_pos = target_rel + st.zero_offset
-        self._emit_positions(axis_name)
+        st.abs_pos = float(target_rel) + float(st.zero_offset)
+        self._emit_positions(axis)
 
     @Slot(str)
     def home(self, axis: str):

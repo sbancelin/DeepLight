@@ -20,7 +20,7 @@ class MicroscopeBackendBase(QObject):
     rep_finished = Signal(int)
     frame_ready = Signal(int, tuple, dict)
     samples_progress = Signal(int)
-    stepper_move_requested = Signal(str, float, float, float, float, float, str)
+    stepper_move_requested = Signal(str, float, float, float, str)
     sample_status_updated = Signal(dict)
     sample_image_flush_requested = Signal()
 

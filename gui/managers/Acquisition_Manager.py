@@ -14,7 +14,7 @@ class AcquisitionManager(QObject):
     acquisition_frame = Signal(int, tuple, dict)  # rep, idx_tuple, shown_images
     acquisition_done = Signal(object)   # object = dict acquis (self.acquired)
     samples_progress = Signal(int)      # delta samples analogiques réellement consommés
-    stepper_move_requested = Signal(str, float, float, float, float, float, str)
+    stepper_move_requested = Signal(str, float, float, float, str)
     sample_status_updated = Signal(dict)
 
     def __init__(self, parent=None, scan_parameters=None, microscope_backend=None):

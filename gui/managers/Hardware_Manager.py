@@ -7,6 +7,7 @@ from typing import Optional
 from PySide6.QtCore import QObject, Slot, QTimer
 
 from .Positioner_Manager import MockPositionerManager, PositionerManager
+from .Motic_Camera_Manager import CameraController, OpenCVCameraBackend, MockCameraBackend
 
 
 # =============================================================================
@@ -54,6 +55,10 @@ PI_Z_DEFAULT_VEL_MM_S = 0.5
 # - "KCubeDCServo"
 # - "KCubeStepperMotor"
 THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
+
+# Motic camera
+MOTIC_SDK_DLL_PATH = r"C:\Program Files (x86)\Motic\MUCamSDK\bin\x64\MUCam32.dll"
+MOTIC_CAMERA_INDEX = 0
 
 
 # =============================================================================
@@ -656,19 +661,21 @@ class RealHardwarePositionerManager(PositionerManager):
         target_abs = float(st.abs_pos) + float(delta)
         self._move_abs(axis, target_abs=target_abs, speed=float(speed))
 
-    @Slot(str, float, float, float, float, float, str)
+    @Slot(str, float, float, float, str)
     def move_from_scan(
         self,
         axis_name: str,
         target_rel: float,
         velocity: float,
-        acceleration: float,
-        jerk: float,
         t_sched_ms: float,
         reason: str
     ):
         axis = self.axis_from_scan_name(axis_name)
         if axis is None or axis not in self._state:
+            print(
+                f"[RealHardwarePositioner] move_from_scan ignored: "
+                f"unknown axis_name={axis_name!r}"
+            )
             return
 
         self._refresh_from_hardware(axis, force_emit=False)
@@ -684,9 +691,10 @@ class RealHardwarePositionerManager(PositionerManager):
             f"[RealHardwarePositioner] move_from_scan "
             f"axis_name={axis_name} axis={axis} "
             f"target_rel={target_rel} target_abs={target_abs} "
-            f"velocity={velocity} acceleration={acceleration} jerk={jerk} "
+            f"velocity={velocity} t_sched_ms={t_sched_ms} "
             f"converted_speed={speed} reason={reason}"
         )
+
         self._move_abs(axis, target_abs=target_abs, speed=speed)
 
     @Slot(str)
@@ -749,9 +757,26 @@ class HardwareManager(QObject):
         self._z_failed = False
         self._rotator_failed = {}
 
+        self._camera_backend = None
+        self._camera_controller = None
+
         if self.backend_name == "nidaq":
             self._ensure_real_devices()
 
+    def create_camera_controller(self, parent=None):
+        if self._camera_controller is not None:
+            return self._camera_controller
+
+        if self.backend_name == "mock":
+            print("[HardwareManager] using MockCameraBackend")
+            self._camera_backend = MockCameraBackend()
+        else:
+            print("[HardwareManager] using OpenCVCameraBackend")
+            self._camera_backend = OpenCVCameraBackend(camera_index=0)
+
+        self._camera_controller = CameraController(self._camera_backend, parent=parent)
+        return self._camera_controller
+    
     def _get_laser_runtime_settings(self, laser_name: str) -> dict:
         if self.settings_manager is None:
             raise RuntimeError("HardwareManager has no settings_manager.")
@@ -901,6 +926,18 @@ class HardwareManager(QObject):
         return rot.get_power_percent()
 
     def close(self):
+        try:
+            if self._camera_controller is not None:
+                self._camera_controller.stop_live()
+        except Exception:
+            pass
+
+        try:
+            if self._camera_backend is not None:
+                self._camera_backend.disconnect()
+        except Exception:
+            pass
+
         for dev in (self._shutter, self._z_controller, *self._rotators.values()):
             try:
                 if dev is not None:

@@ -93,7 +93,9 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self.delay_between_rep = 0.0
         self.bidirectional_scan = False
         self.bidirectional_shift_px = 0
-        self.turnback_offset_px = 0
+        
+        self.leading_skip_px = 0
+        self.trailing_skip_px = 0
 
         self._active_ao_task = None
         self._active_ai_task = None
@@ -169,9 +171,8 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self.bidirectional_scan = bool(self.scan_parameters.get("bidirectional_scan", False))
         self.bidirectional_shift_px = int(self.scan_parameters.get("bidirectional_shift_px", 0) or 0)
 
-        turnback_offset = self.scan_parameters.get("turnback_offset", {})
-        fast_axis_name = self.active_axes[0] if len(self.active_axes) > 0 else None
-        self.turnback_offset_px = int(turnback_offset.get(fast_axis_name, 0) or 0) if fast_axis_name else 0
+        self.overscan_fraction = float(self.scan_parameters.get("overscan_fraction", 0.0) or 0.0)
+        self.overscan_fraction = max(0.0, min(0.30, self.overscan_fraction))
 
         if self.scan_kind == "sample":
             self.sample_scan_manager.configure(self.scan_parameters)
@@ -179,6 +180,9 @@ class NidaqMicroscope(MicroscopeBackendBase):
             self.dim_fast = self.dim_image_x
             self.dim_slow = self.dim_image_y
             self.fast_axis_is_image_x = True
+
+            self.leading_skip_px = 0
+            self.trailing_skip_px = 0
 
         elif len(self.active_axes) >= 2:
             fast_axis = self.active_axes[0]
@@ -199,12 +203,18 @@ class NidaqMicroscope(MicroscopeBackendBase):
             self.dim_image_y = self.dim_slow
             self.fast_axis_is_image_x = True
 
+            self.leading_skip_px = int(round(self.overscan_fraction * self.dim_fast))
+            self.trailing_skip_px = int(round(self.overscan_fraction * self.dim_fast))
+
         else:
             self.dim_fast = max(1, int(self.pixel_values[0]))
             self.dim_slow = max(1, int(self.pixel_values[1]))
             self.dim_image_x = self.dim_fast
             self.dim_image_y = self.dim_slow
             self.fast_axis_is_image_x = True
+
+            self.leading_skip_px = 0
+            self.trailing_skip_px = 0
 
         self._recreate_shared_image()
         self.acquired = {}
@@ -231,13 +241,18 @@ class NidaqMicroscope(MicroscopeBackendBase):
             image_x_axis = md.get("image_x_axis")
 
             self.fast_axis_is_image_x = (fast_axis == image_x_axis)
-            self.turnback_offset_px = int(md.get("turnback_offset_px", 0) or 0)
+            self.leading_skip_px = int(md.get("leading_skip_px", 0) or 0)
+            self.trailing_skip_px = int(md.get("trailing_skip_px", 0) or 0)
+            self.overscan_fraction = float(md.get("overscan_fraction", 0.0) or 0.0)
 
             self._log(
                 f"ExecutionPlan loaded image={self.dim_image_x}x{self.dim_image_y} "
                 f"fast={self.dim_fast} slow={self.dim_slow} "
                 f"spp={int(plan.samples_per_pixel)} sr={float(plan.sample_rate_hz):.3f} Hz"
             )
+        else:
+            self.leading_skip_px = 0
+            self.trailing_skip_px = 0
 
         self._recreate_shared_image()
 
@@ -267,8 +282,6 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 str(ev.axis_name),
                 float(ev.target_rel),
                 float(ev.velocity),
-                float(ev.acceleration),
-                float(ev.jerk),
                 float(t_sched_ms),
                 str(ev.reason),
             )
@@ -301,7 +314,8 @@ class NidaqMicroscope(MicroscopeBackendBase):
             samples_per_pixel=max(1, int(samples_per_pixel)),
             bidirectional=bool(self.bidirectional_scan),
             bidirectional_shift_px=int(self.bidirectional_shift_px),
-            turnback_offset_px=int(self.turnback_offset_px),
+            leading_skip_px=int(self.leading_skip_px),
+            trailing_skip_px=int(self.trailing_skip_px),
             fast_axis_is_image_x=bool(self.fast_axis_is_image_x),
         )
 
@@ -349,6 +363,31 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 out[ch] = np.zeros((n_samples,), dtype=np.float64)
         return out
 
+    def _next_step_event_sample_after(self, sample_cursor: int, frame_stop: int) -> int | None:
+        """
+        Retourne le sample_index du prochain step event strictement après sample_cursor
+        et au plus tard dans cette frame. Sinon None.
+        """
+        if self.execution_plan is None:
+            return None
+
+        events = self.execution_plan.step_events
+        i = int(self._step_event_cursor)
+
+        while i < len(events):
+            ev_sample = int(events[i].sample_index)
+
+            if ev_sample <= int(sample_cursor):
+                i += 1
+                continue
+
+            if ev_sample < int(frame_stop):
+                return ev_sample
+
+            break
+
+        return None
+    
     def _read_frame_from_ni(
         self,
         *,
@@ -385,6 +424,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
         remaining = int(n_samples)
         chunk_samples = max(1, int(chunk_samples))
         sample_cursor = int(sample_start)
+        frame_stop = int(sample_start) + int(n_samples)
 
         with nidaqmx.Task("DL_AO_Frame") as ao_task, nidaqmx.Task("DL_AI_Frame") as ai_task:
             self._set_active_tasks(ao_task=ao_task, ai_task=ai_task)
@@ -432,6 +472,13 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
                 while remaining > 0 and not self.acquisition_stop_event.is_set():
                     take = min(chunk_samples, remaining)
+
+                    next_step_sample = self._next_step_event_sample_after(
+                        sample_cursor=int(sample_cursor),
+                        frame_stop=int(frame_stop),
+                    )
+                    if next_step_sample is not None:
+                        take = min(take, max(1, int(next_step_sample) - int(sample_cursor)))
                     ai_chunk = np.zeros((ai_count, int(take)), dtype=np.float64)
 
                     try:
@@ -458,18 +505,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
                     for ch in self.channels:
                         collected[ch].append(mapped[ch])
 
-                    trimmed = {}
-                    for ch in self.channels:
-                        arr = mapped[ch]
-                        useful_remaining = max(0, int(frame_useful_samples) - int(builder.raw_samples_consumed))
-                        if useful_remaining <= 0:
-                            trimmed[ch] = np.zeros((0,), dtype=np.float64)
-                        elif arr.size > useful_remaining:
-                            trimmed[ch] = arr[:useful_remaining]
-                        else:
-                            trimmed[ch] = arr
-
-                    builder.consume_samples(trimmed)
+                    builder.consume_samples(mapped)
 
                     self.samples_progress.emit(int(take))
                     sample_cursor += int(take)
@@ -510,7 +546,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
         frame_useful_samples = int((plan.metadata or {}).get(
             "frame_useful_samples",
-            self.dim_fast * self.dim_slow * max(1, int(plan.samples_per_pixel))
+            self.dim_image_x * self.dim_image_y * max(1, int(plan.samples_per_pixel))
         ))
 
         self._read_frame_from_ni(
@@ -671,7 +707,6 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self.stepper_move_requested.emit(
             str(axis_name),
             float(target_rel),
-            0.0, 0.0, 0.0,
             float(t_sched_ms),
             str(reason),
         )
@@ -724,14 +759,12 @@ class NidaqMicroscope(MicroscopeBackendBase):
             self.stepper_move_requested.emit(
                 str(event.x_axis_name),
                 float(event.x_target_rel_um),
-                0.0, 0.0, 0.0,
                 float(t_sched_ms),
                 "sample_pixel_x",
             )
             self.stepper_move_requested.emit(
                 str(event.y_axis_name),
                 float(event.y_target_rel_um),
-                0.0, 0.0, 0.0,
                 float(t_sched_ms),
                 "sample_pixel_y",
             )

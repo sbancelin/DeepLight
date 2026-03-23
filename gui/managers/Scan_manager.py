@@ -81,7 +81,8 @@ class ScanManager(QObject):
             samples_per_pixel=max(1, int(plan.samples_per_pixel)),
             bidirectional=bool(md.get("bidirectional_scan", False)),
             bidirectional_shift_px=int(md.get("bidirectional_shift_px", 0) or 0),
-            turnback_offset_px=max(0, int(md.get("turnback_offset_px", 0) or 0)),
+            leading_skip_px=max(0, int(md.get("leading_skip_px", 0) or 0)),
+            trailing_skip_px=max(0, int(md.get("trailing_skip_px", 0) or 0)),
             fast_axis_is_image_x=bool(fast_axis_is_image_x),
         )
     
@@ -113,11 +114,9 @@ class ScanManager(QObject):
         if not isinstance(pixel_values, list) or len(pixel_values) != 4:
             pixel_values = [256, 256, 1, 1]
 
-        turnback = d.get("turnback_offset", {})
-        turnback_offset_px = 0
-        if isinstance(turnback, dict) and len(active_axes) > 0:
-            ax0 = active_axes[0]
-            turnback_offset_px = int(turnback.get(ax0, 0) or 0)
+        overscan_fraction = float(d.get("overscan_fraction", 0.10) or 0.10)
+        overscan_fraction = max(0.0, min(0.30, overscan_fraction))
+        frame_flyback_time_s = max(0.0, float(d.get("frame_flyback_time_s", 0.0) or 0.0))
 
         spp = int(d.get("samples_per_pixel", 1) or 1)
         if spp < 1:
@@ -142,13 +141,12 @@ class ScanManager(QObject):
             dwell_time_s=float(d.get("dwell_time", 10e-6) or 10e-6),
             bidirectional_scan=bool(d.get("bidirectional_scan", False)),
             bidirectional_shift_px=bidirectional_shift_px,
-            turnback_offset_px=turnback_offset_px,
+            overscan_fraction=overscan_fraction,
+            frame_flyback_time_s=frame_flyback_time_s,
             conversion_factors=dict(d.get("conversion_factors", {})),
             min_voltages=dict(d.get("min_voltages", {})),
             max_voltages=dict(d.get("max_voltages", {})),
             velocity_max=dict(d.get("velocity_max", {})),
-            acceleration_max=dict(d.get("acceleration_max", {})),
-            jerk=dict(d.get("jerk", {})),
             repetitions=max(1, int(d.get("repetitions", 1) or 1)),
             delay_between_rep_s=max(0.0, float(d.get("delay_between_rep", 0.0) or 0.0)),
             active_channels=list(d.get("active_channels", [])),
@@ -212,12 +210,6 @@ class ScanManager(QObject):
 
         axis_row_map = self._get_axis_row_map(sp)
 
-        print("[ScanManager] build_execution_plan")
-        print("[ScanManager] axis_order =", sp.axis_order)
-        print("[ScanManager] velocity_max =", sp.velocity_max)
-        print("[ScanManager] acceleration_max =", sp.acceleration_max)
-        print("[ScanManager] jerk =", sp.jerk)
-
         row_fast = axis_row_map[fast_axis]
         row_slow = axis_row_map[slow_axis]
         row_img_x = axis_row_map[image_x_axis]
@@ -246,34 +238,46 @@ class ScanManager(QObject):
         y_vmin = float(sp.min_voltages.get(slow_axis, -5.0))
         y_vmax = float(sp.max_voltages.get(slow_axis, 5.0))
 
-        tb = int(sp.turnback_offset_px)
+        overscan_fraction = max(0.0, min(0.30, float(sp.overscan_fraction)))
         reps = max(int(sp.repetitions), 1)
 
         axis3_name = None
         axis3_positions = [None]
 
+        axis4_name = None
+        axis4_positions = [None]
+
+        is_preview_mode = str(sp.mode) in ("preview_single", "preview_continuous")
+
         if len(sp.axis_order) >= 3 and sp.axis_order[2] != "None":
             axis3_name = sp.axis_order[2]
 
-        n3 = max(int(sp.pixel_values[2]), 1)
-        size3 = float(sp.sizes.get(axis3_name, 0.0))
-        off3 = float(sp.offsets.get(axis3_name, 0.0))   # déjà absolu
-
-        axis3_positions = self._compute_axis_positions(n3, size3, off3)
-
-        axis4_name = None
-        axis4_positions = [None]
+            if is_preview_mode:
+                # En preview, on reste à la position actuelle de l'axe.
+                axis3_positions = [
+                    float(sp.initial_relative_positions.get(axis3_name, 0.0))
+                ]
+            else:
+                n3 = max(int(sp.pixel_values[2]), 1)
+                size3 = float(sp.sizes.get(axis3_name, 0.0))
+                off3 = float(sp.offsets.get(axis3_name, 0.0))   # déjà absolu
+                axis3_positions = self._compute_axis_positions(n3, size3, off3)
 
         if len(sp.axis_order) >= 4 and sp.axis_order[3] != "None":
             axis4_name = sp.axis_order[3]
 
-            n4 = max(int(sp.pixel_values[3]), 1)
-            size4 = float(sp.sizes.get(axis4_name, 0.0))
-            user_off4 = float(sp.offsets.get(axis4_name, 0.0))
-            base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
-            off4 = base4 + user_off4
+            if is_preview_mode:
+                axis4_positions = [
+                    float(sp.initial_relative_positions.get(axis4_name, 0.0))
+                ]
+            else:
+                n4 = max(int(sp.pixel_values[3]), 1)
+                size4 = float(sp.sizes.get(axis4_name, 0.0))
+                user_off4 = float(sp.offsets.get(axis4_name, 0.0))
+                base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
+                off4 = base4 + user_off4
 
-            axis4_positions = self._compute_axis_positions(n4, size4, off4)
+                axis4_positions = self._compute_axis_positions(n4, size4, off4)
 
         if axis4_name is not None and reps > 1:
             raise NotImplementedError(
@@ -296,7 +300,8 @@ class ScanManager(QObject):
             y_vmin=y_vmin,
             y_vmax=y_vmax,
             bidirectional=bool(sp.bidirectional_scan),
-            turnback_offset_px=tb,
+            overscan_fraction=overscan_fraction,
+            frame_flyback_time_s=float(sp.frame_flyback_time_s),
             samples_per_pixel=samples_per_pixel,
         )
 
@@ -319,46 +324,32 @@ class ScanManager(QObject):
 
         # Step initial : positionner axis3/axis4 avant la 1ère frame
         if axis3_name is not None and axis3_positions and axis3_positions[0] is not None:
-            print(
-                f"[ScanManager] StepEvent axis3_init "
-                f"axis={axis3_name} "
-                f"target={float(axis3_positions[0])} "
-                f"vel={sp.velocity_max.get(axis3_name, 0.0)} "
-                f"acc={sp.acceleration_max.get(axis3_name, 0.0)} "
-                f"jerk={sp.jerk.get(axis3_name, 0.0)}"
-            )
-            step_events.append(
-                StepEvent(
-                    sample_index=0,
-                    axis_name=axis3_name,
-                    target_rel=float(axis3_positions[0]),
-                    velocity=sp.velocity_max.get(axis3_name, 0.0),
-                    acceleration=sp.acceleration_max.get(axis3_name, 0.0),
-                    jerk=sp.jerk.get(axis3_name, 0.0),
-                    reason="axis3_init",
+            init3 = float(axis3_positions[0])
+            cur3 = float(sp.initial_relative_positions.get(axis3_name, init3))
+            if abs(init3 - cur3) > 1e-9:
+                step_events.append(
+                    StepEvent(
+                        sample_index=0,
+                        axis_name=axis3_name,
+                        target_rel=init3,
+                        velocity=sp.velocity_max.get(axis3_name, 0.0),
+                        reason="axis3_init",
+                    )
                 )
-            )
 
         if axis4_name is not None and axis4_positions and axis4_positions[0] is not None:
-            print(
-                f"[ScanManager] StepEvent axis4_init "
-                f"axis={axis4_name} "
-                f"target={float(axis4_positions[0])} "
-                f"vel={sp.velocity_max.get(axis4_name, 0.0)} "
-                f"acc={sp.acceleration_max.get(axis4_name, 0.0)} "
-                f"jerk={sp.jerk.get(axis4_name, 0.0)}"
-            )
-            step_events.append(
-                StepEvent(
-                    sample_index=0,
-                    axis_name=axis4_name,
-                    target_rel=float(axis4_positions[0]),
-                    velocity=sp.velocity_max.get(axis4_name, 0.0),
-                    acceleration=sp.acceleration_max.get(axis4_name, 0.0),
-                    jerk=sp.jerk.get(axis4_name, 0.0),
-                    reason="axis4_init",
+            init4 = float(axis4_positions[0])
+            cur4 = float(sp.initial_relative_positions.get(axis4_name, init4))
+            if abs(init4 - cur4) > 1e-9:
+                step_events.append(
+                    StepEvent(
+                        sample_index=0,
+                        axis_name=axis4_name,
+                        target_rel=init4,
+                        velocity=sp.velocity_max.get(axis4_name, 0.0),
+                        reason="axis4_init",
+                    )
                 )
-            )
 
         for rep_i in range(reps):
             # Repositionnement explicite au début de chaque répétition
@@ -370,8 +361,6 @@ class ScanManager(QObject):
                             axis_name=axis3_name,
                             target_rel=float(axis3_positions[0]),
                             velocity=sp.velocity_max.get(axis3_name, 0.0),
-                            acceleration=sp.acceleration_max.get(axis3_name, 0.0),
-                            jerk=sp.jerk.get(axis3_name, 0.0),
                             reason="axis3_init_rep",
                         )
                     )
@@ -383,8 +372,6 @@ class ScanManager(QObject):
                             axis_name=axis4_name,
                             target_rel=float(axis4_positions[0]),
                             velocity=sp.velocity_max.get(axis4_name, 0.0),
-                            acceleration=sp.acceleration_max.get(axis4_name, 0.0),
-                            jerk=sp.jerk.get(axis4_name, 0.0),
                             reason="axis4_init_rep",
                         )
                     )
@@ -424,23 +411,12 @@ class ScanManager(QObject):
                             next_axis3_reason = None
 
                         if next_axis3_target is not None:
-                            print(
-                                f"[ScanManager] StepEvent {next_axis3_reason} "
-                                f"axis={axis3_name} "
-                                f"target={next_axis3_target} "
-                                f"vel={sp.velocity_max.get(axis3_name, 0.0)} "
-                                f"acc={sp.acceleration_max.get(axis3_name, 0.0)} "
-                                f"jerk={sp.jerk.get(axis3_name, 0.0)} "
-                                f"sample_index={cursor}"
-                            )
                             step_events.append(
                                 StepEvent(
                                     sample_index=cursor,
                                     axis_name=axis3_name,
                                     target_rel=next_axis3_target,
                                     velocity=sp.velocity_max.get(axis3_name, 0.0),
-                                    acceleration=sp.acceleration_max.get(axis3_name, 0.0),
-                                    jerk=sp.jerk.get(axis3_name, 0.0),
                                     reason=next_axis3_reason,
                                 )
                             )
@@ -448,23 +424,12 @@ class ScanManager(QObject):
                     # mouvement axis4 quand le cycle axis3 est fini
                     if axis4_name is not None and i3 == len(axis3_positions) - 1:
                         if i4 < len(axis4_positions) - 1:
-                            print(
-                                f"[ScanManager] StepEvent axis4_step "
-                                f"axis={axis4_name} "
-                                f"target={axis4_positions[i4 + 1]} "
-                                f"vel={sp.velocity_max.get(axis4_name, 0.0)} "
-                                f"acc={sp.acceleration_max.get(axis4_name, 0.0)} "
-                                f"jerk={sp.jerk.get(axis4_name, 0.0)} "
-                                f"sample_index={cursor}"
-                            )
                             step_events.append(
                                 StepEvent(
                                     sample_index=cursor,
                                     axis_name=axis4_name,
                                     target_rel=axis4_positions[i4 + 1],
                                     velocity=sp.velocity_max.get(axis4_name, 0.0),
-                                    acceleration=sp.acceleration_max.get(axis4_name, 0.0),
-                                    jerk=sp.jerk.get(axis4_name, 0.0),
                                     reason="axis4_step",
                                 )
                             )
@@ -482,46 +447,25 @@ class ScanManager(QObject):
         # Step final : retour à la base initiale à la fin du run
         if axis3_name is not None:
             base3 = float(sp.initial_relative_positions.get(axis3_name, 0.0))
-            print(
-                f"[ScanManager] StepEvent axis3_return_to_base "
-                f"axis={axis3_name} "
-                f"target={base3} "
-                f"vel={sp.velocity_max.get(axis3_name, 0.0)} "
-                f"acc={sp.acceleration_max.get(axis3_name, 0.0)} "
-                f"jerk={sp.jerk.get(axis3_name, 0.0)} "
-                f"sample_index={cursor}"
-            )
             step_events.append(
                 StepEvent(
                     sample_index=cursor,
                     axis_name=axis3_name,
                     target_rel=base3,
                     velocity=sp.velocity_max.get(axis3_name, 0.0),
-                    acceleration=sp.acceleration_max.get(axis3_name, 0.0),
-                    jerk=sp.jerk.get(axis3_name, 0.0),
+
                     reason="axis3_return_to_base",
                 )
             )
 
         if axis4_name is not None:
             base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
-            print(
-                f"[ScanManager] StepEvent axis4_return_to_base "
-                f"axis={axis4_name} "
-                f"target={base4} "
-                f"vel={sp.velocity_max.get(axis4_name, 0.0)} "
-                f"acc={sp.acceleration_max.get(axis4_name, 0.0)} "
-                f"jerk={sp.jerk.get(axis4_name, 0.0)} "
-                f"sample_index={cursor}"
-            )
             step_events.append(
                 StepEvent(
                     sample_index=cursor,
                     axis_name=axis4_name,
                     target_rel=base4,
                     velocity=sp.velocity_max.get(axis4_name, 0.0),
-                    acceleration=sp.acceleration_max.get(axis4_name, 0.0),
-                    jerk=sp.jerk.get(axis4_name, 0.0),
                     reason="axis4_return_to_base",
                 )
             )
@@ -529,6 +473,10 @@ class ScanManager(QObject):
         ao_x = np.concatenate(ao_x_parts).astype(np.float64, copy=False)
         ao_y = np.concatenate(ao_y_parts).astype(np.float64, copy=False)
         total_samples = int(ao_x.size)
+
+        lead_px = int(round(overscan_fraction * pix_fast))
+        trail_px = lead_px
+        pix_fast_total = pix_fast + lead_px + trail_px
 
         metadata = {
             "fast_axis": fast_axis,
@@ -539,21 +487,25 @@ class ScanManager(QObject):
             "axis_x": fast_axis,
             "axis_y": slow_axis,
             # dimensions raster (matériel)
-            "pix_fast": pix_fast,
+            "pix_fast": pix_fast_total,
             "pix_slow": pix_slow,
             # dimensions image (logiques)
             "pix_image_x": pix_image_x,
             "pix_image_y": pix_image_y,
-            "pix_x": pix_fast,
+            "pix_x": pix_fast_total,
             "pix_y": pix_slow,
-            "turnback_offset_px": tb,
+            "leading_skip_px": lead_px,
+            "trailing_skip_px": trail_px,
+            "overscan_fraction": overscan_fraction,
             "bidirectional_scan": bool(sp.bidirectional_scan),
             "bidirectional_shift_px": int(sp.bidirectional_shift_px),
             "active_channels": list(sp.active_channels),
             "repetitions": reps,
             "delay_between_rep_s": float(sp.delay_between_rep_s),
             "frame_samples": frame_len,
-            "frame_useful_samples": int(pix_fast * pix_slow * samples_per_pixel),
+            "frame_useful_samples": int(pix_fast_total * pix_slow * samples_per_pixel),
+            "frame_flyback_samples": int(frame_len - (pix_fast_total * pix_slow * samples_per_pixel)),
+            "frame_flyback_time_s": float(sp.frame_flyback_time_s),
             "delay_samples": delay_samples,
             "axis3_name": axis3_name,
             "axis3_positions": axis3_positions,
@@ -757,7 +709,8 @@ class ScanManager(QObject):
         y_vmin: float = -5.0,
         y_vmax: float = +5.0,
         bidirectional: bool = False,
-        turnback_offset_px: int = 0,
+        overscan_fraction: float = 0.10,
+        frame_flyback_time_s: float = 0.0,
         samples_per_pixel: int = 1,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -772,6 +725,14 @@ class ScanManager(QObject):
         spp = max(int(samples_per_pixel), 1)
         dt_sample_s = dwell_time_s / float(spp)
 
+        frame_flyback_time_s = max(0.0, float(frame_flyback_time_s))
+        frame_flyback_samples = int(round(frame_flyback_time_s / dt_sample_s)) if dt_sample_s > 0 else 0
+
+        overscan_fraction = max(0.0, min(0.30, float(overscan_fraction)))
+        lead_px = int(round(overscan_fraction * pix_x))
+        trail_px = lead_px
+        pix_total_x = pix_x + lead_px + trail_px
+
         conv_x = self.default_conv_um_per_v if conv_x_um_per_v is None else float(conv_x_um_per_v)
         conv_y = self.default_conv_um_per_v if conv_y_um_per_v is None else float(conv_y_um_per_v)
 
@@ -780,44 +741,59 @@ class ScanManager(QObject):
         y_start_um = offset_y_um - size_y_um / 2.0
         y_stop_um = offset_y_um + size_y_um / 2.0
 
-        x_pixels_um = np.linspace(x_start_um, x_stop_um, pix_x, endpoint=False, dtype=np.float64)
+        x_total_size_um = size_x_um / max(1e-9, (1.0 - 2.0 * overscan_fraction))
+        x_total_start_um = offset_x_um - x_total_size_um / 2.0
+        x_total_stop_um = offset_x_um + x_total_size_um / 2.0
+
+        x_total_pixels_um = np.linspace(x_total_start_um, x_total_stop_um, pix_total_x, endpoint=False, dtype=np.float64)
         y_pixels_um = np.linspace(y_start_um, y_stop_um, pix_y, endpoint=False, dtype=np.float64)
 
-        x_pixels_v = self._clamp(self._um_to_v(x_pixels_um, conv_x), x_vmin, x_vmax)
+        x_total_pixels_v = self._clamp(self._um_to_v(x_total_pixels_um, conv_x), x_vmin, x_vmax)
         y_pixels_v = self._clamp(self._um_to_v(y_pixels_um, conv_y), y_vmin, y_vmax)
-
-        tb_px = max(int(turnback_offset_px), 0)
-        tb_samples = tb_px * spp
 
         x_lines = []
         y_lines = []
 
         for iy in range(pix_y):
-            y_line = np.full((pix_x * spp,), float(y_pixels_v[iy]), dtype=np.float64)
+            y_line = np.full((pix_total_x * spp,), float(y_pixels_v[iy]), dtype=np.float64)
 
             if bidirectional and (iy % 2 == 1):
-                x_line_pixels = x_pixels_v[::-1]
-                fly_start = float(x_pixels_v[0]) if pix_x > 0 else 0.0
-                fly_stop = float(x_pixels_v[-1]) if pix_x > 0 else 0.0
+                x_line_pixels = x_total_pixels_v[::-1]
             else:
-                x_line_pixels = x_pixels_v
-                fly_start = float(x_pixels_v[-1]) if pix_x > 0 else 0.0
-                fly_stop = float(x_pixels_v[0]) if pix_x > 0 else 0.0
+                x_line_pixels = x_total_pixels_v
 
             x_line = np.repeat(x_line_pixels, spp)
-
-            if tb_samples > 0:
-                x_fly = np.linspace(fly_start, fly_stop, tb_samples, endpoint=False, dtype=np.float64)
-                y_fly = np.full((tb_samples,), float(y_pixels_v[iy]), dtype=np.float64)
-
-                x_line = np.concatenate([x_line, x_fly], axis=0)
-                y_line = np.concatenate([y_line, y_fly], axis=0)
 
             x_lines.append(x_line)
             y_lines.append(y_line)
 
         x_v = np.concatenate(x_lines, axis=0).astype(np.float64, copy=False)
         y_v = np.concatenate(y_lines, axis=0).astype(np.float64, copy=False)
+
+        if frame_flyback_samples > 0 and x_v.size > 0 and y_v.size > 0:
+            x_start_v = float(x_total_pixels_v[0])
+            y_start_v = float(y_pixels_v[0])
+
+            x_last_v = float(x_v[-1])
+            y_last_v = float(y_v[-1])
+
+            x_fb = np.linspace(
+                x_last_v,
+                x_start_v,
+                frame_flyback_samples + 1,
+                endpoint=True,
+                dtype=np.float64,
+            )[1:]
+            y_fb = np.linspace(
+                y_last_v,
+                y_start_v,
+                frame_flyback_samples + 1,
+                endpoint=True,
+                dtype=np.float64,
+            )[1:]
+
+            x_v = np.concatenate([x_v, x_fb], axis=0).astype(np.float64, copy=False)
+            y_v = np.concatenate([y_v, y_fb], axis=0).astype(np.float64, copy=False)
 
         n = x_v.size
         t_ms = (np.arange(n, dtype=np.float64) * dt_sample_s) * 1e3
@@ -910,7 +886,6 @@ class ScanManager(QObject):
         sizes = scan_params.get("sizes", {})
         offsets = scan_params.get("offsets", {})
         convs = scan_params.get("conversion_factors", {})
-        turnback = scan_params.get("turnback_offset", {})
         vmins = scan_params.get("min_voltages", {})
         vmaxs = scan_params.get("max_voltages", {})
 
@@ -923,7 +898,14 @@ class ScanManager(QObject):
         off_slow_um = float(offsets.get(slow_axis, 0.0))
         conv_fast = float(convs.get(fast_axis, self.default_conv_um_per_v))
         conv_slow = float(convs.get(slow_axis, self.default_conv_um_per_v))
-        tb = int(turnback.get(fast_axis, 0))
+        overscan_fraction = max(
+            0.0,
+            min(0.30, float(scan_params.get("overscan_fraction", 0.0) or 0.0))
+        )
+        frame_flyback_time_s = max(
+            0.0,
+            float(scan_params.get("frame_flyback_time_s", 0.0) or 0.0)
+        )
 
         fast_vmin = float(vmins.get(fast_axis, -5.0))
         fast_vmax = float(vmaxs.get(fast_axis, 5.0))
@@ -945,7 +927,8 @@ class ScanManager(QObject):
             y_vmin=slow_vmin,
             y_vmax=slow_vmax,
             bidirectional=bool(scan_params.get("bidirectional_scan", False)),
-            turnback_offset_px=tb,
+            overscan_fraction=overscan_fraction,
+            frame_flyback_time_s=frame_flyback_time_s,
             samples_per_pixel=samples_per_pixel,
         )
 
@@ -962,8 +945,12 @@ class ScanManager(QObject):
 
         dt_ms = float(t_ms[1] - t_ms[0]) if t_ms.size > 1 else ((float(dwell_time_s) / float(samples_per_pixel)) * 1e3)
 
-        samples_per_line = int((pix_fast + max(tb, 0)) * samples_per_pixel)
-        self._samples_per_xy_frame = max(1, samples_per_line * int(pix_slow))
+        lead_px = int(round(overscan_fraction * pix_fast))
+        trail_px = lead_px
+        samples_per_line = int((pix_fast + lead_px + trail_px) * samples_per_pixel)
+
+        frame_flyback_samples = int(round(frame_flyback_time_s / max(1e-12, dwell_time_s / float(samples_per_pixel))))
+        self._samples_per_xy_frame = max(1, samples_per_line * int(pix_slow) + frame_flyback_samples)
         self._xy_frame_dt_ms = dt_ms
         self._xy_frame_duration_ms = self._samples_per_xy_frame * dt_ms
         try:
@@ -1114,7 +1101,6 @@ class ScanManager(QObject):
         sizes = scan_params.get("sizes", {})
         offsets = scan_params.get("offsets", {})
         convs = scan_params.get("conversion_factors", {})
-        turnback = scan_params.get("turnback_offset", {})
 
         fast_axis = active_axes[0] if len(active_axes) > 0 else "X-Galvo"
         slow_axis = active_axes[1] if len(active_axes) > 1 else "Y-Galvo"
@@ -1125,7 +1111,10 @@ class ScanManager(QObject):
         off_slow_um = float(offsets.get(slow_axis, 0.0))
         conv_fast = float(convs.get(fast_axis, self.default_conv_um_per_v))
         conv_slow = float(convs.get(slow_axis, self.default_conv_um_per_v))
-        tb = int(turnback.get(fast_axis, 0))
+        overscan_fraction = max(
+            0.0,
+            min(0.30, float(scan_params.get("overscan_fraction", 0.0) or 0.0))
+        )
 
         bidir = bool(scan_params.get("bidirectional_scan", False))
 
@@ -1151,7 +1140,7 @@ class ScanManager(QObject):
             y_vmin=slow_vmin,
             y_vmax=slow_vmax,
             bidirectional=bidir,
-            turnback_offset_px=tb,
+            overscan_fraction=overscan_fraction,
             samples_per_pixel=samples_per_pixel,
         )
 

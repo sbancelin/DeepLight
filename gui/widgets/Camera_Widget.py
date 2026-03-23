@@ -103,7 +103,7 @@ class CameraWidget(QWidget):
         self.spin_exposure_ms = QDoubleSpinBox()
         self.spin_exposure_ms.setDecimals(3)
         self.spin_exposure_ms.setRange(0.001, 1_000_000.0)
-        self.spin_exposure_ms.setValue(10.0)
+        self.spin_exposure_ms.setValue(1)
         self.spin_exposure_ms.setSingleStep(1.0)
         control_bar.addWidget(self.spin_exposure_ms)
 
@@ -130,7 +130,7 @@ class CameraWidget(QWidget):
 
         control_bar.addWidget(QLabel("Pixel format"))
         self.combo_pixel_format = QComboBox()
-        self.combo_pixel_format.addItems(["Mono8", "Mono12", "Mono16"])
+        self.combo_pixel_format.addItems(["Mono8", "RGB24"])
         control_bar.addWidget(self.combo_pixel_format)
 
         self.cb_auto_exposure = QCheckBox("Auto Exp")
@@ -148,6 +148,7 @@ class CameraWidget(QWidget):
         control_bar.addWidget(self.button_live)
 
         self.button_stop = QPushButton("Stop")
+        self.button_stop.setEnabled(False)
         control_bar.addWidget(self.button_stop)
 
         self.label_status_run = QLabel("Idle")
@@ -285,7 +286,7 @@ class CameraWidget(QWidget):
 
     def set_running(self, running: bool):
         self.button_snap.setEnabled(not running)
-        self.button_live.setEnabled(not running)
+        self.button_live.setEnabled(True)
 
         self.spin_exposure_ms.setEnabled(not running and not self.cb_auto_exposure.isChecked())
         self.spin_fps.setEnabled(not running)
@@ -296,13 +297,13 @@ class CameraWidget(QWidget):
         self.cb_auto_exposure.setEnabled(not running)
         self.cb_auto_gain.setEnabled(not running)
 
-        self.cb_autoscale.setEnabled(not running)
-        self.cb_lock.setEnabled(not running)
-        self.cb_grid.setEnabled(not running)
-        self.button_set_levels.setEnabled(not running)
-        self.button_reset_levels.setEnabled(not running)
+        self.cb_autoscale.setEnabled(True)
+        self.cb_lock.setEnabled(True)
+        self.cb_grid.setEnabled(True)
+        self.button_set_levels.setEnabled(True)
+        self.button_reset_levels.setEnabled(True)
 
-        self.button_stop.setEnabled(True)
+        self.button_stop.setEnabled(running)
 
     def set_live_button_state(self, live_running: bool):
         self.button_live.setText("Stop Live" if live_running else "Start Live")

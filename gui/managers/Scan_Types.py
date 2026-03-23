@@ -9,52 +9,35 @@ import numpy as np
 # ---------------------------------------------------------
 @dataclass
 class ScanParams:
-    """
-    Description déclarative d'un scan.
-    C'est la version structurée des paramètres issus du ScanWidget/UI.
-    """
-    mode: str  # "preview_single", "preview_continuous", "acquisition"
-
+    mode: str
     axis_order: List[str]
     active_axes: List[str]
 
-    pixel_values: List[int]                 # [nx, ny, n3, n4]
-    sizes: Dict[str, float]                 # µm ou ° selon l'axe
-    step_sizes: Dict[str, float]            # taille pixel / pas par axe (µm ou °)
+    pixel_values: List[int]
+    sizes: Dict[str, float]
+    step_sizes: Dict[str, float]
     offsets: Dict[str, float]
 
     dwell_time_s: float
 
     bidirectional_scan: bool = False
     bidirectional_shift_px: int = 0
-    turnback_offset_px: int = 0
+    overscan_fraction: float = 0.0
+    frame_flyback_time_s: float = 0.0
 
     conversion_factors: Dict[str, float] = field(default_factory=dict)
     min_voltages: Dict[str, float] = field(default_factory=dict)
     max_voltages: Dict[str, float] = field(default_factory=dict)
 
     velocity_max: Dict[str, float] = field(default_factory=dict)
-    acceleration_max: Dict[str, float] = field(default_factory=dict)
-    jerk: Dict[str, float] = field(default_factory=dict)
 
     repetitions: int = 1
     delay_between_rep_s: float = 0.0
-
     active_channels: List[str] = field(default_factory=list)
-
     initial_relative_positions: Dict[str, float] = field(default_factory=dict)
-
-    # Sur-échantillonnage temporel éventuel
     samples_per_pixel: int = 1
-
     scan_kind: str = "laser"
-
-    # prévu pour la suite :
-    # - "analog_integrating" pour PMT / NI-DAQ
-    # - plus tard : "camera_scalar", etc.
     pixel_source_kind: str = "analog_integrating"
-
-    # Temps de stabilisation mécanique éventuel
     sample_settle_time_s: float = 0.0
 
 
@@ -66,15 +49,17 @@ class StepEvent:
     IMPORTANT:
     - target_rel est exprimé dans l'unité native de l'axe
       (µm pour X/Y/Z, degrés pour Polarization, etc.)
-    - velocity / acceleration / jerk sont aussi exprimés dans
-      l'unité native de l'axe, par seconde.
+    - velocity est exprimée dans l'unité native de l'axe, par seconde.
+
+    Note:
+    - acceleration_max et jerk ne font plus partie du modèle.
+    - l'overscan raster est porté par overscan_fraction.
+    - le retour de frame Y est porté par frame_flyback_time_s.
     """
     sample_index: int
     axis_name: str
     target_rel: float
     velocity: float
-    acceleration: float
-    jerk: float
     reason: str
 
 @dataclass
@@ -127,7 +112,8 @@ class FrameReconstructionPlan:
 
     bidirectional: bool = False
     bidirectional_shift_px: int = 0
-    turnback_offset_px: int = 0
+    leading_skip_px: int = 0
+    trailing_skip_px: int = 0
 
     fast_axis_is_image_x: bool = True
 
@@ -163,19 +149,17 @@ SCAN_AXIS_DEFAULTS = {
         "conv_um_per_v": 100.0,
         "vmin": -10.0,
         "vmax": 10.0,
-        "turnback_px": 0,
+        "overscan_fraction": 0.10,
+        "frame_flyback_time_s": 0.0,
         "vel_max": 1000.0,
-        "acc_max": 1000.0,
-        "jerk": 1.0,
     },
     "Y-Galvo": {
         "conv_um_per_v": 100.0,
         "vmin": -10.0,
         "vmax": 10.0,
-        "turnback_px": 0,
+        "overscan_fraction": 0.0,
+        "frame_flyback_time_s": 0.001,
         "vel_max": 1000.0,
-        "acc_max": 1000.0,
-        "jerk": 1.0,
     },
 }
 

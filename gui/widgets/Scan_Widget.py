@@ -174,10 +174,9 @@ def setup_scan_settings_dialog(dialog):
         cur_conv = axis_cfg.get("conv_um_per_v", defaults.get("conv_um_per_v"))
         cur_vmin = axis_cfg.get("vmin", defaults.get("vmin", -10.0))
         cur_vmax = axis_cfg.get("vmax", defaults.get("vmax", 10.0))
-        cur_tb   = axis_cfg.get("turnback_px", defaults.get("turnback_px", 0))
-        cur_vel  = axis_cfg.get("vel_max", defaults.get("vel_max", 1.0))
-        cur_acc  = axis_cfg.get("acc_max", defaults.get("acc_max", 1.0))
-        cur_jerk = axis_cfg.get("jerk", defaults.get("jerk", 1.0))
+        cur_overscan = float(axis_cfg.get("overscan_fraction", defaults.get("overscan_fraction", 0.0)))
+        cur_frame_flyback_s = float(axis_cfg.get("frame_flyback_time_s", defaults.get("frame_flyback_time_s", 0.0)))
+        cur_vel = float(axis_cfg.get("vel_max", defaults.get("vel_max", 1.0)))
 
         conversion_layout = QHBoxLayout()
         conversion_label = QLabel("Conversion Factor (µm/V):")
@@ -207,29 +206,22 @@ def setup_scan_settings_dialog(dialog):
         vel_edit.setObjectName(f"vel_edit_{axis_name.replace('-', '_')}")
         dyn_layout_1.addWidget(QLabel("Velocity max (mm/s):"))
         dyn_layout_1.addWidget(vel_edit)
-
-        acc_edit = QLineEdit(str(cur_acc))
-        acc_edit.setObjectName(f"acc_edit_{axis_name.replace('-', '_')}")
-        dyn_layout_1.addWidget(QLabel("Acceleration (mm/s²):"))
-        dyn_layout_1.addWidget(acc_edit)
         dialog.add_layout(dyn_layout_1)
 
         dyn_layout_2 = QHBoxLayout()
-        jerk_edit = QLineEdit(str(cur_jerk))
-        jerk_edit.setObjectName(f"jerk_edit_{axis_name.replace('-', '_')}")
-        dyn_layout_2.addWidget(QLabel("Jerk (mm/s³):"))
-        dyn_layout_2.addWidget(jerk_edit)
+        if axis_name == "X-Galvo":
+            overscan_edit = QLineEdit(str(100.0 * cur_overscan))
+            overscan_edit.setObjectName(f"overscan_edit_{axis_name.replace('-', '_')}")
+            dyn_layout_2.addWidget(QLabel("Overscan (%):"))
+            dyn_layout_2.addWidget(overscan_edit)
 
-        tb_edit = QLineEdit(str(cur_tb))
-        tb_edit.setObjectName(f"turnback_edit_{axis_name.replace('-', '_')}")
-        dyn_layout_2.addWidget(QLabel("Turnback (px):"))
-        dyn_layout_2.addWidget(tb_edit)
+        elif axis_name == "Y-Galvo":
+            flyback_edit = QLineEdit(str(cur_frame_flyback_s * 1e3))
+            flyback_edit.setObjectName(f"flyback_edit_{axis_name.replace('-', '_')}")
+            dyn_layout_2.addWidget(QLabel("Frame flyback (ms):"))
+            dyn_layout_2.addWidget(flyback_edit)
+
         dialog.add_layout(dyn_layout_2)
-
-        if index < len(axes) - 1:
-            vertical_spacer = QLabel()
-            vertical_spacer.setFixedHeight(10)
-            dialog.add_widget(vertical_spacer)
 
     def _read_float(le: QLineEdit, default: float) -> float:
         try:
@@ -253,12 +245,9 @@ def setup_scan_settings_dialog(dialog):
             conv_edit = dialog.findChild(QLineEdit, f"conv_edit_{key}")
             vmin_edit = dialog.findChild(QLineEdit, f"vmin_edit_{key}")
             vmax_edit = dialog.findChild(QLineEdit, f"vmax_edit_{key}")
-            vel_edit  = dialog.findChild(QLineEdit, f"vel_edit_{key}")
-            acc_edit  = dialog.findChild(QLineEdit, f"acc_edit_{key}")
-            jerk_edit = dialog.findChild(QLineEdit, f"jerk_edit_{key}")
-            tb_edit   = dialog.findChild(QLineEdit, f"turnback_edit_{key}")
+            vel_edit = dialog.findChild(QLineEdit, f"vel_edit_{key}")
 
-            if not all([conv_edit, vmin_edit, vmax_edit, vel_edit, acc_edit, jerk_edit, tb_edit]):
+            if not all([conv_edit, vmin_edit, vmax_edit, vel_edit]):
                 continue
 
             old = scan_widget.axis_settings_manager.get_axis_settings(axis_name)
@@ -267,43 +256,90 @@ def setup_scan_settings_dialog(dialog):
             old_conv = float(old.get("conv_um_per_v", defaults.get("conv_um_per_v")))
             old_vmin = float(old.get("vmin", defaults.get("vmin", -5.0)))
             old_vmax = float(old.get("vmax", defaults.get("vmax", 5.0)))
-            old_tb   = int(old.get("turnback_px", defaults.get("turnback_px", 0)))
-            old_vel  = float(old.get("vel_max", defaults.get("vel_max", 1.0)))
-            old_acc  = float(old.get("acc_max", defaults.get("acc_max", 1.0)))
-            old_jerk = float(old.get("jerk", defaults.get("jerk", 1.0)))
+            old_vel = float(old.get("vel_max", defaults.get("vel_max", 1.0)))
+            old_overscan = float(old.get("overscan_fraction", defaults.get("overscan_fraction", 0.0)))
+            old_flyback_s = float(old.get("frame_flyback_time_s", defaults.get("frame_flyback_time_s", 0.0)))
 
             conv = _read_float(conv_edit, old_conv)
             vmin = _read_float(vmin_edit, old_vmin)
             vmax = _read_float(vmax_edit, old_vmax)
-            tb   = _read_int(tb_edit, old_tb)
-            vel  = _read_float(vel_edit, old_vel)
-            acc  = _read_float(acc_edit, old_acc)
-            jerk = _read_float(jerk_edit, old_jerk)
+            vel = _read_float(vel_edit, old_vel)
 
-            ok, msg = scan_widget.validate_axis_setting_values(axis_name, conv, vmin, vmax, tb, vel, acc, jerk)
-            if not ok:
-                QMessageBox.warning(scan_widget, "Invalid scan setting", msg)
-                conv_edit.setText(str(old_conv))
-                vmin_edit.setText(str(old_vmin))
-                vmax_edit.setText(str(old_vmax))
-                tb_edit.setText(str(old_tb))
-                vel_edit.setText(str(old_vel))
-                acc_edit.setText(str(old_acc))
-                jerk_edit.setText(str(old_jerk))
-                continue
+            if axis_name == "X-Galvo":
+                overscan_edit = dialog.findChild(QLineEdit, f"overscan_edit_{key}")
+                if overscan_edit is None:
+                    continue
 
-            scan_widget.axis_settings_manager.update_axis_settings(
-                axis_name,
-                conv_um_per_v=conv,
-                vmin=vmin,
-                vmax=vmax,
-                turnback_px=tb,
-                vel_max=vel,
-                acc_max=acc,
-                jerk=jerk,
-            )
+                overscan_percent = _read_float(overscan_edit, 100.0 * old_overscan)
+                overscan_fraction = max(0.0, min(0.30, overscan_percent / 100.0))
+
+                ok, msg = scan_widget.validate_axis_setting_values(
+                    axis_name=axis_name,
+                    conv=conv,
+                    vmin=vmin,
+                    vmax=vmax,
+                    vel=vel,
+                    overscan_percent=overscan_percent,
+                    frame_flyback_ms=None,
+                )
+                if not ok:
+                    QMessageBox.warning(scan_widget, "Invalid scan setting", msg)
+                    conv_edit.setText(str(old_conv))
+                    vmin_edit.setText(str(old_vmin))
+                    vmax_edit.setText(str(old_vmax))
+                    vel_edit.setText(str(old_vel))
+                    overscan_edit.setText(str(100.0 * old_overscan))
+                    continue
+
+                scan_widget.axis_settings_manager.update_axis_settings(
+                    axis_name,
+                    conv_um_per_v=conv,
+                    vmin=vmin,
+                    vmax=vmax,
+                    overscan_fraction=overscan_fraction,
+                    frame_flyback_time_s=0.0,
+                    vel_max=vel,
+                )
+
+            elif axis_name == "Y-Galvo":
+                flyback_edit = dialog.findChild(QLineEdit, f"flyback_edit_{key}")
+                if flyback_edit is None:
+                    continue
+
+                frame_flyback_ms = _read_float(flyback_edit, old_flyback_s * 1e3)
+                frame_flyback_time_s = max(0.0, frame_flyback_ms * 1e-3)
+
+                ok, msg = scan_widget.validate_axis_setting_values(
+                    axis_name=axis_name,
+                    conv=conv,
+                    vmin=vmin,
+                    vmax=vmax,
+                    vel=vel,
+                    overscan_percent=None,
+                    frame_flyback_ms=frame_flyback_ms,
+                )
+                if not ok:
+                    QMessageBox.warning(scan_widget, "Invalid scan setting", msg)
+                    conv_edit.setText(str(old_conv))
+                    vmin_edit.setText(str(old_vmin))
+                    vmax_edit.setText(str(old_vmax))
+                    vel_edit.setText(str(old_vel))
+                    flyback_edit.setText(str(old_flyback_s * 1e3))
+                    continue
+
+                scan_widget.axis_settings_manager.update_axis_settings(
+                    axis_name,
+                    conv_um_per_v=conv,
+                    vmin=vmin,
+                    vmax=vmax,
+                    overscan_fraction=0.0,
+                    frame_flyback_time_s=frame_flyback_time_s,
+                    vel_max=vel,
+                )
 
         scan_widget.axis_settings = scan_widget.axis_settings_manager.get_all_axis_settings()
+        scan_widget._update_scan_duration()
+        scan_widget._on_param_changed()
 
     dialog.accepted.connect(on_dialog_accepted)
 
@@ -1106,15 +1142,51 @@ class ScanWidget(QWidget):
         """Met à jour la durée de scan."""
         try:
             dwell_us = float(self.dwell_edit.text() or "0")
-            total_pixels = int(float(self.total_pixels_edit.text() or "0"))
             samples_per_pixel = int(float(self.samples_per_pixel_edit.text() or "1"))
 
-            if dwell_us <= 0 or total_pixels <= 0 or samples_per_pixel <= 0:
+            if dwell_us <= 0 or samples_per_pixel <= 0:
                 self.duration_edit.setText("0")
                 return
 
-            # stepper instantané => même formule pour XY / XZ / YZ
-            base_duration = dwell_us * total_pixels * samples_per_pixel / 1_000_000
+            active_rows = [i for i, cb in enumerate(self.scan_dim_combos) if cb.currentText() != "None"]
+            if len(active_rows) < 2:
+                self.duration_edit.setText("0")
+                return
+
+            row_fast = active_rows[0]
+            row_slow = active_rows[1]
+
+            pix_fast = int(float(self.pixel_edits[row_fast].text() or "1"))
+            pix_slow = int(float(self.pixel_edits[row_slow].text() or "1"))
+
+            if pix_fast <= 0 or pix_slow <= 0:
+                self.duration_edit.setText("0")
+                return
+
+            frame_flyback_time_s = 0.0
+
+            if self.scan_kind == "laser":
+                overscan_fraction = self._get_fast_axis_overscan_fraction()
+                frame_flyback_time_s = self._get_frame_flyback_time_s()
+
+                lead_px = int(round(overscan_fraction * pix_fast))
+                trail_px = lead_px
+                pix_fast_scanned = pix_fast + lead_px + trail_px
+                scanned_pixels_total = pix_fast_scanned * pix_slow
+            else:
+                scanned_pixels_total = pix_fast * pix_slow
+
+            # Les axes supplémentaires (Z / P) multiplient le nombre de frames XY
+            extra_factor = 1
+            for i in active_rows[2:]:
+                px = int(float(self.pixel_edits[i].text() or "1"))
+                extra_factor *= max(1, px)
+
+            scanned_pixels_total *= extra_factor
+
+            base_duration = (
+                dwell_us * scanned_pixels_total * samples_per_pixel / 1_000_000
+            ) + (frame_flyback_time_s * extra_factor)
 
             if self.rep_checkbox.isChecked():
                 repetitions = self._read_int_edit(self.rep_edit, 1)
@@ -1168,10 +1240,9 @@ class ScanWidget(QWidget):
         conv: float,
         vmin: float,
         vmax: float,
-        turnback_px: int,
         vel: float,
-        acc: float,
-        jerk: float
+        overscan_percent: float | None = None,
+        frame_flyback_ms: float | None = None,
     ) -> tuple[bool, str]:
         if conv <= 0:
             return False, f"{axis_name}: Conversion factor must be > 0 (µm/V)."
@@ -1179,17 +1250,16 @@ class ScanWidget(QWidget):
         if vmin >= vmax:
             return False, f"{axis_name}: Min Voltage must be < Max Voltage."
 
-        if turnback_px < 0:
-            return False, f"{axis_name}: Turnback Offset must be >= 0 (pixels)."
+        if overscan_percent is not None:
+            if overscan_percent < 0 or overscan_percent > 30:
+                return False, f"{axis_name}: Overscan must be between 0 and 30 (%)."
+
+        if frame_flyback_ms is not None:
+            if frame_flyback_ms < 0 or frame_flyback_ms > 100:
+                return False, f"{axis_name}: Frame flyback must be between 0 and 100 ms."
 
         if vel <= 0:
             return False, f"{axis_name}: Velocity max must be > 0 (mm/s)."
-
-        if acc <= 0:
-            return False, f"{axis_name}: Acceleration must be > 0 (mm/s²)."
-
-        if jerk <= 0:
-            return False, f"{axis_name}: Jerk must be > 0 (mm/s³)."
 
         return True, ""
     
@@ -1208,6 +1278,42 @@ class ScanWidget(QWidget):
             return None, None
         return active_rows[0], active_rows[1]
 
+    def _get_fast_axis_overscan_fraction(self) -> float:
+        """
+        Retourne l'overscan de l'axe rapide (1er axe actif) depuis les settings.
+        Ne code aucune valeur en dur hors fallback ultime sur SCAN_AXIS_DEFAULTS.
+        """
+        ix, _ = self._get_xy_row_indices()
+        if ix is None:
+            return 0.0
+
+        fast_axis = self.scan_dim_combos[ix].currentText()
+        if fast_axis == "None":
+            return 0.0
+
+        defaults = SCAN_AXIS_DEFAULTS.get(fast_axis, {})
+        default_overscan = float(defaults.get("overscan_fraction", 0.0))
+
+        if self.axis_settings_manager is None:
+            return default_overscan
+
+        s = self.axis_settings_manager.get_axis_settings(fast_axis) or {}
+        return float(s.get("overscan_fraction", default_overscan))
+    
+    def _get_frame_flyback_time_s(self) -> float:
+        """
+        Retourne le frame flyback du Y-Galvo depuis les settings.
+        """
+        axis_name = "Y-Galvo"
+        defaults = SCAN_AXIS_DEFAULTS.get(axis_name, {})
+        default_value = float(defaults.get("frame_flyback_time_s", 0.0))
+
+        if self.axis_settings_manager is None:
+            return default_value
+
+        s = self.axis_settings_manager.get_axis_settings(axis_name) or {}
+        return max(0.0, float(s.get("frame_flyback_time_s", default_value) or 0.0))
+    
     def get_xy_pixels(self):
         """Retourne pix_x, pix_y (basé sur les 2 premiers axes actifs)."""
         ix, iy = self._get_xy_row_indices()
@@ -1447,10 +1553,10 @@ class ScanWidget(QWidget):
         conversion_factors = {}
         min_voltages = {}
         max_voltages = {}
-        turnback_offset = {}
         velocity_max = {}
-        acceleration = {}
-        jerk = {}
+
+        overscan_fraction = self._get_fast_axis_overscan_fraction()
+        frame_flyback_time_s = self._get_frame_flyback_time_s()
 
         for combo in self.scan_dim_combos:
             axis_name = combo.currentText()
@@ -1458,13 +1564,12 @@ class ScanWidget(QWidget):
                 continue
 
             s = self.axis_settings_manager.get_axis_settings(axis_name) if self.axis_settings_manager is not None else {}
-            conversion_factors[axis_name] = float(s.get("conv_um_per_v", 20))
-            min_voltages[axis_name] = float(s.get("vmin", -10.0))
-            max_voltages[axis_name] = float(s.get("vmax", 10.0))
-            turnback_offset[axis_name] = int(s.get("turnback_px", 0))
-            velocity_max[axis_name] = float(s.get("vel_max", 1.0))
-            acceleration[axis_name] = float(s.get("acc_max", 1.0))
-            jerk[axis_name] = float(s.get("jerk", 1.0))
+            defaults = SCAN_AXIS_DEFAULTS.get(axis_name, {})
+
+            conversion_factors[axis_name] = float(s.get("conv_um_per_v", defaults.get("conv_um_per_v", 20.0)))
+            min_voltages[axis_name] = float(s.get("vmin", defaults.get("vmin", -10.0)))
+            max_voltages[axis_name] = float(s.get("vmax", defaults.get("vmax", 10.0)))
+            velocity_max[axis_name] = float(s.get("vel_max", defaults.get("vel_max", 1.0)))
 
         # Récupérer les autres paramètres
         bidirectional_scan = self.bidirectional_button.isChecked()
@@ -1540,13 +1645,6 @@ class ScanWidget(QWidget):
             if row["axis"] != "None":
                 total_pixels *= max(1, int(row["pixels"]))
 
-        print("[ScanWidget] active_axes =", active_axes)
-        print("[ScanWidget] axis_order =", axis_order)
-        print("[ScanWidget] velocity_max =", velocity_max)
-        print("[ScanWidget] acceleration =", acceleration)
-        print("[ScanWidget] jerk =", jerk)
-        print("[ScanWidget] rows =", rows)
-
         return {
             "rows": rows,
             "pixel_values": pixel_values,
@@ -1561,9 +1659,8 @@ class ScanWidget(QWidget):
             "min_voltages": min_voltages,
             "max_voltages": max_voltages,
             "velocity_max": velocity_max,
-            "acceleration_max": acceleration,
-            "jerk": jerk,
-            "turnback_offset": turnback_offset,
+            "overscan_fraction": overscan_fraction,
+            "frame_flyback_time_s": frame_flyback_time_s,
             "bidirectional_scan": bidirectional_scan,
             "bidirectional_shift_px": bidirectional_shift_px,
             "repetitions": repetitions,

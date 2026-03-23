@@ -1,0 +1,540 @@
+from __future__ import annotations
+
+import ctypes
+import os
+import time
+import cv2
+
+import numpy as np
+from PySide6.QtCore import QObject, Signal, Slot, QTimer
+
+from .Camera_Manager import CameraBackendBase, CameraParameters
+
+
+# =============================================================================
+# HARD-CODED CAMERA CONFIG
+# =============================================================================
+
+# IMPORTANT:
+# utiliser la DLL du SDK MUCam, pas "MoticUniversalSDK.dll"
+MOTIC_SDK_DLL_PATH = r"C:\Program Files (x86)\Motic\MUCamSDK\bin\x64\MUCam32.dll"
+MOTIC_CAMERA_INDEX = 0
+
+
+# =============================================================================
+# MOCK CAMERA BACKEND
+# =============================================================================
+
+class MockCameraBackend(CameraBackendBase):
+    def __init__(self):
+        super().__init__()
+        self._t0 = time.perf_counter()
+        self._width = 512
+        self._height = 512
+        self._phase = 0.0
+
+    def connect(self) -> None:
+        import struct
+        print(f"[MoticCamera] python_bits={struct.calcsize('P') * 8}")
+        print(f"[MoticCamera] dll_path={self.dll_path}")
+        print(f"[MoticCamera] dll_exists={os.path.isfile(self.dll_path)}")
+        self.connected = True
+        print("[MockCamera] connected")
+
+    def disconnect(self) -> None:
+        self.stop_live()
+        self.connected = False
+        print("[MockCamera] disconnected")
+
+    def list_binning(self):
+        return ["1x1", "2x2", "4x4"]
+
+    def list_pixel_formats(self):
+        return ["Mono8", "Mono12", "Mono16", "RGB24"]
+
+def set_parameters(self, params: CameraParameters) -> None:
+    super().set_parameters(params)
+
+    if self.cap is None:
+        return
+
+    # FPS : souvent ignoré par le driver, mais on essaie quand même
+    try:
+        self.cap.set(cv2.CAP_PROP_FPS, float(params.fps))
+    except Exception:
+        pass
+
+    # Auto exposure
+    if bool(params.auto_exposure):
+        try:
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+        except Exception:
+            pass
+    else:
+        try:
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+        except Exception:
+            pass
+
+        # IMPORTANT:
+        # Sous OpenCV/DirectShow, l'exposure n'est souvent PAS en ms.
+        # On convertit grossièrement les ms UI en "valeur driver" plus raisonnable.
+        exp_ms = max(0.1, float(params.exposure_ms))
+
+        # Mapping empirique prudent pour éviter la saturation.
+        # 0.1 ms -> -13 ; 1 ms -> -10 ; 10 ms -> -7 ; 100 ms -> -4
+        import math
+        exp_driver = max(-13.0, min(-1.0, math.log2(exp_ms) - 10.0))
+
+        try:
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, exp_driver)
+            print(f"[OpenCVCamera] requested exposure_ms={exp_ms:.3f} mapped_exposure={exp_driver:.3f}")
+        except Exception:
+            pass
+
+    if not bool(params.auto_gain):
+        try:
+            self.cap.set(cv2.CAP_PROP_GAIN, float(params.gain))
+        except Exception:
+            pass
+
+    def _mono_dtype_and_max(self):
+        pf = str(self.params.pixel_format)
+        if pf == "Mono16":
+            return np.uint16, 65535.0
+        if pf == "Mono12":
+            return np.uint16, 4095.0
+        return np.uint8, 255.0
+
+    def _generate_base_pattern(self):
+        h, w = self._height, self._width
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+
+        t = time.perf_counter() - self._t0
+        self._phase += 0.12
+
+        cx = w * (0.5 + 0.18 * np.cos(0.7 * t))
+        cy = h * (0.5 + 0.16 * np.sin(0.9 * t))
+        sigma = max(8.0, 20.0 - 0.5 * float(self.params.gain))
+
+        spot = np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sigma ** 2)))
+        fringes = 0.35 * (1.0 + np.sin(0.05 * xx + 0.07 * yy + self._phase))
+        grad = 0.15 + 0.35 * (xx / max(1.0, float(w - 1)))
+        noise = 0.04 * np.random.randn(h, w).astype(np.float32)
+
+        exposure_scale = min(4.0, max(0.05, float(self.params.exposure_ms) / 10.0))
+        gain_scale = 1.0 + 0.1 * float(self.params.gain)
+
+        img = (0.15 + grad + fringes + 1.8 * spot + noise) * exposure_scale * gain_scale
+        return np.clip(img, 0.0, 1.0)
+
+    def snap(self) -> np.ndarray:
+        if not self.connected:
+            self.connect()
+
+        pf = str(self.params.pixel_format)
+        base = self._generate_base_pattern()
+
+        if pf == "RGB24":
+            r = base
+            g = np.roll(base, shift=8, axis=1)
+            b = np.roll(base, shift=12, axis=0)
+            rgb = np.stack([r, g, b], axis=-1)
+            return (rgb * 255.0).astype(np.uint8, copy=False)
+
+        dtype, vmax = self._mono_dtype_and_max()
+        return (base * vmax).astype(dtype, copy=False)
+
+    def get_frame(self) -> np.ndarray:
+        return self.snap()
+
+
+# =============================================================================
+# SDK BINDING
+# =============================================================================
+
+class _MoticSdkBinding:
+    def __init__(self, dll_path: str):
+        if not os.path.isfile(dll_path):
+            raise RuntimeError(f"MUCam DLL not found: {dll_path}")
+
+        self.dll = ctypes.WinDLL(dll_path)
+        self.MUCam_Handle = ctypes.c_void_p
+
+        self.dll.MUCam_findCamera.restype = self.MUCam_Handle
+
+        self.dll.MUCam_releaseCamera.argtypes = [self.MUCam_Handle]
+        self.dll.MUCam_releaseCamera.restype = None
+
+        self.dll.MUCam_openCamera.argtypes = [self.MUCam_Handle]
+        self.dll.MUCam_openCamera.restype = ctypes.c_bool
+
+        self.dll.MUCam_closeCamera.argtypes = [self.MUCam_Handle]
+        self.dll.MUCam_closeCamera.restype = None
+
+        self.dll.MUCam_getFrameFormat.argtypes = [self.MUCam_Handle]
+        self.dll.MUCam_getFrameFormat.restype = ctypes.c_int
+
+        self.dll.MUCam_getFrame.argtypes = [
+            self.MUCam_Handle,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        self.dll.MUCam_getFrame.restype = ctypes.c_bool
+
+        self.dll.MUCam_getBinningCount.argtypes = [self.MUCam_Handle]
+        self.dll.MUCam_getBinningCount.restype = ctypes.c_int
+
+        self.dll.MUCam_getBinningList.argtypes = [
+            self.MUCam_Handle,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        self.dll.MUCam_getBinningList.restype = ctypes.c_bool
+
+        self.dll.MUCam_setBinningIndex.argtypes = [self.MUCam_Handle, ctypes.c_int]
+        self.dll.MUCam_setBinningIndex.restype = ctypes.c_bool
+
+        self.dll.MUCam_getExposureRange.argtypes = [
+            self.MUCam_Handle,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        self.dll.MUCam_getExposureRange.restype = ctypes.c_bool
+
+        self.dll.MUCam_setExposure.argtypes = [self.MUCam_Handle, ctypes.c_float]
+        self.dll.MUCam_setExposure.restype = ctypes.c_bool
+
+        self.dll.MUCam_getGainCount.argtypes = [self.MUCam_Handle]
+        self.dll.MUCam_getGainCount.restype = ctypes.c_int
+
+        self.dll.MUCam_getGainList.argtypes = [self.MUCam_Handle, ctypes.POINTER(ctypes.c_float)]
+        self.dll.MUCam_getGainList.restype = ctypes.c_bool
+
+        self.dll.MUCam_setRGBGainValue.argtypes = [
+            self.MUCam_Handle,
+            ctypes.c_float,
+            ctypes.c_float,
+            ctypes.c_float,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        self.dll.MUCam_setRGBGainValue.restype = ctypes.c_bool
+
+    def find_all_cameras(self):
+        cams = []
+        while True:
+            h = self.dll.MUCam_findCamera()
+            if not h:
+                break
+            cams.append(h)
+        return cams
+
+    def release_camera(self, handle):
+        if handle:
+            self.dll.MUCam_releaseCamera(handle)
+
+    def open_camera(self, handle):
+        ok = self.dll.MUCam_openCamera(handle)
+        if not ok:
+            raise RuntimeError("Failed to open Motic camera")
+
+    def close_camera(self, handle):
+        if handle:
+            self.dll.MUCam_closeCamera(handle)
+
+    def get_frame_format(self, handle) -> int:
+        return int(self.dll.MUCam_getFrameFormat(handle))
+
+    def get_binning_sizes(self, handle):
+        count = int(self.dll.MUCam_getBinningCount(handle))
+        if count <= 0:
+            raise RuntimeError("No binning modes reported by camera")
+
+        w = (ctypes.c_int * count)()
+        h = (ctypes.c_int * count)()
+
+        ok = self.dll.MUCam_getBinningList(handle, w, h)
+        if not ok:
+            raise RuntimeError("Failed to get binning list")
+
+        return [(int(w[i]), int(h[i])) for i in range(count)]
+
+    def set_binning_index(self, handle, idx: int):
+        ok = self.dll.MUCam_setBinningIndex(handle, int(idx))
+        if not ok:
+            raise RuntimeError(f"Failed to set binning index {idx}")
+
+    def get_exposure_range(self, handle):
+        mn = ctypes.c_float()
+        mx = ctypes.c_float()
+        ok = self.dll.MUCam_getExposureRange(handle, ctypes.byref(mn), ctypes.byref(mx))
+        if not ok:
+            return None
+        return float(mn.value), float(mx.value)
+
+    def set_exposure(self, handle, exposure_ms: float):
+        ok = self.dll.MUCam_setExposure(handle, ctypes.c_float(float(exposure_ms)))
+        if not ok:
+            raise RuntimeError(f"Failed to set exposure to {exposure_ms} ms")
+
+    def get_gain_values(self, handle):
+        count = int(self.dll.MUCam_getGainCount(handle))
+        if count <= 0:
+            return []
+
+        values = (ctypes.c_float * count)()
+        ok = self.dll.MUCam_getGainList(handle, values)
+        if not ok:
+            return []
+
+        return [float(values[i]) for i in range(count)]
+
+    def set_gain_value(self, handle, gain_value: float):
+        ri = ctypes.c_int()
+        gi = ctypes.c_int()
+        bi = ctypes.c_int()
+        ok = self.dll.MUCam_setRGBGainValue(
+            handle,
+            ctypes.c_float(float(gain_value)),
+            ctypes.c_float(float(gain_value)),
+            ctypes.c_float(float(gain_value)),
+            ctypes.byref(ri),
+            ctypes.byref(gi),
+            ctypes.byref(bi),
+        )
+        if not ok:
+            raise RuntimeError(f"Failed to set gain to {gain_value}")
+
+    def get_frame(self, handle, width: int, height: int, channels: int = 3) -> np.ndarray:
+        if channels not in (1, 3):
+            raise ValueError("channels must be 1 or 3")
+
+        size = int(width) * int(height) * int(channels)
+        buf = (ctypes.c_ubyte * size)()
+        ts = ctypes.c_ulong()
+
+        ok = self.dll.MUCam_getFrame(handle, buf, ctypes.byref(ts))
+        if not ok:
+            raise RuntimeError("Frame grab failed")
+
+        arr = np.ctypeslib.as_array(buf)
+
+        if channels == 3:
+            return arr.reshape((int(height), int(width), 3)).copy()
+
+        return arr.reshape((int(height), int(width))).copy()
+
+
+# =============================================================================
+# REAL MOTIC CAMERA BACKEND
+# =============================================================================
+
+class OpenCVCameraBackend(CameraBackendBase):
+    def __init__(self, camera_index: int = 0):
+        super().__init__()
+        self.camera_index = int(camera_index)
+        self.cap = None
+        self._last_frame = None
+
+    def connect(self) -> None:
+        if self.connected:
+            return
+
+        print(f"[OpenCVCamera] opening camera index={self.camera_index}")
+        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+
+        if not cap or not cap.isOpened():
+            raise RuntimeError(f"Cannot open camera index={self.camera_index}")
+
+        self.cap = cap
+        self.connected = True
+        print("[OpenCVCamera] connected")
+
+        self.set_parameters(self.params)
+
+    def disconnect(self) -> None:
+        self.stop_live()
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        self.connected = False
+        print("[OpenCVCamera] disconnected")
+
+    def list_binning(self):
+        return ["1x1"]
+
+    def list_pixel_formats(self):
+        return ["Mono8", "RGB24"]
+
+    def set_parameters(self, params: CameraParameters) -> None:
+        super().set_parameters(params)
+
+        if self.cap is None:
+            return
+
+        # FPS
+        try:
+            self.cap.set(cv2.CAP_PROP_FPS, float(params.fps))
+        except Exception:
+            pass
+
+        # Exposure
+        if not bool(params.auto_exposure):
+            try:
+                self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+            except Exception:
+                pass
+            try:
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, float(params.exposure_ms))
+            except Exception:
+                pass
+        else:
+            try:
+                self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+            except Exception:
+                pass
+
+        # Gain
+        if not bool(params.auto_gain):
+            try:
+                self.cap.set(cv2.CAP_PROP_GAIN, float(params.gain))
+            except Exception:
+                pass
+
+    def _read_frame(self) -> np.ndarray:
+        if not self.connected:
+            self.connect()
+
+        if self.cap is None:
+            raise RuntimeError("Camera is not opened")
+
+        ok, frame = self.cap.read()
+        if not ok or frame is None:
+            raise RuntimeError("Failed to read frame from OpenCV camera")
+
+        self._last_frame = frame
+        return frame
+
+    def _convert_to_requested_format(self, frame_bgr: np.ndarray) -> np.ndarray:
+        pf = str(self.params.pixel_format)
+
+        if pf == "RGB24":
+            return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        return gray
+
+    def snap(self) -> np.ndarray:
+        frame = self._read_frame()
+        return self._convert_to_requested_format(frame)
+
+    def start_live(self) -> None:
+        if not self.connected:
+            self.connect()
+        self.live_running = True
+        print("[OpenCVCamera] live started")
+
+    def stop_live(self) -> None:
+        self.live_running = False
+        print("[OpenCVCamera] live stopped")
+
+    def get_frame(self) -> np.ndarray:
+        return self.snap()
+
+# =============================================================================
+# QT CONTROLLER
+# =============================================================================
+
+class CameraController(QObject):
+    frame_ready = Signal(object)
+    status_changed = Signal(str)
+    running_changed = Signal(bool)
+
+    def __init__(self, backend: CameraBackendBase, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_live_timer)
+
+    def _params_from_widget_dict(self, d: dict) -> CameraParameters:
+        return CameraParameters(
+            exposure_ms=float(d.get("exposure_ms", 10.0)),
+            fps=max(0.1, float(d.get("fps", 10.0))),
+            gain=float(d.get("gain", 0.0)),
+            binning=str(d.get("binning", "1x1")),
+            pixel_format=str(d.get("pixel_format", "Mono8")),
+            auto_exposure=bool(d.get("auto_exposure", False)),
+            auto_gain=bool(d.get("auto_gain", False)),
+        )
+
+    def connect_camera(self):
+        self.backend.connect()
+        self.status_changed.emit("Connected")
+
+    def disconnect_camera(self):
+        self.stop_live()
+        self.backend.disconnect()
+        self.status_changed.emit("Disconnected")
+
+    def list_binning(self):
+        return list(self.backend.list_binning())
+
+    def list_pixel_formats(self):
+        return list(self.backend.list_pixel_formats())
+
+    @Slot(dict)
+    def apply_parameters(self, widget_params: dict):
+        params = self._params_from_widget_dict(widget_params)
+        self.backend.set_parameters(params)
+
+    @Slot(dict)
+    def snap(self, widget_params: dict):
+        try:
+            self.connect_camera()
+            self.apply_parameters(widget_params)
+            img = self.backend.snap()
+            self.frame_ready.emit(img)
+            self.status_changed.emit("Snap done")
+        except Exception as e:
+            self.status_changed.emit(f"Camera error: {e}")
+            raise
+
+    @Slot(dict)
+    def start_live(self, widget_params: dict):
+        try:
+            self.connect_camera()
+            self.apply_parameters(widget_params)
+
+            fps = max(0.1, float(self.backend.get_parameters().fps))
+            interval_ms = max(1, int(round(1000.0 / fps)))
+
+            self.backend.start_live()
+            self._timer.start(interval_ms)
+
+            self.running_changed.emit(True)
+            self.status_changed.emit("Live running")
+        except Exception as e:
+            self.running_changed.emit(False)
+            self.status_changed.emit(f"Camera error: {e}")
+            raise
+
+    @Slot()
+    def stop_live(self):
+        self._timer.stop()
+        try:
+            self.backend.stop_live()
+        finally:
+            self.running_changed.emit(False)
+            self.status_changed.emit("Idle")
+
+    @Slot()
+    def _on_live_timer(self):
+        try:
+            img = self.backend.get_frame()
+            self.frame_ready.emit(img)
+        except Exception as e:
+            self.stop_live()
+            self.status_changed.emit(f"Camera error: {e}")

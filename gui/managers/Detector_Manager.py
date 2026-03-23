@@ -31,7 +31,9 @@ class MockDetectorManager(QObject):
         self.dim_slow = self.dim_image_y
         self.fast_axis_is_image_x = True
         self.bidirectional = False
-        self.turnback_offset_px = 0
+
+        self.leading_skip_px = 0
+        self.trailing_skip_px = 0
 
         self._frame_signal_cache: dict[str, np.ndarray] = {}
         self._sample_cursor = 0
@@ -75,7 +77,8 @@ class MockDetectorManager(QObject):
         dim_slow: int | None = None,
         fast_axis_is_image_x: bool = True,
         bidirectional: bool = False,
-        turnback_offset_px: int = 0,
+        leading_skip_px: int = 0,
+        trailing_skip_px: int = 0,
     ):
         """
         Configure le format technique attendu par l'acquisition.
@@ -91,11 +94,13 @@ class MockDetectorManager(QObject):
         self.samples_per_pixel = max(1, int(samples_per_pixel))
 
         self.bidirectional = bool(bidirectional)
-        self.turnback_offset_px = max(0, int(turnback_offset_px))
 
         self.dim_fast = int(dim_fast) if dim_fast is not None else self.dim_image_x
         self.dim_slow = int(dim_slow) if dim_slow is not None else self.dim_image_y
         self.fast_axis_is_image_x = bool(fast_axis_is_image_x)
+
+        self.leading_skip_px = max(0, int(leading_skip_px))
+        self.trailing_skip_px = max(0, int(trailing_skip_px))
 
         self._reset_frame_cache()
 
@@ -206,29 +211,55 @@ class MockDetectorManager(QObject):
         Transforme une image logique frame[y, x] en flux 1D dans l'ordre
         temporel réellement acquis.
 
-        - fast_axis_is_image_x = True  -> fast = X image
-        - fast_axis_is_image_x = False -> fast = Y image
+        Le flux raster peut être plus large que l'image logique à cause de
+        l'overscan. Dans ce cas :
+        - les pixels utiles sont insérés entre leading_skip_px et trailing_skip_px
+        - les zones overscan sont remplies au niveau bas
         - si bidirectional=True, une ligne slow sur deux est lue en sens inverse
+        sur le flux technique complet
         """
-        flat = np.empty((self.dim_fast * self.dim_slow,), dtype=np.float64)
+        flat = np.full((self.dim_fast * self.dim_slow,), self.low_level, dtype=np.float64)
+
+        if self.fast_axis_is_image_x:
+            useful_fast = int(self.dim_image_x)
+            useful_slow = int(self.dim_image_y)
+        else:
+            useful_fast = int(self.dim_image_y)
+            useful_slow = int(self.dim_image_x)
+
+        if useful_slow != int(self.dim_slow):
+            raise ValueError(
+                f"Incompatible frame geometry: useful_slow={useful_slow}, dim_slow={self.dim_slow}"
+            )
+
+        expected_fast = self.leading_skip_px + useful_fast + self.trailing_skip_px
+        if expected_fast != int(self.dim_fast):
+            raise ValueError(
+                "Incompatible raster geometry: "
+                f"dim_fast={self.dim_fast}, "
+                f"leading_skip_px={self.leading_skip_px}, "
+                f"useful_fast={useful_fast}, "
+                f"trailing_skip_px={self.trailing_skip_px}"
+            )
 
         k = 0
         for slow_idx in range(self.dim_slow):
-            if self.bidirectional and (slow_idx % 2 == 1):
-                fast_range = range(self.dim_fast - 1, -1, -1)
+            line = np.full((self.dim_fast,), self.low_level, dtype=np.float64)
+
+            if self.fast_axis_is_image_x:
+                line[
+                    self.leading_skip_px : self.leading_skip_px + self.dim_image_x
+                ] = frame[slow_idx, :]
             else:
-                fast_range = range(self.dim_fast)
+                line[
+                    self.leading_skip_px : self.leading_skip_px + self.dim_image_y
+                ] = frame[:, slow_idx]
 
-            for fast_idx in fast_range:
-                if self.fast_axis_is_image_x:
-                    x_img = fast_idx
-                    y_img = slow_idx
-                else:
-                    x_img = slow_idx
-                    y_img = fast_idx
+            if self.bidirectional and (slow_idx % 2 == 1):
+                line = line[::-1]
 
-                flat[k] = frame[y_img, x_img]
-                k += 1
+            flat[k : k + self.dim_fast] = line
+            k += self.dim_fast
 
         return flat
 

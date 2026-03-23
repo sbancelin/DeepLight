@@ -326,8 +326,6 @@ class StepperVisualizerWidget(QWidget):
         axis_name: str,
         target_um: float,
         vel_um_s: float,
-        acc_um_s2: float,
-        jerk_um_s3: float,
         t_sched_ms: float,
         reason: str
     ):

@@ -12,11 +12,12 @@ class FrameBuilder:
     - conserver un remplissage progressif de l'image pendant l'acquisition
 
     Hypothèses :
-        - le flux brut est ordonné ligne par ligne
-        - chaque ligne brute contient :
-              [samples utiles] + [samples de turnback éventuels]
-        - les samples utiles d'une ligne correspondent à dim_fast pixels
-        - chaque pixel = moyenne de samples_per_pixel samples consécutifs
+    - le flux brut est ordonné ligne par ligne
+    - chaque ligne brute contient :
+          [leading skip] + [samples utiles] + [trailing skip]
+    - les samples utiles d'une ligne correspondent à la largeur logique de l'image
+      sur l'axe rapide
+    - chaque pixel = moyenne de samples_per_pixel samples consécutifs
     """
 
     def __init__(
@@ -38,7 +39,8 @@ class FrameBuilder:
         self.samples_per_pixel = int(self.plan.samples_per_pixel)
         self.bidirectional = bool(self.plan.bidirectional)
         self.bidirectional_shift_px = int(self.plan.bidirectional_shift_px)
-        self.turnback_offset_px = int(self.plan.turnback_offset_px)
+        self.leading_skip_px = int(self.plan.leading_skip_px)
+        self.trailing_skip_px = int(self.plan.trailing_skip_px)
         self.fast_axis_is_image_x = bool(self.plan.fast_axis_is_image_x)
 
         if self.samples_per_pixel <= 0:
@@ -46,23 +48,30 @@ class FrameBuilder:
 
         self.n_channels = len(self.channels)
 
-        self.total_pixels = int(self.dim_fast * self.dim_slow)
+        self.useful_fast_pixels = int(self.dim_image_x if self.fast_axis_is_image_x else self.dim_image_y)
+        self.total_fast_pixels = self.useful_fast_pixels + self.leading_skip_px + self.trailing_skip_px
 
-        self.line_useful_samples = int(self.dim_fast * self.samples_per_pixel)
-        self.line_turnback_samples = int(self.turnback_offset_px * self.samples_per_pixel)
-        self.line_total_samples = int(self.line_useful_samples + self.line_turnback_samples)
+        self.total_pixels = int(self.useful_fast_pixels * self.dim_slow)
+
+        self.line_useful_samples = int(self.useful_fast_pixels * self.samples_per_pixel)
+
+        self.line_leading_skip_samples = int(self.leading_skip_px * self.samples_per_pixel)
+        self.line_trailing_skip_samples = int(self.trailing_skip_px * self.samples_per_pixel)
+
+        self.line_total_samples = int(
+            self.line_leading_skip_samples +
+            self.line_useful_samples +
+            self.line_trailing_skip_samples
+        )
 
         self.total_samples_needed = int(self.line_total_samples * self.dim_slow)
 
-        # Buffer ligne utile (sans turnback), partagé pour tous les canaux
-        # float32 pour rester cohérent avec l'affichage / image finale
         self._line_buffer = np.empty(
             (self.n_channels, self.line_useful_samples),
             dtype=np.float32,
         )
 
-        # Cache d'indices pour éviter de recréer des arange tout le temps
-        self._pixel_index_cache = np.arange(self.dim_fast, dtype=np.int32)
+        self._pixel_index_cache = np.arange(self.useful_fast_pixels, dtype=np.int32)
 
         self.reset(clear_arrays = False)
 
@@ -117,12 +126,12 @@ class FrameBuilder:
         acquired_fast_idx = self._pixel_index_cache[start_pix:stop_pix]
 
         if self._reverse_line(self._slow_idx):
-            image_fast_idx = (self.dim_fast - 1) - acquired_fast_idx
+            image_fast_idx = (self.useful_fast_pixels - 1) - acquired_fast_idx
             image_fast_idx = image_fast_idx - self.bidirectional_shift_px
         else:
             image_fast_idx = acquired_fast_idx
 
-        valid = (image_fast_idx >= 0) & (image_fast_idx < self.dim_fast)
+        valid = (image_fast_idx >= 0) & (image_fast_idx < self.useful_fast_pixels)
 
         if np.any(valid):
             valid_img_fast = image_fast_idx[valid]
@@ -143,7 +152,8 @@ class FrameBuilder:
 
     def _finish_current_line_if_needed(self):
         """
-        Si on a consommé toute la ligne brute (utile + turnback),
+        Si on a consommé toute la ligne brute
+        (leading skip + utile + trailing skip),
         on passe à la ligne suivante.
         """
         if self._raw_pos_in_line < self.line_total_samples:
@@ -191,8 +201,14 @@ class FrameBuilder:
             seg_raw_stop = self._raw_pos_in_line + take
 
             # Portion utile de ce segment brut
-            useful_start_in_seg = 0
-            useful_stop_in_seg = min(seg_raw_stop, self.line_useful_samples) - seg_raw_start
+            useful_raw_start = self.line_leading_skip_samples
+            useful_raw_stop = self.line_leading_skip_samples + self.line_useful_samples
+
+            overlap_start = max(seg_raw_start, useful_raw_start)
+            overlap_stop = min(seg_raw_stop, useful_raw_stop)
+
+            useful_start_in_seg = overlap_start - seg_raw_start
+            useful_stop_in_seg = overlap_stop - seg_raw_start
 
             if useful_stop_in_seg > useful_start_in_seg:
                 useful_take = useful_stop_in_seg - useful_start_in_seg

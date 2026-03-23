@@ -103,9 +103,24 @@ class MockMicroscope(MicroscopeBackendBase):
         self.bidirectional_scan = bool(self.scan_parameters.get("bidirectional_scan", False))
         self.bidirectional_shift_px = int(self.scan_parameters.get("bidirectional_shift_px", 0) or 0)
 
-        turnback_offset = self.scan_parameters.get("turnback_offset", {})
-        fast_axis_name = active_axes[0] if len(active_axes) > 0 else None
-        turnback_px = int(turnback_offset.get(fast_axis_name, 0) or 0) if fast_axis_name else 0
+        self.overscan_fraction = float(self.scan_parameters.get("overscan_fraction", 0.10) or 0.10)
+        self.overscan_fraction = max(0.0, min(0.30, self.overscan_fraction))
+        self.frame_flyback_time_s = max(
+            0.0,
+            float(self.scan_parameters.get("frame_flyback_time_s", 0.0) or 0.0)
+        )
+
+        if self.scan_kind != "sample" and len(active_axes) >= 2:
+            lead_px = int(round(self.overscan_fraction * self.dim_fast))
+            trail_px = lead_px
+            self.dim_fast_total = self.dim_fast + lead_px + trail_px
+        else:
+            lead_px = 0
+            trail_px = 0
+            self.dim_fast_total = self.dim_fast
+
+        self.leading_skip_px = lead_px
+        self.trailing_skip_px = trail_px
 
         self._recreate_shared_image()
         self.acquired = {}
@@ -113,12 +128,13 @@ class MockMicroscope(MicroscopeBackendBase):
         self.detector_manager.set_frame_shape(
             dim_image_x=self.dim_image_x,
             dim_image_y=self.dim_image_y,
-            samples_per_pixel=self.samples_per_pixel,
             dim_fast=self.dim_fast,
             dim_slow=self.dim_slow,
+            samples_per_pixel=self.samples_per_pixel,
             fast_axis_is_image_x=self.fast_axis_is_image_x,
             bidirectional=self.bidirectional_scan,
-            turnback_offset_px=turnback_px,
+            leading_skip_px=int(self.leading_skip_px),
+            trailing_skip_px=int(self.trailing_skip_px),
         )
 
     def configure_execution_plan(self, plan: ExecutionPlan | None):
@@ -138,7 +154,10 @@ class MockMicroscope(MicroscopeBackendBase):
             image_x_axis = md.get("image_x_axis")
 
             self.fast_axis_is_image_x = (fast_axis == image_x_axis)
-            self.turnback_offset_px = int(md.get("turnback_offset_px", 0) or 0)
+            self.leading_skip_px = int(md.get("leading_skip_px", 0) or 0)
+            self.trailing_skip_px = int(md.get("trailing_skip_px", 0) or 0)
+            self.overscan_fraction = float(md.get("overscan_fraction", 0.0) or 0.0)
+            self.frame_flyback_time_s = float(md.get("frame_flyback_time_s", 0.0) or 0.0)
 
         else:
             self.dim_fast = 1
@@ -146,19 +165,23 @@ class MockMicroscope(MicroscopeBackendBase):
             self.dim_image_x = 1
             self.dim_image_y = 1
             self.fast_axis_is_image_x = True
-            self.turnback_offset_px = 0
+            self.leading_skip_px = 0
+            self.trailing_skip_px = 0
+            self.overscan_fraction = 0.0
+            self.frame_flyback_time_s = 0.0
 
         self._recreate_shared_image()
 
         self.detector_manager.set_frame_shape(
             dim_image_x=self.dim_image_x,
             dim_image_y=self.dim_image_y,
+            samples_per_pixel=self.samples_per_pixel,
             dim_fast=self.dim_fast,
             dim_slow=self.dim_slow,
-            samples_per_pixel=self.samples_per_pixel,
             fast_axis_is_image_x=self.fast_axis_is_image_x,
             bidirectional=self.bidirectional_scan,
-            turnback_offset_px=int(getattr(self, "turnback_offset_px", 0)),
+            leading_skip_px=int(self.leading_skip_px),
+            trailing_skip_px=int(self.trailing_skip_px),
         )
 
     def _recreate_shared_image(self):
@@ -193,9 +216,7 @@ class MockMicroscope(MicroscopeBackendBase):
             self.stepper_move_requested.emit(
                 str(ev.axis_name),
                 float(ev.target_rel),
-                float(ev.velocity_um_s),
-                float(ev.acceleration_um_s2),
-                float(ev.jerk_um_s3),
+                float(ev.velocity),
                 float(t_sched_ms),
                 str(ev.reason),
             )
@@ -228,7 +249,8 @@ class MockMicroscope(MicroscopeBackendBase):
             samples_per_pixel=max(1, int(samples_per_pixel)),
             bidirectional=bool(self.bidirectional_scan),
             bidirectional_shift_px=int(self.bidirectional_shift_px),
-            turnback_offset_px=int(getattr(self, "turnback_offset_px", 0)),
+            leading_skip_px=int(getattr(self, "leading_skip_px", 0)),
+            trailing_skip_px=int(getattr(self, "trailing_skip_px", 0)),
             fast_axis_is_image_x=bool(self.fast_axis_is_image_x),
         )
 
@@ -336,11 +358,19 @@ class MockMicroscope(MicroscopeBackendBase):
         if not self.acquisition_stop_event.is_set():
             self.frame_ready.emit(0, tuple(), shown_images)
 
+        flyback_s = max(0.0, float(getattr(self, "frame_flyback_time_s", 0.0)))
+        if flyback_s > 0 and not self.acquisition_stop_event.is_set():
+            t_end = time.perf_counter() + flyback_s
+            while time.perf_counter() < t_end:
+                if self.acquisition_stop_event.is_set():
+                    break
+                time.sleep(0)
+
     def _emit_sample_axis_move(self, axis_name: str, target_rel: float, reason: str, t_sched_ms: float):
         self.stepper_move_requested.emit(
             str(axis_name),
             float(target_rel),
-            0.0, 0.0, 0.0,
+            0.0,
             float(t_sched_ms),
             str(reason),
         )
@@ -630,9 +660,9 @@ class MockMicroscope(MicroscopeBackendBase):
 
         dt_ns = int((1.0 / float(plan.sample_rate_hz)) * 1e9)
         samples_per_pixel = max(1, int(plan.samples_per_pixel))
-        frame_pixel_count = int(self.dim_fast * self.dim_slow)
+        frame_pixel_count = int(self.dim_image_x * self.dim_image_y)
         frame_useful_samples = int(frame_pixel_count * samples_per_pixel)
-
+        
         current_rep = None
         prev_frame_stop = 0
 

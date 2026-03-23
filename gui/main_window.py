@@ -78,6 +78,8 @@ class MainWindow(QMainWindow):
 
         self.user_shutter_override = None  # None=no override, True/False=user forced state
         self.hardware = HardwareManager(backend_name=self.backend_name, settings_manager=self.settings_manager, parent=self)
+        self.camera_controller = self.hardware.create_camera_controller(parent=self)
+        self._connect_camera_controls()
         self._connect_laser_controls()
         self.save_manager = SaveManager()
         self.positioner_manager = self.hardware.create_positioner_manager(parent=self)
@@ -172,6 +174,81 @@ class MainWindow(QMainWindow):
         self._visualizer_flush_timer.timeout.connect(self._flush_visualizers)
                 
         self.init_ready = True  # Marque l'initialisation comme terminée     
+    
+    def _connect_camera_controls(self):
+        cw = self.ui.camera_widget
+        cc = self.camera_controller
+
+        try:
+            cw.set_binning_list(cc.list_binning())
+        except Exception:
+            pass
+
+        try:
+            cw.set_pixel_format_list(cc.list_pixel_formats())
+        except Exception:
+            pass
+
+        cw.button_snap.clicked.connect(self._on_camera_snap_clicked)
+        cw.button_live.clicked.connect(self._on_camera_live_clicked)
+        cw.button_stop.clicked.connect(cc.stop_live)
+
+        cw.spin_exposure_ms.valueChanged.connect(self._push_camera_parameters)
+        cw.spin_fps.valueChanged.connect(self._push_camera_parameters)
+        cw.spin_gain.valueChanged.connect(self._push_camera_parameters)
+        cw.combo_binning.currentTextChanged.connect(self._push_camera_parameters)
+        cw.combo_pixel_format.currentTextChanged.connect(self._push_camera_parameters)
+        cw.cb_auto_exposure.toggled.connect(self._push_camera_parameters)
+        cw.cb_auto_gain.toggled.connect(self._push_camera_parameters)
+
+        cc.frame_ready.connect(self._on_camera_frame_ready)
+        cc.status_changed.connect(cw.set_status)
+        cc.running_changed.connect(self._on_camera_running_changed)
+
+        self._push_camera_parameters()
+
+    def closeEvent(self, event):
+        try:
+            self.hardware.close()
+        except Exception:
+            pass
+        super().closeEvent(event)
+    
+    @Slot()
+    def _push_camera_parameters(self, *_args):
+        try:
+            self.camera_controller.apply_parameters(self.ui.camera_widget.get_parameters())
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Camera param error: {e}")
+
+    @Slot()
+    def _on_camera_snap_clicked(self):
+        try:
+            self.camera_controller.snap(self.ui.camera_widget.get_parameters())
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Snap failed: {e}")
+
+    @Slot()
+    def _on_camera_live_clicked(self):
+        try:
+            if bool(self.camera_controller.backend.live_running):
+                self.camera_controller.stop_live()
+            else:
+                self.camera_controller.start_live(self.ui.camera_widget.get_parameters())
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Live failed: {e}")
+
+    @Slot(bool)
+    def _on_camera_running_changed(self, running: bool):
+        self.ui.camera_widget.set_running(bool(running))
+        self.ui.camera_widget.set_live_button_state(bool(running))
+
+    @Slot(object)
+    def _on_camera_frame_ready(self, img):
+        try:
+            self.ui.camera_widget.set_image(img)
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Display failed: {e}")
     
     def _on_laser_power_changed(self, laser_name: str, value: int):
         cfg = self.settings_manager.get_laser_settings(laser_name)
@@ -869,8 +946,22 @@ class MainWindow(QMainWindow):
 
         # mettre à jour la pixel size transmise au FRC
         try:
-            pixel_size_um = scan_parameters["X Amplitude"] / scan_parameters["X Pixel"]
-            self.ui.frc_widget.set_pixel_size_um(pixel_size_um)
+            step_sizes = scan_parameters.get("step_sizes", {})
+            pix_x = 0.0
+            pix_y = 0.0
+
+            for axis_name, step_um in step_sizes.items():
+                if str(axis_name).startswith("X-"):
+                    pix_x = float(step_um or 0.0)
+                elif str(axis_name).startswith("Y-"):
+                    pix_y = float(step_um or 0.0)
+
+            if pix_x > 0 and pix_y > 0:
+                self.ui.frc_widget.set_pixel_size_um(0.5 * (pix_x + pix_y))
+            elif pix_x > 0:
+                self.ui.frc_widget.set_pixel_size_um(pix_x)
+            elif pix_y > 0:
+                self.ui.frc_widget.set_pixel_size_um(pix_y)
         except Exception:
             pass
 
