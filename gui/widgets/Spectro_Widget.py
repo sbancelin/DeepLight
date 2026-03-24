@@ -3,37 +3,118 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QDoubleSpinBox, QComboBox, QSizePolicy, QCheckBox,
-    QDialog, QDialogButtonBox, QFormLayout, QMessageBox
+    QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QFrame
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QTransform
+from PySide6.QtGui import QTransform, QPalette, QColor
 
 import numpy as np
 import pyqtgraph as pg
 
 
-_CHECKBOX_STYLE = """
-QCheckBox::indicator {
-        width: 12px;
-        height: 12px;
-        background-color: #333;
-        border: 1px solid #555;
-        border-radius: 3px;
+_BUTTON_STYLE_TOGGLE = """
+QPushButton {
+    background-color: #333;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 2px;
+    font-weight: bold;
+    min-height: 20px;
 }
-QCheckBox::indicator:checked {
-        background-color: #2E8B57;
-        border: 1px solid #555;
-        border-radius: 3px;
+QPushButton:checked {
+    background-color: #2E8B57;
 }
-QCheckBox::indicator:checked:hover {
-        border: 1px solid #777;
-        background-color: #3AB16F;
+QPushButton:hover {
+    background-color: #444;
 }
-QCheckBox::indicator:unchecked:hover {
-        background-color: #444;
-        border: 1px solid #777;
+QPushButton:checked:hover {
+    background-color: #3AB16F;
 }
 """
+
+_BUTTON_STYLE = """
+QPushButton {
+    background-color: #333;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 2px;
+    font-weight: bold;
+    min-height: 20px;
+}
+QPushButton:hover {
+    background-color: #444;
+}
+"""
+
+_CHECKBOX_STYLE = """
+QCheckBox {
+    color: white;
+}
+QCheckBox::indicator {
+    width: 12px;
+    height: 12px;
+    background-color: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+}
+QCheckBox::indicator:checked {
+    background-color: #2E8B57;
+    border: 1px solid #555;
+    border-radius: 3px;
+}
+QCheckBox::indicator:checked:hover {
+    border: 1px solid #777;
+    background-color: #3AB16F;
+}
+QCheckBox::indicator:unchecked:hover {
+    background-color: #444;
+    border: 1px solid #777;
+}
+"""
+
+_PANEL_FRAME_STYLE = """
+QFrame {
+    background-color: #252525;
+    border: 1px solid #444;
+    border-radius: 4px;
+}
+QLabel {
+    color: white;
+    border: none;
+    background: transparent;
+}
+"""
+
+_STATUS_VALUE_STYLE = "color: #b0b0b0; background: transparent; border: none;"
+
+
+def _apply_spinbox_palette(spinbox):
+    spin_palette = spinbox.palette()
+    spin_palette.setColor(QPalette.Base, QColor("#333333"))
+    spin_palette.setColor(QPalette.Text, QColor("white"))
+    spin_palette.setColor(QPalette.Button, QColor("#333333"))
+    spin_palette.setColor(QPalette.ButtonText, QColor("white"))
+    spin_palette.setColor(QPalette.WindowText, QColor("white"))
+    spin_palette.setColor(QPalette.Highlight, QColor("#2E8B57"))
+    spin_palette.setColor(QPalette.HighlightedText, QColor("white"))
+    spinbox.setPalette(spin_palette)
+    spinbox.setAutoFillBackground(True)
+    spinbox.setMinimumHeight(22)
+
+
+def _apply_combo_style(combo):
+    combo.setStyleSheet("""
+        QComboBox {
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 2px;
+            min-height: 20px;
+        }
+    """)
 
 
 def ask_levels_min_max(parent=None, title="Levels", lo0=0.0, hi0=255.0):
@@ -46,11 +127,13 @@ def ask_levels_min_max(parent=None, title="Levels", lo0=0.0, hi0=255.0):
     sp_lo.setDecimals(6)
     sp_lo.setRange(-1e12, 1e12)
     sp_lo.setValue(float(lo0))
+    _apply_spinbox_palette(sp_lo)
 
     sp_hi = QDoubleSpinBox(dlg)
     sp_hi.setDecimals(6)
     sp_hi.setRange(-1e12, 1e12)
     sp_hi.setValue(float(hi0))
+    _apply_spinbox_palette(sp_hi)
 
     form.addRow("Min:", sp_lo)
     form.addRow("Max:", sp_hi)
@@ -74,8 +157,8 @@ def ask_levels_min_max(parent=None, title="Levels", lo0=0.0, hi0=255.0):
 class SpectroWidget(QWidget):
     """
     Widget spectro avec deux sections visibles en même temps :
-    - Brillouin : bouton activable + contrôles caméra + image caméra
-    - Raman     : bouton activable + contrôles Raman + graphe du spectre
+    - Brillouin : bouton activable + bandeau compact + image caméra
+    - Raman     : bouton activable + bandeau compact + graphe du spectre
     """
 
     def __init__(self, parent=None):
@@ -112,76 +195,93 @@ class SpectroWidget(QWidget):
         brillouin_section_layout.setContentsMargins(0, 0, 0, 0)
         brillouin_section_layout.setSpacing(6)
 
-        # ---- Ligne titre / activation
-        brillouin_header = QHBoxLayout()
-        brillouin_header.setContentsMargins(0, 0, 0, 0)
-        brillouin_header.setSpacing(8)
+        # ---- Ligne 2 : bandeau compact
+        brillouin_controls_frame = QFrame()
+        brillouin_controls_frame.setStyleSheet(_PANEL_FRAME_STYLE)
+        brillouin_controls_layout = QHBoxLayout(brillouin_controls_frame)
+        brillouin_controls_layout.setContentsMargins(8, 6, 8, 6)
+        brillouin_controls_layout.setSpacing(6)
 
-        self.button_brillouin = QPushButton("Brillouin")
-        self.button_brillouin.setCheckable(True)
-        self.button_brillouin.setChecked(True)
-        brillouin_header.addWidget(self.button_brillouin)
+        self.button_brillouin_snap = QPushButton("Snap")
+        self.button_brillouin_snap.setStyleSheet(_BUTTON_STYLE)
+        self.button_brillouin_snap.setFixedWidth(58)
+        brillouin_controls_layout.addWidget(self.button_brillouin_snap)
 
-        brillouin_header.addStretch(1)
-        brillouin_section_layout.addLayout(brillouin_header)
+        self.button_brillouin_live = QPushButton("Live")
+        self.button_brillouin_live.setCheckable(True)
+        self.button_brillouin_live.setStyleSheet(_BUTTON_STYLE_TOGGLE)
+        self.button_brillouin_live.setFixedWidth(58)
+        brillouin_controls_layout.addWidget(self.button_brillouin_live)
 
-        # ---- Barre de contrôle type Camera
-        brillouin_control_bar = QHBoxLayout()
-        brillouin_control_bar.setContentsMargins(0, 0, 0, 0)
-        brillouin_control_bar.setSpacing(8)
+        self.button_brillouin_stop = QPushButton("Stop")
+        self.button_brillouin_stop.setStyleSheet(_BUTTON_STYLE)
+        self.button_brillouin_stop.setFixedWidth(52)
+        brillouin_controls_layout.addWidget(self.button_brillouin_stop)
 
-        brillouin_control_bar.addWidget(QLabel("Exposure (ms)"))
+        self.label_brillouin_status = QLabel("Idle")
+        self.label_brillouin_status.setStyleSheet(_STATUS_VALUE_STYLE)
+        self.label_brillouin_status.setMinimumWidth(42)
+        brillouin_controls_layout.addWidget(self.label_brillouin_status)
+
+        exposure_label = QLabel("Exposure")
+        brillouin_controls_layout.addWidget(exposure_label)
+
         self.spin_brillouin_exposure_ms = QDoubleSpinBox()
         self.spin_brillouin_exposure_ms.setDecimals(3)
         self.spin_brillouin_exposure_ms.setRange(0.001, 1_000_000.0)
         self.spin_brillouin_exposure_ms.setValue(10.0)
         self.spin_brillouin_exposure_ms.setSingleStep(1.0)
-        brillouin_control_bar.addWidget(self.spin_brillouin_exposure_ms)
+        self.spin_brillouin_exposure_ms.setFixedWidth(78)
+        _apply_spinbox_palette(self.spin_brillouin_exposure_ms)
+        brillouin_controls_layout.addWidget(self.spin_brillouin_exposure_ms)
 
-        brillouin_control_bar.addWidget(QLabel("FPS"))
+        exposure_unit_label = QLabel("(ms)")
+        exposure_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
+        brillouin_controls_layout.addWidget(exposure_unit_label)
+
+        self.cb_brillouin_auto_exposure = QCheckBox("Auto Exp")
+        self.cb_brillouin_auto_exposure.setStyleSheet(_CHECKBOX_STYLE)
+        brillouin_controls_layout.addWidget(self.cb_brillouin_auto_exposure)
+
+        fps_label = QLabel("FPS")
+        brillouin_controls_layout.addWidget(fps_label)
+
         self.spin_brillouin_fps = QDoubleSpinBox()
         self.spin_brillouin_fps.setDecimals(3)
         self.spin_brillouin_fps.setRange(0.001, 10_000.0)
         self.spin_brillouin_fps.setValue(10.0)
         self.spin_brillouin_fps.setSingleStep(1.0)
-        brillouin_control_bar.addWidget(self.spin_brillouin_fps)
+        self.spin_brillouin_fps.setFixedWidth(70)
+        _apply_spinbox_palette(self.spin_brillouin_fps)
+        brillouin_controls_layout.addWidget(self.spin_brillouin_fps)
 
-        brillouin_control_bar.addWidget(QLabel("Gain"))
+        gain_label = QLabel("Gain")
+        brillouin_controls_layout.addWidget(gain_label)
+
         self.spin_brillouin_gain = QDoubleSpinBox()
         self.spin_brillouin_gain.setDecimals(3)
         self.spin_brillouin_gain.setRange(0.0, 1000.0)
         self.spin_brillouin_gain.setValue(0.0)
         self.spin_brillouin_gain.setSingleStep(1.0)
-        brillouin_control_bar.addWidget(self.spin_brillouin_gain)
+        self.spin_brillouin_gain.setFixedWidth(70)
+        _apply_spinbox_palette(self.spin_brillouin_gain)
+        brillouin_controls_layout.addWidget(self.spin_brillouin_gain)
 
-        brillouin_control_bar.addWidget(QLabel("Pixel format"))
+        self.cb_brillouin_auto_gain = QCheckBox("Auto G")
+        self.cb_brillouin_auto_gain.setStyleSheet(_CHECKBOX_STYLE)
+        brillouin_controls_layout.addWidget(self.cb_brillouin_auto_gain)
+
+        format_label = QLabel("Format")
+        brillouin_controls_layout.addWidget(format_label)
+
         self.combo_brillouin_pixel_format = QComboBox()
         self.combo_brillouin_pixel_format.addItems(["Mono8", "Mono12", "Mono16"])
-        brillouin_control_bar.addWidget(self.combo_brillouin_pixel_format)
+        _apply_combo_style(self.combo_brillouin_pixel_format)
+        self.combo_brillouin_pixel_format.setMinimumWidth(86)
+        brillouin_controls_layout.addWidget(self.combo_brillouin_pixel_format)
 
-        self.cb_brillouin_auto_exposure = QCheckBox("Auto Exp")
-        self.cb_brillouin_auto_exposure.setStyleSheet(_CHECKBOX_STYLE)
-        brillouin_control_bar.addWidget(self.cb_brillouin_auto_exposure)
-
-        self.cb_brillouin_auto_gain = QCheckBox("Auto Gain")
-        self.cb_brillouin_auto_gain.setStyleSheet(_CHECKBOX_STYLE)
-        brillouin_control_bar.addWidget(self.cb_brillouin_auto_gain)
-
-        self.button_brillouin_snap = QPushButton("Snap")
-        brillouin_control_bar.addWidget(self.button_brillouin_snap)
-
-        self.button_brillouin_live = QPushButton("Start Live")
-        brillouin_control_bar.addWidget(self.button_brillouin_live)
-
-        self.button_brillouin_stop = QPushButton("Stop")
-        brillouin_control_bar.addWidget(self.button_brillouin_stop)
-
-        self.label_brillouin_status = QLabel("Idle")
-        self.label_brillouin_status.setMinimumWidth(160)
-        brillouin_control_bar.addWidget(self.label_brillouin_status)
-
-        brillouin_control_bar.addStretch(1)
-        brillouin_section_layout.addLayout(brillouin_control_bar)
+        brillouin_controls_layout.addStretch(1)
+        brillouin_section_layout.addWidget(brillouin_controls_frame)
 
         # ---- Vue image
         self.brillouin_plot_item = pg.PlotItem()
@@ -232,10 +332,12 @@ class SpectroWidget(QWidget):
         brillouin_footer_layout.addWidget(self.cb_brillouin_grid)
 
         self.button_brillouin_set_levels = QPushButton("Set Levels")
+        self.button_brillouin_set_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_brillouin_set_levels.setFixedHeight(22)
         brillouin_footer_layout.addWidget(self.button_brillouin_set_levels)
 
         self.button_brillouin_reset_levels = QPushButton("Reset Levels")
+        self.button_brillouin_reset_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_brillouin_reset_levels.setFixedHeight(22)
         brillouin_footer_layout.addWidget(self.button_brillouin_reset_levels)
 
@@ -251,71 +353,96 @@ class SpectroWidget(QWidget):
         raman_section_layout.setContentsMargins(0, 0, 0, 0)
         raman_section_layout.setSpacing(6)
 
-        # ---- Ligne titre / activation
-        raman_header = QHBoxLayout()
-        raman_header.setContentsMargins(0, 0, 0, 0)
-        raman_header.setSpacing(8)
+        # ---- Ligne 2 : bandeau compact
+        raman_controls_frame = QFrame()
+        raman_controls_frame.setStyleSheet(_PANEL_FRAME_STYLE)
+        raman_controls_layout = QHBoxLayout(raman_controls_frame)
+        raman_controls_layout.setContentsMargins(8, 6, 8, 6)
+        raman_controls_layout.setSpacing(6)
 
-        self.button_raman = QPushButton("Raman")
-        self.button_raman.setCheckable(True)
-        self.button_raman.setChecked(True)
-        raman_header.addWidget(self.button_raman)
+        self.button_raman_snap = QPushButton("Acquire")
+        self.button_raman_snap.setStyleSheet(_BUTTON_STYLE)
+        self.button_raman_snap.setFixedWidth(64)
+        raman_controls_layout.addWidget(self.button_raman_snap)
 
-        raman_header.addStretch(1)
-        raman_section_layout.addLayout(raman_header)
+        self.button_raman_live = QPushButton("Live")
+        self.button_raman_live.setCheckable(True)
+        self.button_raman_live.setStyleSheet(_BUTTON_STYLE_TOGGLE)
+        self.button_raman_live.setFixedWidth(58)
+        raman_controls_layout.addWidget(self.button_raman_live)
 
-        # ---- Barre de contrôle Raman
-        raman_control_bar = QHBoxLayout()
-        raman_control_bar.setContentsMargins(0, 0, 0, 0)
-        raman_control_bar.setSpacing(8)
+        self.button_raman_stop = QPushButton("Stop")
+        self.button_raman_stop.setStyleSheet(_BUTTON_STYLE)
+        self.button_raman_stop.setFixedWidth(52)
+        raman_controls_layout.addWidget(self.button_raman_stop)
 
-        raman_control_bar.addWidget(QLabel("Exposure (ms)"))
+        self.label_raman_status = QLabel("Idle")
+        self.label_raman_status.setStyleSheet(_STATUS_VALUE_STYLE)
+        self.label_raman_status.setMinimumWidth(42)
+        raman_controls_layout.addWidget(self.label_raman_status)
+
+        exposure_label = QLabel("Exposure")
+        raman_controls_layout.addWidget(exposure_label)
+
         self.spin_raman_exposure_ms = QDoubleSpinBox()
         self.spin_raman_exposure_ms.setDecimals(3)
         self.spin_raman_exposure_ms.setRange(0.001, 1_000_000.0)
         self.spin_raman_exposure_ms.setValue(100.0)
         self.spin_raman_exposure_ms.setSingleStep(1.0)
-        raman_control_bar.addWidget(self.spin_raman_exposure_ms)
+        self.spin_raman_exposure_ms.setFixedWidth(78)
+        _apply_spinbox_palette(self.spin_raman_exposure_ms)
+        raman_controls_layout.addWidget(self.spin_raman_exposure_ms)
 
-        raman_control_bar.addWidget(QLabel("Averages"))
+        exposure_unit_label = QLabel("(ms)")
+        exposure_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
+        raman_controls_layout.addWidget(exposure_unit_label)
+
+        averages_label = QLabel("Avg")
+        raman_controls_layout.addWidget(averages_label)
+
         self.spin_raman_averages = QDoubleSpinBox()
         self.spin_raman_averages.setDecimals(0)
         self.spin_raman_averages.setRange(1, 100000)
         self.spin_raman_averages.setValue(1)
         self.spin_raman_averages.setSingleStep(1)
-        raman_control_bar.addWidget(self.spin_raman_averages)
+        self.spin_raman_averages.setFixedWidth(64)
+        _apply_spinbox_palette(self.spin_raman_averages)
+        raman_controls_layout.addWidget(self.spin_raman_averages)
 
-        raman_control_bar.addWidget(QLabel("Center (nm)"))
+        center_label = QLabel("Center")
+        raman_controls_layout.addWidget(center_label)
+
         self.spin_raman_center_nm = QDoubleSpinBox()
         self.spin_raman_center_nm.setDecimals(3)
         self.spin_raman_center_nm.setRange(0.0, 100000.0)
         self.spin_raman_center_nm.setValue(700.0)
         self.spin_raman_center_nm.setSingleStep(1.0)
-        raman_control_bar.addWidget(self.spin_raman_center_nm)
+        self.spin_raman_center_nm.setFixedWidth(78)
+        _apply_spinbox_palette(self.spin_raman_center_nm)
+        raman_controls_layout.addWidget(self.spin_raman_center_nm)
 
-        raman_control_bar.addWidget(QLabel("Span (nm)"))
+        center_unit_label = QLabel("(nm)")
+        center_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
+        raman_controls_layout.addWidget(center_unit_label)
+
+        span_label = QLabel("Span")
+        raman_controls_layout.addWidget(span_label)
+
         self.spin_raman_span_nm = QDoubleSpinBox()
         self.spin_raman_span_nm.setDecimals(3)
         self.spin_raman_span_nm.setRange(0.001, 100000.0)
         self.spin_raman_span_nm.setValue(100.0)
         self.spin_raman_span_nm.setSingleStep(1.0)
-        raman_control_bar.addWidget(self.spin_raman_span_nm)
+        self.spin_raman_span_nm.setFixedWidth(78)
+        _apply_spinbox_palette(self.spin_raman_span_nm)
+        raman_controls_layout.addWidget(self.spin_raman_span_nm)
 
-        self.button_raman_snap = QPushButton("Acquire")
-        raman_control_bar.addWidget(self.button_raman_snap)
+        span_unit_label = QLabel("(nm)")
+        span_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
+        raman_controls_layout.addWidget(span_unit_label)
 
-        self.button_raman_live = QPushButton("Start Live")
-        raman_control_bar.addWidget(self.button_raman_live)
-
-        self.button_raman_stop = QPushButton("Stop")
-        raman_control_bar.addWidget(self.button_raman_stop)
-
-        self.label_raman_status = QLabel("Idle")
-        self.label_raman_status.setMinimumWidth(160)
-        raman_control_bar.addWidget(self.label_raman_status)
-
-        raman_control_bar.addStretch(1)
-        raman_section_layout.addLayout(raman_control_bar)
+        raman_controls_layout.addStretch(1)
+        raman_section_layout.addWidget(raman_controls_frame)
 
         # ---- Graphe Raman
         self.raman_plot_widget = pg.PlotWidget()
@@ -363,10 +490,12 @@ class SpectroWidget(QWidget):
         raman_footer_layout.addWidget(self.cb_raman_grid)
 
         self.button_raman_set_levels = QPushButton("Set Levels")
+        self.button_raman_set_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_raman_set_levels.setFixedHeight(22)
         raman_footer_layout.addWidget(self.button_raman_set_levels)
 
         self.button_raman_reset_levels = QPushButton("Reset Levels")
+        self.button_raman_reset_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_raman_reset_levels.setFixedHeight(22)
         raman_footer_layout.addWidget(self.button_raman_reset_levels)
 
@@ -377,9 +506,6 @@ class SpectroWidget(QWidget):
         # ==========================================================
         # Connexions
         # ==========================================================
-        self.button_brillouin.clicked.connect(self._on_brillouin_toggled)
-        self.button_raman.clicked.connect(self._on_raman_toggled)
-
         self.cb_brillouin_auto_exposure.toggled.connect(self._on_brillouin_auto_exposure_toggled)
         self.cb_brillouin_auto_gain.toggled.connect(self._on_brillouin_auto_gain_toggled)
         self.cb_brillouin_autoscale.toggled.connect(self._on_brillouin_autoscale_toggled)
@@ -404,14 +530,16 @@ class SpectroWidget(QWidget):
         except Exception:
             pass
 
-        self._update_toggle_button_style(self.button_brillouin)
-        self._update_toggle_button_style(self.button_raman)
         self._apply_brillouin_levels(0.0, 255.0)
         self._center_raman_placeholder()
 
     # ==========================================================
     # API PUBLIQUE
     # ==========================================================
+    def set_modes(self, brillouin: bool, raman: bool):
+        self.brillouin_section.setVisible(brillouin)
+        self.raman_section.setVisible(raman)
+    
     def get_brillouin_parameters(self):
         return {
             "enabled": self.button_brillouin.isChecked(),
@@ -439,10 +567,14 @@ class SpectroWidget(QWidget):
         self.label_raman_status.setText(str(text))
 
     def set_brillouin_live_button_state(self, live_running: bool):
-        self.button_brillouin_live.setText("Stop Live" if live_running else "Start Live")
+        self.button_brillouin_live.blockSignals(True)
+        self.button_brillouin_live.setChecked(bool(live_running))
+        self.button_brillouin_live.blockSignals(False)
 
     def set_raman_live_button_state(self, live_running: bool):
-        self.button_raman_live.setText("Stop Live" if live_running else "Start Live")
+        self.button_raman_live.blockSignals(True)
+        self.button_raman_live.setChecked(bool(live_running))
+        self.button_raman_live.blockSignals(False)
 
     def set_brillouin_pixel_format_list(self, values):
         current = self.combo_brillouin_pixel_format.currentText()
@@ -457,11 +589,9 @@ class SpectroWidget(QWidget):
 
     def set_brillouin_enabled(self, enabled: bool):
         self.button_brillouin.setChecked(bool(enabled))
-        self._on_brillouin_toggled(bool(enabled))
 
     def set_raman_enabled(self, enabled: bool):
         self.button_raman.setChecked(bool(enabled))
-        self._on_raman_toggled(bool(enabled))
 
     def set_brillouin_image(self, img, width_um=None, height_um=None):
         self.brillouin_image = np.asarray(img, dtype=np.float32)
@@ -525,43 +655,13 @@ class SpectroWidget(QWidget):
 
         self.raman_plot_item.setXRange(float(self.raman_x[0]), float(self.raman_x[-1]), padding=0)
         self.raman_plot_item.setYRange(0.0, 1.0, padding=0)
-        
+
         self._center_raman_placeholder()
 
     # ==========================================================
     # Helpers
     # ==========================================================
-    def _update_toggle_button_style(self, button: QPushButton):
-        active_style = """
-        QPushButton {
-            background-color: #2E8B57;
-            color: white;
-            border: 1px solid #555;
-            border-radius: 4px;
-            padding: 4px 10px;
-        }
-        QPushButton:hover {
-            background-color: #3AB16F;
-            border: 1px solid #777;
-        }
-        """
-        inactive_style = """
-        QPushButton {
-            background-color: #333;
-            color: white;
-            border: 1px solid #555;
-            border-radius: 4px;
-            padding: 4px 10px;
-        }
-        QPushButton:hover {
-            background-color: #444;
-            border: 1px solid #777;
-        }
-        """
-        button.setStyleSheet(active_style if button.isChecked() else inactive_style)
-
     def _set_section_enabled(self, section_widget: QWidget, enabled: bool, header_button: QPushButton):
-        self._update_toggle_button_style(header_button)
         for child in section_widget.findChildren(QWidget):
             if child is header_button:
                 continue

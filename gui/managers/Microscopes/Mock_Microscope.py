@@ -329,6 +329,7 @@ class MockMicroscope(MicroscopeBackendBase):
 
         arrays = {
             ch: np.ndarray((self.dim_image_y, self.dim_image_x), dtype=np.float64, buffer=shm.buf)
+         
             for ch, shm in self.shared_images.items()
         }
 

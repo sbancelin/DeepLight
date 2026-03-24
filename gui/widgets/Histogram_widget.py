@@ -110,6 +110,16 @@ class HistogramWidget(QWidget):
 
         self.channel_combo = QComboBox()
         self.channel_combo.setMinimumWidth(40)
+        self.channel_combo.setStyleSheet("""
+                QComboBox {
+                    background-color: #333;
+                    color: white;
+                    border: 1px solid #555;
+                    border-radius: 3px;
+                    padding: 2px;
+                    min-height: 20px;
+                }
+            """)
         self.channel_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.channel_combo.currentTextChanged.connect(self.on_channel_changed)
         top_layout.addWidget(self.channel_combo, stretch=1)

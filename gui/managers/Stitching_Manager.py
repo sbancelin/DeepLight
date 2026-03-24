@@ -485,5 +485,5 @@ class StitchingManager(QObject):
 
         total = len(self._tile_sequence)
         self.run_progress.emit(total, total)
-        self.status_changed.emit("Mosaic finished.")
+        self.status_changed.emit("Done")
         self.run_finished.emit()

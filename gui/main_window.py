@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self.camera_controller = self.hardware.create_camera_controller(parent=self)
         self._connect_camera_controls()
         self._connect_laser_controls()
+        self._connect_spectro_controls()
         self.save_manager = SaveManager()
         self.positioner_manager = self.hardware.create_positioner_manager(parent=self)
         self.scan_manager = ScanManager(self)
@@ -89,22 +90,6 @@ class MainWindow(QMainWindow):
         self._rec_saving_active = False
         self._stepper_return_targets_rel = {"z": None, "p": None}
         self._update_estimated_stack_size()
-
-        # Initialisation de l'onglet Camera
-        """self.im_widget_plot_item_camera = pg.PlotItem()
-        self.im_widget_plot_item_camera.setLabel("left", "y (pixels)")
-        self.im_widget_plot_item_camera.setLabel("bottom", "x (pixels)")
-        self.im_widget_camera = pg.ImageView(
-            parent=self.ui.tab_camera,
-            view=self.im_widget_plot_item_camera
-        )
-        self.ui.gridLayout_im_camera.addWidget(self.im_widget_camera, 0, 0, 1, 1)
-        #self.im_widget_camera.show()
-        self.im_widget_camera.getView().showGrid(True, True)
-        self.im_widget_camera.setPredefinedGradient("viridis")  # Choisissez un gradient adapté pour les images RGB"""
-
-        # Masquer les éléments intégrés de ImageView
-        #self.im_widget_camera.ui.roiBtn.hide()
 
         # Connection des signaux
         scan_parameters = self._attach_initial_relative_positions(self.ui.scan_widget.get_scan_parameters())
@@ -161,8 +146,8 @@ class MainWindow(QMainWindow):
         # --- Connexions UI -> StitchingManager ---
         self.ui.stitch_widget.button_acquire.clicked.connect(self.on_stitch_acquire_clicked)
         self.ui.stitch_widget.button_stop.clicked.connect(self.on_stitch_stop_clicked)
-        self.ui.stitch_widget.spin_tiles_x.valueChanged.connect(self.refresh_stitching_preview_grid)
-        self.ui.stitch_widget.spin_tiles_y.valueChanged.connect(self.refresh_stitching_preview_grid)
+        self.ui.stitch_widget.spin_tile_x.valueChanged.connect(self.refresh_stitching_preview_grid)
+        self.ui.stitch_widget.spin_tile_y.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.spin_overlap.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.cb_show_layout.toggled.connect(self.refresh_stitching_preview_grid)
 
@@ -174,6 +159,21 @@ class MainWindow(QMainWindow):
         self._visualizer_flush_timer.timeout.connect(self._flush_visualizers)
                 
         self.init_ready = True  # Marque l'initialisation comme terminée     
+    
+    def _connect_spectro_controls(self):
+        sp = self.ui.spectro_panel_widget
+        sw = self.ui.spectro_widget
+
+        sp.sigSpectroModeChanged.connect(sw.set_modes)
+        sp.sigAcquireClicked.connect(self._on_spectro_acquire)
+    
+    @Slot()
+    def _on_spectro_acquire(self):
+        try:
+            scan_params = self.ui.scan_widget.get_scan_parameters()
+            print("[Spectro] Acquire requested with scan params:", scan_params)
+        except Exception as e:
+            print("[Spectro] Acquire failed:", e)
     
     def _connect_camera_controls(self):
         cw = self.ui.camera_widget

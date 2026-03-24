@@ -74,6 +74,16 @@ class FRCWidget(QWidget):
 
         self.channel_combo = QComboBox()
         self.channel_combo.setMinimumWidth(20)
+        self.channel_combo.setStyleSheet("""
+                QComboBox {
+                    background-color: #333;
+                    color: white;
+                    border: 1px solid #555;
+                    border-radius: 3px;
+                    padding: 2px;
+                    min-height: 20px;
+                }
+            """)
         self.channel_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row1.addWidget(self.channel_combo, stretch=1)
 
@@ -102,6 +112,16 @@ class FRCWidget(QWidget):
         self.threshold_combo = QComboBox()
         self.threshold_combo.addItems(["1/7","0.5", "0.3", "Custom"])
         self.threshold_combo.setMinimumWidth(70)
+        self.threshold_combo.setStyleSheet("""
+                QComboBox {
+                    background-color: #333;
+                    color: white;
+                    border: 1px solid #555;
+                    border-radius: 3px;
+                    padding: 2px;
+                    min-height: 20px;
+                }
+            """)
         self.threshold_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.threshold_combo.currentTextChanged.connect(self._on_threshold_mode_changed)
         row2.addWidget(self.threshold_combo)

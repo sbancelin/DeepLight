@@ -34,10 +34,6 @@ class MockCameraBackend(CameraBackendBase):
         self._phase = 0.0
 
     def connect(self) -> None:
-        import struct
-        print(f"[MoticCamera] python_bits={struct.calcsize('P') * 8}")
-        print(f"[MoticCamera] dll_path={self.dll_path}")
-        print(f"[MoticCamera] dll_exists={os.path.isfile(self.dll_path)}")
         self.connected = True
         print("[MockCamera] connected")
 
@@ -52,51 +48,18 @@ class MockCameraBackend(CameraBackendBase):
     def list_pixel_formats(self):
         return ["Mono8", "Mono12", "Mono16", "RGB24"]
 
-def set_parameters(self, params: CameraParameters) -> None:
-    super().set_parameters(params)
+    def set_parameters(self, params: CameraParameters) -> None:
+        super().set_parameters(params)
 
-    if self.cap is None:
-        return
-
-    # FPS : souvent ignoré par le driver, mais on essaie quand même
-    try:
-        self.cap.set(cv2.CAP_PROP_FPS, float(params.fps))
-    except Exception:
-        pass
-
-    # Auto exposure
-    if bool(params.auto_exposure):
-        try:
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
-        except Exception:
-            pass
-    else:
-        try:
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-        except Exception:
-            pass
-
-        # IMPORTANT:
-        # Sous OpenCV/DirectShow, l'exposure n'est souvent PAS en ms.
-        # On convertit grossièrement les ms UI en "valeur driver" plus raisonnable.
-        exp_ms = max(0.1, float(params.exposure_ms))
-
-        # Mapping empirique prudent pour éviter la saturation.
-        # 0.1 ms -> -13 ; 1 ms -> -10 ; 10 ms -> -7 ; 100 ms -> -4
-        import math
-        exp_driver = max(-13.0, min(-1.0, math.log2(exp_ms) - 10.0))
-
-        try:
-            self.cap.set(cv2.CAP_PROP_EXPOSURE, exp_driver)
-            print(f"[OpenCVCamera] requested exposure_ms={exp_ms:.3f} mapped_exposure={exp_driver:.3f}")
-        except Exception:
-            pass
-
-    if not bool(params.auto_gain):
-        try:
-            self.cap.set(cv2.CAP_PROP_GAIN, float(params.gain))
-        except Exception:
-            pass
+        binning = str(params.binning)
+        if binning == "1x1":
+            self._width, self._height = 512, 512
+        elif binning == "2x2":
+            self._width, self._height = 256, 256
+        elif binning == "4x4":
+            self._width, self._height = 128, 128
+        else:
+            self._width, self._height = 512, 512
 
     def _mono_dtype_and_max(self):
         pf = str(self.params.pixel_format)
@@ -147,6 +110,16 @@ def set_parameters(self, params: CameraParameters) -> None:
 
     def get_frame(self) -> np.ndarray:
         return self.snap()
+
+    def start_live(self) -> None:
+        if not self.connected:
+            self.connect()
+        self.live_running = True
+        print("[MockCamera] live started")
+
+    def stop_live(self) -> None:
+        self.live_running = False
+        print("[MockCamera] live stopped")
 
 
 # =============================================================================
