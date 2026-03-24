@@ -56,10 +56,6 @@ PI_Z_DEFAULT_VEL_MM_S = 0.5
 # - "KCubeStepperMotor"
 THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
 
-# Motic camera
-MOTIC_SDK_DLL_PATH = r"C:\Program Files (x86)\Motic\MUCamSDK\bin\x64\MUCam32.dll"
-MOTIC_CAMERA_INDEX = 0
-
 
 # =============================================================================
 # OPTIONAL IMPORTS
