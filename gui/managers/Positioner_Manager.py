@@ -23,6 +23,10 @@ class AxisState:
     max_speed: float = 1.0
     tolerance: float = 0.1
 
+    # +1 = repère logique identique au hardware
+    # -1 = repère logique inversé par rapport au hardware
+    direction: float = 1.0
+
 
 class PositionerManager(QObject):
     """API commune des gestionnaires de positionneurs."""
@@ -41,6 +45,11 @@ class PositionerManager(QObject):
         super().__init__(parent)
         self._axes = axes
         self._state: Dict[str, AxisState] = {a: AxisState() for a in axes}
+
+        # Convention DeepLight :
+        # +Z logique = aller plus profond
+        if "z" in self._state:
+            self._state["z"].direction = -1.0
 
     def stop_all(self):
         """Arrête le mouvement de tous les axes."""
@@ -73,9 +82,32 @@ class PositionerManager(QObject):
     def get_abs_pos(self, axis: str) -> float:
         return float(self._state[axis].abs_pos)
 
-    def get_rel_pos(self, axis: str) -> float:
+    def set_axis_direction(self, axis: str, direction: float):
+        self._require_axis(axis)
+        self._state[axis].direction = -1.0 if float(direction) < 0 else 1.0
+        self._emit_positions(axis)
+
+    def get_axis_direction(self, axis: str) -> float:
+        self._require_axis(axis)
+        return float(self._state[axis].direction)
+
+    def rel_to_abs(self, axis: str, rel_target: float) -> float:
+        self._require_axis(axis)
         st = self._state[axis]
-        return float(st.abs_pos - st.zero_offset)
+        return float(st.zero_offset) + float(st.direction) * float(rel_target)
+
+    def abs_to_rel(self, axis: str, abs_pos: float) -> float:
+        self._require_axis(axis)
+        st = self._state[axis]
+        return (float(abs_pos) - float(st.zero_offset)) / float(st.direction)
+
+    def rel_delta_to_abs_delta(self, axis: str, rel_delta: float) -> float:
+        self._require_axis(axis)
+        st = self._state[axis]
+        return float(st.direction) * float(rel_delta)
+    
+    def get_rel_pos(self, axis: str) -> float:
+        return self.abs_to_rel(axis, self.get_abs_pos(axis))
 
     def _emit_positions(self, axis: str):
         self.absPositionChanged.emit(axis, self.get_abs_pos(axis))
@@ -120,8 +152,7 @@ class PositionerManager(QObject):
 
     def is_rel_target_allowed(self, axis: str, target_rel: float) -> bool:
         self._require_axis(axis)
-        st = self._state[axis]
-        target_abs = float(st.zero_offset) + float(target_rel)
+        target_abs = self.rel_to_abs(axis, target_rel)
         return self.is_abs_target_allowed(axis, target_abs)
 
     def ensure_target_in_range(self, axis: str, target_abs: float):
@@ -137,8 +168,7 @@ class PositionerManager(QObject):
         self._require_axis(axis)
         st = self._state[axis]
         speed_um_s = max(0.0, float(speed) * 1000)  # mm/s → µm/s
-        target_abs = st.abs_pos + delta
-
+        target_abs = st.abs_pos + self.rel_delta_to_abs_delta(axis, delta)
         self._start_move(axis, target_abs=target_abs, speed_um_s=speed_um_s)
 
 class MockPositionerManager(PositionerManager):
@@ -160,14 +190,14 @@ class MockPositionerManager(PositionerManager):
     def move_to_rel(self, axis: str, rel_target: float, speed: float):
         """
         Va à une position RELATIVE demandée (par l'utilisateur).
-        Convertit en absolu via zero_offset.
+        Convertit en absolu via le repère logique de l'axe.
         """
-        st = self._state[axis]
-        speed_um_s = max(0.0, float(speed))*1000      # Convertir de mm/s à µm/s
-        target_abs = st.zero_offset + float(rel_target)
+        self._require_axis(axis)
+        speed_um_s = max(0.0, float(speed)) * 1000.0   # mm/s -> µm/s
+        target_abs = self.rel_to_abs(axis, rel_target)
         self._start_move(axis, target_abs=target_abs, speed_um_s=speed_um_s)
     
-    @Slot(str, float, float, float, float, float, str)
+    @Slot(str, float, float, float, str)
     def move_from_scan(
         self,
         axis_name: str,
@@ -187,9 +217,9 @@ class MockPositionerManager(PositionerManager):
             return
 
         st = self._state[axis]
-        target_abs = st.zero_offset + float(target_rel)
+        target_abs = self.rel_to_abs(axis, target_rel)
 
-                # stop d'un éventuel move en cours
+        # stop d'un éventuel move en cours
         st.target_abs = None
         if st.moving:
             st.moving = False
@@ -228,7 +258,7 @@ class MockPositionerManager(PositionerManager):
         self._require_axis(axis)
         st = self._state[axis]
         speed_um_s = max(0.0, float(speed) * 1000)  # mm/s → µm/s
-        target = st.abs_pos + float(delta)
+        target = st.abs_pos + self.rel_delta_to_abs_delta(axis, delta)
         self._start_move(axis, target_abs=target, speed_um_s=speed_um_s)
 
     def _start_move(self, axis: str, target_abs: float, speed_um_s: float):
@@ -286,7 +316,7 @@ class HardwarePositionerManager(PositionerManager):
         self._log(f"move_to_rel axis={axis} target={rel_target:.3f} speed={speed}")
 
         st = self._state[axis]
-        st.abs_pos = rel_target + st.zero_offset
+        st.abs_pos = self.rel_to_abs(axis, rel_target)
 
         self._emit_positions(axis)
 
@@ -315,7 +345,7 @@ class HardwarePositionerManager(PositionerManager):
         if t_sched_ms > 0:
             time.sleep(t_sched_ms / 1000.0)
 
-        st.abs_pos = float(target_rel) + float(st.zero_offset)
+        st.abs_pos = self.rel_to_abs(axis, target_rel)
         self._emit_positions(axis)
 
     @Slot(str)

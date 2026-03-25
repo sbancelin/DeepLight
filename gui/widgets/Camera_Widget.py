@@ -347,12 +347,10 @@ class CameraWidget(QWidget):
 
         self.button_set_levels = QPushButton("Set Levels")
         self.button_set_levels.setFixedHeight(22)
-        self.button_set_levels.setStyleSheet(_BUTTON_STYLE)
         footer_layout.addWidget(self.button_set_levels)
 
         self.button_reset_levels = QPushButton("Reset Levels")
         self.button_reset_levels.setFixedHeight(22)
-        self.button_reset_levels.setStyleSheet(_BUTTON_STYLE)
         footer_layout.addWidget(self.button_reset_levels)
 
         main_layout.addWidget(footer)

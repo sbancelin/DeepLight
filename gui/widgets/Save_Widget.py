@@ -32,20 +32,6 @@ BUTTON_STYLE = """
     }
 """
 
-BUTTON_STYLE = """
-    QPushButton {
-        background-color: #333;
-        color: white;
-        border: 1px solid #555;
-        border-radius: 3px;
-        min-height: 20px;
-        padding: 0px;
-    }
-    QPushButton:hover {
-        background-color: #444;
-    }
-"""
-
 COMBO_STYLE = """
     QComboBox {
         background-color: #333;

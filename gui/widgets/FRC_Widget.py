@@ -90,6 +90,21 @@ class FRCWidget(QWidget):
         self.get_frame_button = QPushButton("Get frame")
         self.get_frame_button.setMinimumWidth(20)
         self.get_frame_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.get_frame_button.setStyleSheet("""
+            QPushButton {
+                background-color: #333;
+                color: white;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 2px;
+                font-weight: bold;
+                min-height: 20px;
+            }
+            QPushButton:hover {
+                background-color: #444;
+            }
+        """
+        )
         self.get_frame_button.clicked.connect(self.arm_capture)
         row1.addWidget(self.get_frame_button)
 

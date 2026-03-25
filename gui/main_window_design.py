@@ -259,6 +259,7 @@ class Ui_MainWindowDesign:
 
         self.scan_widget = ScanWidget()
         self.detector_widget = DetectorWidget()
+        self.spectro_panel_widget = SpectroPanelWidget()
         self.laser_widget = LaserWidget()
         self.positioner_widget = PositionerWidget()
 
@@ -272,6 +273,12 @@ class Ui_MainWindowDesign:
         self.detector_panel = CollapsiblePanel(
             title="Detector",
             content_widget=self.detector_widget,
+            collapsed=False,
+            parent=self.left_panel_dock.container
+        )
+        self.spectro_panel = CollapsiblePanel(
+            "Spectro",
+            self.spectro_panel_widget,
             collapsed=False,
             parent=self.left_panel_dock.container
         )
@@ -292,6 +299,7 @@ class Ui_MainWindowDesign:
 
         self.left_panel_dock.add_panel(self.scan_panel)
         self.left_panel_dock.add_panel(self.detector_panel)
+        self.left_panel_dock.add_panel(self.spectro_panel)
         self.left_panel_dock.add_panel(self.laser_panel)
         self.left_panel_dock.add_panel(self.positioner_panel)
 
@@ -300,8 +308,7 @@ class Ui_MainWindowDesign:
 ##################  Right panel dock ####################
         self.right_panel_dock = PanelDock("Helpers", MainWindowDesign)
 
-        self.save_widget = SaveWidget()
-        self.spectro_panel_widget = SpectroPanelWidget()
+        self.save_widget = SaveWidget()       
         self.analog_out_widget = AnalogOutVisualizerWidget()
         self.visu_step_widget = StepperVisualizerWidget()
         self.nyquist_widget = NyquistWidget()
@@ -310,12 +317,6 @@ class Ui_MainWindowDesign:
         self.frc_widget = FRCWidget()
 
         self.save_panel = CollapsiblePanel("Save", self.save_widget, collapsed=False, parent=self.right_panel_dock.container)
-        self.spectro_panel = CollapsiblePanel(
-            "Spectro",
-            self.spectro_panel_widget,
-            collapsed=False,
-            parent=self.right_panel_dock.container
-        )
         self.analog_panel = CollapsiblePanel("Analog Out", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
         self.stepper_panel = CollapsiblePanel("Stepper", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
@@ -324,7 +325,6 @@ class Ui_MainWindowDesign:
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
 
         self.right_panel_dock.add_panel(self.save_panel)
-        self.right_panel_dock.add_panel(self.spectro_panel)
         self.right_panel_dock.add_panel(self.analog_panel)
         self.right_panel_dock.add_panel(self.stepper_panel)
         self.right_panel_dock.add_panel(self.nyquist_panel)

@@ -306,12 +306,10 @@ class StitchingWidget(QWidget):
         footer_layout.addWidget(self.cb_grid)
 
         self.button_set_levels = QPushButton("Set Levels")
-        self.button_set_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_set_levels.setFixedHeight(22)
         footer_layout.addWidget(self.button_set_levels)
 
         self.button_reset_levels = QPushButton("Reset Levels")
-        self.button_reset_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_reset_levels.setFixedHeight(22)
         footer_layout.addWidget(self.button_reset_levels)
 

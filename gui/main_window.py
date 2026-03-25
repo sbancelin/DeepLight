@@ -1126,10 +1126,6 @@ class MainWindow(QMainWindow):
 
             self.ui.laser_widget.laser_power_changed.connect(self._on_laser_power_changed)
 
-            # bouton ignoré pour Mira/Tumecs
-            button.setChecked(True)
-            button.setEnabled(False)
-
     def _on_laser_power_changed(self, laser_name: str, value: int):
         cfg = self.settings_manager.get_laser_settings(laser_name)
 

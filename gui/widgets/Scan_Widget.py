@@ -123,6 +123,9 @@ LASER_MODE_BUTTON_STYLE = """
         border: 1px solid #58d68d;
     }
     QPushButton:hover {
+        background-color: #444;
+    }
+    QPushButton:checked:hover {
         background-color: #3AB16F;
     }
 """
@@ -137,13 +140,17 @@ SAMPLE_MODE_BUTTON_STYLE = """
         font-weight: bold;
     }
     QPushButton:checked {
-        background-color: #ff8c00;
-        border: 1px solid #ffb347;
+        background-color: #FF7700;
+        border: 1px solid #FF9200;
     }
     QPushButton:hover {
         background-color: #444;
     }
+    QPushButton:checked:hover {
+        background-color: #FF9200;
+    }
 """
+
 
 def setup_scan_settings_dialog(dialog):
     """Construit le dialogue des réglages avancés des axes de scan."""

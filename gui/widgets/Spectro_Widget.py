@@ -332,12 +332,10 @@ class SpectroWidget(QWidget):
         brillouin_footer_layout.addWidget(self.cb_brillouin_grid)
 
         self.button_brillouin_set_levels = QPushButton("Set Levels")
-        self.button_brillouin_set_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_brillouin_set_levels.setFixedHeight(22)
         brillouin_footer_layout.addWidget(self.button_brillouin_set_levels)
 
         self.button_brillouin_reset_levels = QPushButton("Reset Levels")
-        self.button_brillouin_reset_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_brillouin_reset_levels.setFixedHeight(22)
         brillouin_footer_layout.addWidget(self.button_brillouin_reset_levels)
 
@@ -490,12 +488,10 @@ class SpectroWidget(QWidget):
         raman_footer_layout.addWidget(self.cb_raman_grid)
 
         self.button_raman_set_levels = QPushButton("Set Levels")
-        self.button_raman_set_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_raman_set_levels.setFixedHeight(22)
         raman_footer_layout.addWidget(self.button_raman_set_levels)
 
         self.button_raman_reset_levels = QPushButton("Reset Levels")
-        self.button_raman_reset_levels.setStyleSheet(_BUTTON_STYLE)
         self.button_raman_reset_levels.setFixedHeight(22)
         raman_footer_layout.addWidget(self.button_raman_reset_levels)
 

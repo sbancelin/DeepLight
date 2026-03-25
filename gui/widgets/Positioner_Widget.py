@@ -499,49 +499,65 @@ class PositionerWidget(QWidget):
             def move_plus(*_arg, a=axis, u=ui):
                 if not validate_speed(a, u):
                     return
+
                 step = self._read_float(u["step"], 0.0)
                 speed = self._read_float(u["speed"], 0.0)
-                current_pos = self._read_float(u["abs"], 0.0)
-                new_pos = current_pos + step
-                if new_pos < self.axis_limits[a]["min"] or new_pos > self.axis_limits[a]["max"]:
+
+                current_rel = self.manager.get_rel_pos(a)
+                target_rel = current_rel + step
+
+                if not self.manager.is_rel_target_allowed(a, target_rel):
+                    min_abs, max_abs = self.manager.get_limits(a)
                     QMessageBox.warning(
                         None,
                         "Position invalide",
-                        f"La position {new_pos} pour l'axe {a} dépasse les limites autorisées ({self.axis_limits[a]['min']} à {self.axis_limits[a]['max']})."
+                        f"La cible relative {target_rel:.2f} pour l'axe {a} est hors limites "
+                        f"(plage absolue device : {min_abs:.2f} à {max_abs:.2f})."
                     )
                     return
-                self.manager.move_relative(a, +step, speed)
 
+                self.manager.move_relative(a, +step, speed)
+    
             def move_minus(*_arg, a=axis, u=ui):
                 if not validate_speed(a, u):
                     return
+
                 step = self._read_float(u["step"], 0.0)
                 speed = self._read_float(u["speed"], 0.0)
-                current_pos = self._read_float(u["abs"], 0.0)
-                new_pos = current_pos - step
-                if new_pos < self.axis_limits[a]["min"] or new_pos > self.axis_limits[a]["max"]:
+
+                current_rel = self.manager.get_rel_pos(a)
+                target_rel = current_rel - step
+
+                if not self.manager.is_rel_target_allowed(a, target_rel):
+                    min_abs, max_abs = self.manager.get_limits(a)
                     QMessageBox.warning(
                         None,
                         "Position invalide",
-                        f"La position {new_pos} pour l'axe {a} dépasse les limites autorisées ({self.axis_limits[a]['min']} à {self.axis_limits[a]['max']})."
+                        f"La cible relative {target_rel:.2f} pour l'axe {a} est hors limites "
+                        f"(plage absolue device : {min_abs:.2f} à {max_abs:.2f})."
                     )
                     return
+
                 self.manager.move_relative(a, -step, speed)
 
             def go_to_typed_position(*_arg, a=axis, u=ui):
                 if not validate_speed(a, u):
                     return
+
                 rel_target = self._read_float(u["pos"], 0.0)
                 speed = self._read_float(u["speed"], 0.0)
-                current_zero_offset = self.manager.get_zero_offset(a)
-                new_abs_pos = current_zero_offset + rel_target
-                if new_abs_pos < self.axis_limits[a]["min"] or new_abs_pos > self.axis_limits[a]["max"]:
+
+                if not self.manager.is_rel_target_allowed(a, rel_target):
+                    min_abs, max_abs = self.manager.get_limits(a)
+                    target_abs = self.manager.rel_to_abs(a, rel_target)
                     QMessageBox.warning(
                         None,
                         "Position invalide",
-                        f"La position {new_abs_pos} pour l'axe {a} dépasse les limites autorisées ({self.axis_limits[a]['min']} à {self.axis_limits[a]['max']})."
+                        f"La position absolue correspondante {target_abs:.2f} pour l'axe {a} "
+                        f"dépasse les limites autorisées ({min_abs:.2f} à {max_abs:.2f})."
                     )
                     return
+
                 self.manager.move_to_rel(a, rel_target, speed)
 
             ui["speed"].editingFinished.connect(validate_speed)

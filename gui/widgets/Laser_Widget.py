@@ -81,6 +81,8 @@ LASER_DEFAULTS = {
     },
 }
 
+LASERS_WITHOUT_POWER_BUTTON = {"Mira 900", "Tumecs"}
+
 def setup_laser_settings_dialog(dialog):
     laser_widget = dialog.parent()
     laser_names = ["Mira 900", "Tumecs"]
@@ -233,7 +235,6 @@ class LaserWidget(QWidget):
     
     def _add_laser_control(self, laser_name):
         """Ajoute un groupe de contrôle pour un laser spécifique."""
-        # GroupBox pour chaque laser
         laser_group = QGroupBox()
         laser_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         laser_group.setStyleSheet("""
@@ -255,7 +256,6 @@ class LaserWidget(QWidget):
             }
         """)
 
-        # Layout pour le laser
         laser_layout = QGridLayout()
         laser_layout.setHorizontalSpacing(2)
         laser_layout.setVerticalSpacing(2)
@@ -264,10 +264,10 @@ class LaserWidget(QWidget):
         laser_layout.setColumnStretch(0, 0)  # nom laser
         laser_layout.setColumnStretch(1, 0)  # spinbox
         laser_layout.setColumnStretch(2, 0)  # bouton -
-        laser_layout.setColumnStretch(3, 1)  # slider prend l'espace
-        laser_layout.setColumnStretch(4, 0)  
+        laser_layout.setColumnStretch(3, 1)  # slider
+        laser_layout.setColumnStretch(4, 0)
         laser_layout.setColumnStretch(5, 0)  # bouton +
-        laser_layout.setColumnStretch(6, 0)  # ON/OFF
+        laser_layout.setColumnStretch(6, 0)  # ON/OFF éventuel
 
         laser_layout.setColumnMinimumWidth(0, 85)
 
@@ -282,7 +282,6 @@ class LaserWidget(QWidget):
         laser_name_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         laser_name_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 
-        # Champ de valeur numérique
         setpoint_spin = QSpinBox()
         setpoint_spin.setMinimumWidth(70)
         setpoint_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -301,7 +300,6 @@ class LaserWidget(QWidget):
         setpoint_spin.setPalette(spin_palette)
         setpoint_spin.setAutoFillBackground(True)
 
-        # Slider
         setpoint_slider = QSlider(Qt.Horizontal)
         setpoint_slider.setMinimumWidth(60)
         setpoint_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -325,40 +323,41 @@ class LaserWidget(QWidget):
 
         current_value_label = QLabel("0%")
 
-        # Bouton ON/OFF
-        power_button = QPushButton("OFF")
-        power_button.setCheckable(True)
-        power_button.setChecked(False)
-        power_button.setFixedSize(30, 25)  # Taille fixe
-        power_button.setStyleSheet(POWER_BUTTON_STYLE)
-
-        # Bouton +
         plus_button = QPushButton("+")
         plus_button.setFixedSize(20, 20)
         plus_button.setStyleSheet(SMALL_BUTTON_STYLE)
 
-        # Bouton -
         minus_button = QPushButton("-")
         minus_button.setFixedSize(20, 20)
         minus_button.setStyleSheet(SMALL_BUTTON_STYLE)
 
-        # Ajout des widgets au layout
+        show_power_button = laser_name not in LASERS_WITHOUT_POWER_BUTTON
+        power_button = None
+
+        if show_power_button:
+            power_button = QPushButton("OFF")
+            power_button.setCheckable(True)
+            power_button.setChecked(False)
+            power_button.setFixedSize(30, 25)
+            power_button.setStyleSheet(POWER_BUTTON_STYLE)
+
         laser_layout.addWidget(laser_name_label, 0, 0)
         laser_layout.addWidget(setpoint_spin, 0, 1)
         laser_layout.addWidget(minus_button, 0, 2)
         laser_layout.addWidget(setpoint_slider, 0, 3, 1, 2)
         laser_layout.addWidget(plus_button, 0, 5)
-        laser_layout.addWidget(power_button, 0, 6)
 
-        # Connexions
+        if power_button is not None:
+            laser_layout.addWidget(power_button, 0, 6)
+
         setpoint_spin.valueChanged.connect(setpoint_slider.setValue)
         setpoint_slider.valueChanged.connect(setpoint_spin.setValue)
         setpoint_slider.valueChanged.connect(lambda val: current_value_label.setText(f"{val}%"))
 
-        power_button.toggled.connect(lambda state: self._update_power_button_style(power_button, state))
-        power_button.toggled.connect(lambda state, name=laser_name: self.laser_power_toggled.emit(name, state))
+        if power_button is not None:
+            power_button.toggled.connect(lambda state: self._update_power_button_style(power_button, state))
+            power_button.toggled.connect(lambda state, name=laser_name: self.laser_power_toggled.emit(name, state))
 
-        # émission seulement quand l'utilisateur valide vraiment
         setpoint_spin.editingFinished.connect(
             lambda name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, sp.value())
         )
@@ -369,13 +368,12 @@ class LaserWidget(QWidget):
         laser_group.setLayout(laser_layout)
         self.laser_layout.addWidget(laser_group)
 
-        # Stocker les références pour chaque laser
         self.laser_controls[laser_name] = {
             'spin': setpoint_spin,
             'slider': setpoint_slider,
             'label': current_value_label,
             'button': power_button,
-             'plus_button': plus_button,
+            'plus_button': plus_button,
             'minus_button': minus_button
         }
 
