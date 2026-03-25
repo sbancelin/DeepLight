@@ -46,11 +46,6 @@ class PositionerManager(QObject):
         self._axes = axes
         self._state: Dict[str, AxisState] = {a: AxisState() for a in axes}
 
-        # Convention DeepLight :
-        # +Z logique = aller plus profond
-        if "z" in self._state:
-            self._state["z"].direction = -1.0
-
     def stop_all(self):
         """Arrête le mouvement de tous les axes."""
         for axis in self._axes:
@@ -94,17 +89,16 @@ class PositionerManager(QObject):
     def rel_to_abs(self, axis: str, rel_target: float) -> float:
         self._require_axis(axis)
         st = self._state[axis]
-        return float(st.zero_offset) + float(st.direction) * float(rel_target)
+        return float(st.zero_offset) + float(rel_target)
 
     def abs_to_rel(self, axis: str, abs_pos: float) -> float:
         self._require_axis(axis)
         st = self._state[axis]
-        return (float(abs_pos) - float(st.zero_offset)) / float(st.direction)
+        return float(abs_pos) - float(st.zero_offset)
 
     def rel_delta_to_abs_delta(self, axis: str, rel_delta: float) -> float:
         self._require_axis(axis)
-        st = self._state[axis]
-        return float(st.direction) * float(rel_delta)
+        return float(rel_delta)
     
     def get_rel_pos(self, axis: str) -> float:
         return self.abs_to_rel(axis, self.get_abs_pos(axis))

@@ -181,17 +181,26 @@ class ScanManager(QObject):
             np.full((n_samples,), float(y_value), dtype=np.float64),
         )
 
-    def _compute_axis_positions(self, n: int, size: float, offset: float):
+    def _compute_axis_positions(self, axis_name: str, n: int, size: float, offset: float):
         """
-        Génère les positions relatives pour un axe discret (Z, P...).
+        Génère les positions pour un axe discret.
+
+        Convention :
+        - axes normaux : de offset - size/2 vers offset + size/2
+        - Z-Vcoil : on commence en haut (abs plus grand) et on finit en bas
+        / plus profond (abs plus petit)
         """
         n = max(int(n), 1)
 
         if n == 1:
             return [offset]
 
-        start = offset - size / 2.0
-        stop = offset + size / 2.0
+        if axis_name == "Z-Vcoil":
+            start = offset + size / 2.0
+            stop = offset - size / 2.0
+        else:
+            start = offset - size / 2.0
+            stop = offset + size / 2.0
 
         return list(np.linspace(start, stop, n))
     
@@ -260,8 +269,9 @@ class ScanManager(QObject):
             else:
                 n3 = max(int(sp.pixel_values[2]), 1)
                 size3 = float(sp.sizes.get(axis3_name, 0.0))
-                off3 = float(sp.offsets.get(axis3_name, 0.0))   # déjà absolu
-                axis3_positions = self._compute_axis_positions(n3, size3, off3)
+                off3 = float(sp.offsets.get(axis3_name, 0.0))
+
+                axis3_positions = self._compute_axis_positions(axis3_name, n3, size3, off3)
 
         if len(sp.axis_order) >= 4 and sp.axis_order[3] != "None":
             axis4_name = sp.axis_order[3]
@@ -277,7 +287,7 @@ class ScanManager(QObject):
                 base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
                 off4 = base4 + user_off4
 
-                axis4_positions = self._compute_axis_positions(n4, size4, off4)
+                axis4_positions = self._compute_axis_positions(axis4_name, n4, size4, off4)
 
         if axis4_name is not None and reps > 1:
             raise NotImplementedError(

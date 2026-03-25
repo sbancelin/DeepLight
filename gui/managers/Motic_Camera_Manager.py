@@ -68,7 +68,7 @@ class MockCameraBackend(CameraBackendBase):
 
         cx = w * (0.5 + 0.18 * np.cos(0.7 * t))
         cy = h * (0.5 + 0.16 * np.sin(0.9 * t))
-        sigma = max(8.0, 20.0 - 0.5 * float(self.params.gain))
+        sigma = 20.0
 
         spot = np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sigma ** 2)))
         fringes = 0.35 * (1.0 + np.sin(0.05 * xx + 0.07 * yy + self._phase))
@@ -76,9 +76,7 @@ class MockCameraBackend(CameraBackendBase):
         noise = 0.04 * np.random.randn(h, w).astype(np.float32)
 
         exposure_scale = min(4.0, max(0.05, float(self.params.exposure_ms) / 10.0))
-        gain_scale = 1.0 + 0.1 * float(self.params.gain)
-
-        img = (0.15 + grad + fringes + 1.8 * spot + noise) * exposure_scale * gain_scale
+        img = (0.15 + grad + fringes + 1.8 * spot + noise) * exposure_scale
         return np.clip(img, 0.0, 1.0)
 
     def snap(self) -> np.ndarray:
@@ -137,6 +135,11 @@ class OpenCVCameraBackend(CameraBackendBase):
         self.connected = True
         print("[OpenCVCamera] connected")
 
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
         self.set_parameters(self.params)
 
     def disconnect(self) -> None:
@@ -159,18 +162,16 @@ class OpenCVCameraBackend(CameraBackendBase):
         if self.cap is None:
             return
 
-        # FPS
-        try:
-            self.cap.set(cv2.CAP_PROP_FPS, float(params.fps))
-        except Exception:
-            pass
-
-        # Exposure
+        # Exposure uniquement
         if not bool(params.auto_exposure):
             try:
                 self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
             except Exception:
                 pass
+
+            # Beaucoup de drivers DirectShow attendent une valeur "native".
+            # Ici on garde ton exposure_ms comme commande utilisateur,
+            # en essayant d'abord la valeur telle quelle.
             try:
                 self.cap.set(cv2.CAP_PROP_EXPOSURE, float(params.exposure_ms))
             except Exception:
@@ -181,13 +182,6 @@ class OpenCVCameraBackend(CameraBackendBase):
             except Exception:
                 pass
 
-        # Gain
-        if not bool(params.auto_gain):
-            try:
-                self.cap.set(cv2.CAP_PROP_GAIN, float(params.gain))
-            except Exception:
-                pass
-
     def _read_frame(self) -> np.ndarray:
         if not self.connected:
             self.connect()
@@ -195,7 +189,14 @@ class OpenCVCameraBackend(CameraBackendBase):
         if self.cap is None:
             raise RuntimeError("Camera is not opened")
 
-        ok, frame = self.cap.read()
+        # On vide au mieux le buffer pour récupérer une frame récente
+        try:
+            for _ in range(2):
+                self.cap.grab()
+            ok, frame = self.cap.retrieve()
+        except Exception:
+            ok, frame = self.cap.read()
+
         if not ok or frame is None:
             raise RuntimeError("Failed to read frame from OpenCV camera")
 
@@ -244,15 +245,14 @@ class CameraController(QObject):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_live_timer)
 
+        self._display_period_ms = 200   # 5 Hz
+
     def _params_from_widget_dict(self, d: dict) -> CameraParameters:
         return CameraParameters(
             exposure_ms=float(d.get("exposure_ms", 10.0)),
-            fps=max(0.1, float(d.get("fps", 10.0))),
-            gain=float(d.get("gain", 0.0)),
-            binning=str(d.get("binning", "1x1")),
             pixel_format=str(d.get("pixel_format", "Mono8")),
+            binning=str(d.get("binning", "1x1")),
             auto_exposure=bool(d.get("auto_exposure", False)),
-            auto_gain=bool(d.get("auto_gain", False)),
         )
 
     def connect_camera(self):
@@ -293,11 +293,8 @@ class CameraController(QObject):
             self.connect_camera()
             self.apply_parameters(widget_params)
 
-            fps = max(0.1, float(self.backend.get_parameters().fps))
-            interval_ms = max(1, int(round(1000.0 / fps)))
-
             self.backend.start_live()
-            self._timer.start(interval_ms)
+            self._timer.start(self._display_period_ms)
 
             self.running_changed.emit(True)
             self.status_changed.emit("Live running")

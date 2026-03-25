@@ -1057,6 +1057,36 @@ class ScanWidget(QWidget):
     def _is_stage_axis(self, axis_name: str) -> bool:
         return axis_name in ("X-Stage", "Y-Stage", "Z-Vcoil", "Polarization")
     
+    def _is_laser_xy_primary(self) -> bool:
+        """
+        True si les 2 premiers axes actifs sont les galvos X/Y (ordre quelconque).
+        """
+        active_axes = self._get_active_scan_axes()
+        if len(active_axes) < 2:
+            return False
+
+        pair = {active_axes[0], active_axes[1]}
+        return pair == {"X-Galvo", "Y-Galvo"}
+
+    def _should_skip_stage_speed_check(self, row_index: int, axis_name: str) -> bool:
+        """
+        Pour un vrai Z-stack laser :
+        - les 2 premiers axes actifs sont X/Y galvo
+        - Z-Vcoil est un axe supplémentaire (row >= 2)
+        Dans ce cas, Z ne bouge pas au rythme du dwell pixel,
+        donc le test de vitesse step/dwell est faux et doit être ignoré.
+        """
+        if axis_name != "Z-Vcoil":
+            return False
+
+        if self.scan_kind != "laser":
+            return False
+
+        if row_index < 2:
+            return False
+
+        return self._is_laser_xy_primary()
+    
     def _reset_to_defaults(self):
         """Réinitialise complètement le widget selon le mode courant."""
         if self.scan_kind == "sample":
@@ -1392,6 +1422,12 @@ class ScanWidget(QWidget):
                     f"Requested range = [{lo_um:.2f}, {hi_um:.2f}] µm\n"
                     f"Allowed range = [{min_um:.2f}, {max_um:.2f}] µm."
                 )
+
+            # Pour un Z-stack laser (XY raster + Z en axe supplémentaire),
+            # Z-Vcoil ne bouge pas au rythme du dwell pixel mais entre les frames.
+            # Le test step/dwell est donc faux dans ce cas, on le saute.
+            if self._should_skip_stage_speed_check(row_index, axis_name):
+                return True, ""
 
             step_um = size_um / pixels if pixels > 0 else 0.0
             dwell_s = dwell_us * 1e-6

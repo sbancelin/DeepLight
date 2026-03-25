@@ -226,31 +226,35 @@ class CameraWidget(QWidget):
         controls_row_2.addWidget(self.cb_auto_exposure)
 
         fps_label = QLabel("FPS")
+        fps_label.hide()
         controls_row_2.addWidget(fps_label)
 
         self.spin_fps = QDoubleSpinBox()
-        self.spin_fps.setDecimals(3)
-        self.spin_fps.setRange(0.001, 10_000.0)
-        self.spin_fps.setValue(10.0)
-        self.spin_fps.setSingleStep(1.0)
+        self.spin_fps.setValue(5.0)
+        self.spin_fps.setEnabled(False)
+        self.spin_fps.setToolTip("Display rate fixed to ~5 Hz")
         self.spin_fps.setFixedWidth(70)
         _apply_spinbox_palette(self.spin_fps)
         controls_row_2.addWidget(self.spin_fps)
+        self.spin_fps.hide()
 
         gain_label = QLabel("Gain")
+        gain_label.hide()
         controls_row_2.addWidget(gain_label)
 
         self.spin_gain = QDoubleSpinBox()
-        self.spin_gain.setDecimals(3)
-        self.spin_gain.setRange(0.0, 1000.0)
-        self.spin_gain.setValue(0.0)
-        self.spin_gain.setSingleStep(1.0)
+        self.spin_gain.setEnabled(False)
+        self.spin_gain.setToolTip("Gain disabled for now")
         self.spin_gain.setFixedWidth(70)
+        self.spin_gain.hide()
         _apply_spinbox_palette(self.spin_gain)
         controls_row_2.addWidget(self.spin_gain)
 
         self.cb_auto_gain = QCheckBox("Auto G")
         self.cb_auto_gain.setStyleSheet(_CHECKBOX_STYLE)
+        self.cb_auto_gain.setChecked(False)
+        self.cb_auto_gain.setEnabled(False)
+        self.cb_auto_gain.hide()
         controls_row_2.addWidget(self.cb_auto_gain)
 
         binning_label = QLabel("Binning")
@@ -400,30 +404,20 @@ class CameraWidget(QWidget):
     def get_parameters(self):
         return {
             "exposure_ms": self.spin_exposure_ms.value(),
-            "fps": self.spin_fps.value(),
-            "gain": self.spin_gain.value(),
             "binning": self.combo_binning.currentText(),
             "pixel_format": self.combo_pixel_format.currentText(),
             "auto_exposure": self.cb_auto_exposure.isChecked(),
-            "auto_gain": self.cb_auto_gain.isChecked(),
         }
-
+    
     def set_parameters(
         self,
         exposure_ms=None,
-        fps=None,
-        gain=None,
         binning=None,
         pixel_format=None,
         auto_exposure=None,
-        auto_gain=None,
     ):
         if exposure_ms is not None:
             self.spin_exposure_ms.setValue(float(exposure_ms))
-        if fps is not None:
-            self.spin_fps.setValue(float(fps))
-        if gain is not None:
-            self.spin_gain.setValue(float(gain))
         if binning is not None:
             idx = self.combo_binning.findText(str(binning))
             if idx >= 0:
@@ -434,8 +428,6 @@ class CameraWidget(QWidget):
                 self.combo_pixel_format.setCurrentIndex(idx)
         if auto_exposure is not None:
             self.cb_auto_exposure.setChecked(bool(auto_exposure))
-        if auto_gain is not None:
-            self.cb_auto_gain.setChecked(bool(auto_gain))
 
     def set_status(self, text):
         self.label_status_run.setText(str(text))
@@ -447,13 +439,13 @@ class CameraWidget(QWidget):
         self.button_reset.setEnabled(True)
 
         self.spin_exposure_ms.setEnabled(not running and not self.cb_auto_exposure.isChecked())
-        self.spin_fps.setEnabled(not running)
-        self.spin_gain.setEnabled(not running and not self.cb_auto_gain.isChecked())
+        self.spin_fps.setEnabled(False)
+        self.spin_gain.setEnabled(False)
         self.combo_binning.setEnabled(not running)
         self.combo_pixel_format.setEnabled(not running)
 
         self.cb_auto_exposure.setEnabled(not running)
-        self.cb_auto_gain.setEnabled(not running)
+        self.cb_auto_gain.setEnabled(False)
 
         self.cb_autoscale.setEnabled(True)
         self.cb_lock.setEnabled(True)
@@ -601,7 +593,7 @@ class CameraWidget(QWidget):
 
     def _reset_controls(self):
         self.spin_exposure_ms.setValue(1.0)
-        self.spin_fps.setValue(10.0)
+        self.spin_fps.setValue(5.0)
         self.spin_gain.setValue(0.0)
         self.cb_auto_exposure.setChecked(False)
         self.cb_auto_gain.setChecked(False)

@@ -9,12 +9,9 @@ import numpy as np
 @dataclass
 class CameraParameters:
     exposure_ms: float = 10.0
-    fps: float = 10.0
-    gain: float = 0.0
-    binning: str = "1x1"
     pixel_format: str = "Mono8"
+    binning: str = "1x1"
     auto_exposure: bool = False
-    auto_gain: bool = False
 
 
 class CameraBackendBase:
