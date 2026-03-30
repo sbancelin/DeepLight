@@ -617,7 +617,7 @@ class StitchingWidget(QWidget):
 
         pen = QPen(QColor("#9CFF9C"))
         pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setWidth(2)
+        pen.setWidth(1)
 
         rect = QGraphicsRectItem(
             QRectF(0.0, 0.0, self._default_width_um, self._default_height_um)
@@ -654,7 +654,7 @@ class StitchingWidget(QWidget):
 
         pen = QPen(QColor("#9CFF9C"))
         pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setWidth(2)
+        pen.setWidth(1)
 
         view = self.image_view.getView()
 

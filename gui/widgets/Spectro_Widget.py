@@ -358,7 +358,7 @@ class SpectroWidget(QWidget):
         raman_controls_layout.setContentsMargins(8, 6, 8, 6)
         raman_controls_layout.setSpacing(6)
 
-        self.button_raman_snap = QPushButton("Acquire")
+        self.button_raman_snap = QPushButton("Snap")
         self.button_raman_snap.setStyleSheet(_BUTTON_STYLE)
         self.button_raman_snap.setFixedWidth(64)
         raman_controls_layout.addWidget(self.button_raman_snap)

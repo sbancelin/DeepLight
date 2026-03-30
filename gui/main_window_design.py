@@ -271,7 +271,7 @@ class Ui_MainWindowDesign:
             parent=self.left_panel_dock.container
         )
         self.detector_panel = CollapsiblePanel(
-            title="Detector",
+            title="Detectors",
             content_widget=self.detector_widget,
             collapsed=False,
             parent=self.left_panel_dock.container
@@ -283,14 +283,14 @@ class Ui_MainWindowDesign:
             parent=self.left_panel_dock.container
         )
         self.laser_panel = CollapsiblePanel(
-            title="Laser",
+            title="Lasers",
             content_widget=self.laser_widget,
             collapsed=False,
             settings_callback=self.laser_widget.open_settings_dialog,
             parent=self.left_panel_dock.container
         )
         self.positioner_panel = CollapsiblePanel(
-            "Positioner",
+            "Positioners",
             self.positioner_widget,
             collapsed=False,
             settings_callback=self.positioner_widget.open_settings_dialog,
@@ -317,8 +317,8 @@ class Ui_MainWindowDesign:
         self.frc_widget = FRCWidget()
 
         self.save_panel = CollapsiblePanel("Save", self.save_widget, collapsed=False, parent=self.right_panel_dock.container)
-        self.analog_panel = CollapsiblePanel("Analog Out", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
-        self.stepper_panel = CollapsiblePanel("Stepper", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
+        self.analog_panel = CollapsiblePanel("Visualizer Analog", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
+        self.stepper_panel = CollapsiblePanel("Visualizer Stepper", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
         self.line_profile_panel = CollapsiblePanel("Line Profile", self.line_profile_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.histogram_panel = CollapsiblePanel("Histogram", self.histogram_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
