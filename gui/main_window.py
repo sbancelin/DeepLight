@@ -13,6 +13,7 @@ from .managers.Save_Manager import SaveManager
 from .managers.Scan_manager import ScanManager
 from .managers.Settings_Manager import SettingsManager
 from .managers.Stitching_Manager import StitchingManager
+from .managers.Spectro_Manager import SpectroManager
 
 
 class MainWindow(QMainWindow):
@@ -78,14 +79,18 @@ class MainWindow(QMainWindow):
 
         self.user_shutter_override = None  # None=no override, True/False=user forced state
         self.hardware = HardwareManager(backend_name=self.backend_name, settings_manager=self.settings_manager, parent=self)
+        self.laser_manager = self.hardware.create_laser_manager()
         self.camera_controller = self.hardware.create_camera_controller(parent=self)
         self._connect_camera_controls()
         self._connect_laser_controls()
-        self._connect_spectro_controls()
+        QTimer.singleShot(0, self._sync_laser_widget_from_hardware)
+        QTimer.singleShot(1000, self._sync_laser_widget_from_hardware)
         self.save_manager = SaveManager()
         self.positioner_manager = self.hardware.create_positioner_manager(parent=self)
         self.scan_manager = ScanManager(self)
         self.ui.positioner_widget.set_manager(self.positioner_manager)
+        self.spectro_manager = SpectroManager(self)
+        self._connect_spectro_controls()
 
         self._rec_saving_active = False
         self._stepper_return_targets_rel = {"z": None, "p": None}
@@ -160,12 +165,190 @@ class MainWindow(QMainWindow):
                 
         self.init_ready = True  # Marque l'initialisation comme terminée     
     
+    @Slot()
+    def _sync_laser_widget_from_hardware(self):
+        try:
+            percent = self.laser_manager.get_power_percent("Cobolt 660")
+            self.ui.laser_widget.set_laser_power_value("Cobolt 660", int(round(percent)))
+
+            output_mw = self.laser_manager.get_output_power_mw("Cobolt 660")
+            enabled = self.laser_manager.get_enabled("Cobolt 660")
+
+            print(
+                f"[MainWindow] Cobolt synced: "
+                f"setpoint={percent:.1f}% output={output_mw:.1f} mW enabled={enabled}"
+            )
+        except Exception as e:
+            print(f"[MainWindow] Cobolt sync failed: {e}")
+
     def _connect_spectro_controls(self):
         sp = self.ui.spectro_panel_widget
         sw = self.ui.spectro_widget
+        sm = self.spectro_manager
 
         sp.sigSpectroModeChanged.connect(sw.set_modes)
-        sp.sigAcquireClicked.connect(self._on_spectro_acquire)
+        sp.sigAcquireClicked.connect(self._on_spectro_acquire_clicked)
+        sp.sigStopClicked.connect(self._on_spectro_stop_clicked)
+
+        sm.brillouin_image_ready.connect(sw.set_brillouin_image)
+        sm.raman_spectrum_ready.connect(sw.set_raman_spectrum)
+        sm.status_changed.connect(self._on_spectro_status_changed)
+        sm.progress_changed.connect(self._on_spectro_progress_changed)
+        sm.acquisition_started.connect(lambda: sp.set_running(True))
+        sm.acquisition_finished.connect(self._on_spectro_acquisition_finished)
+        sm.acquisition_failed.connect(self._on_spectro_acquisition_failed)
+
+        # --- Brillouin mock controls ---
+        sw.button_brillouin_snap.clicked.connect(self._on_brillouin_snap_clicked)
+        sw.button_brillouin_live.clicked.connect(self._on_brillouin_live_clicked)
+        sw.button_brillouin_stop.clicked.connect(sm.stop_live_brillouin)
+        sm.brillouin_running_changed.connect(sw.set_brillouin_live_button_state)
+
+        # --- Raman mock controls ---
+        sw.button_raman_snap.clicked.connect(self._on_raman_snap_clicked)
+        sw.button_raman_live.clicked.connect(self._on_raman_live_clicked)
+        sw.button_raman_stop.clicked.connect(sm.stop_live_raman)
+        sm.raman_running_changed.connect(sw.set_raman_live_button_state)
+    
+    @Slot()
+    def _on_spectro_acquire_clicked(self):
+        if self.spectro_manager.is_running():
+            return
+
+        try:
+            scan_parameters = self._attach_initial_relative_positions(
+                self.ui.scan_widget.get_scan_parameters()
+            )
+            modes = self.ui.spectro_panel_widget.get_modes()
+            brillouin_params = self.ui.spectro_widget.get_brillouin_parameters()
+            raman_params = self.ui.spectro_widget.get_raman_parameters()
+
+            self.ui.spectro_widget.clear_raman_spectrum(show_placeholder=False)
+            self.ui.spectro_widget.clear_brillouin_image()
+            self.ui.spectro_widget.set_running(True)
+
+            self.spectro_manager.start_mapping(
+                scan_parameters=scan_parameters,
+                modes=modes,
+                brillouin_params=brillouin_params,
+                raman_params=raman_params,
+            )
+        except Exception as e:
+            self._on_spectro_status_changed(f"Spectro start failed: {e}")
+            self.ui.spectro_panel_widget.set_running(False)
+            self.ui.spectro_widget.set_running(False)
+
+    @Slot()
+    def _on_spectro_stop_clicked(self):
+        try:
+            self.spectro_manager.stop_mapping()
+        except Exception:
+            pass
+
+        try:
+            self.spectro_manager.stop_all_live()
+        except Exception:
+            pass
+
+        try:
+            self.positioner_manager.stop_all()
+        except Exception:
+            pass
+
+        try:
+            self.ui.spectro_panel_widget.set_running(False)
+            self.ui.spectro_widget.set_running(False)
+        except Exception:
+            pass
+
+        self._on_spectro_status_changed("Spectro stopped")
+    
+    @Slot()
+    def _on_brillouin_snap_clicked(self):
+        try:
+            params = self.ui.spectro_widget.get_brillouin_parameters()
+            self.spectro_manager.snap_brillouin(params)
+        except Exception as e:
+            self._on_spectro_status_changed(f"Brillouin snap failed: {e}")
+
+    @Slot()
+    def _on_brillouin_live_clicked(self):
+        try:
+            if self.spectro_manager.is_brillouin_live_running():
+                self.spectro_manager.stop_live_brillouin()
+            else:
+                self.spectro_manager.start_live_brillouin()
+        except Exception as e:
+            self._on_spectro_status_changed(f"Brillouin live failed: {e}")
+
+    @Slot()
+    def _on_raman_snap_clicked(self):
+        try:
+            params = self.ui.spectro_widget.get_raman_parameters()
+            self.spectro_manager.snap_raman(params)
+        except Exception as e:
+            self._on_spectro_status_changed(f"Raman snap failed: {e}")
+
+    @Slot()
+    def _on_raman_live_clicked(self):
+        try:
+            if self.spectro_manager.is_raman_live_running():
+                self.spectro_manager.stop_live_raman()
+            else:
+                self.spectro_manager.start_live_raman()
+        except Exception as e:
+            self._on_spectro_status_changed(f"Raman live failed: {e}")
+    
+    @Slot(str)
+    def _on_spectro_status_changed(self, text: str):
+        modes = self.ui.spectro_panel_widget.get_modes()
+        if bool(modes.get("brillouin", False)):
+            self.ui.spectro_widget.set_brillouin_status(str(text))
+        if bool(modes.get("raman", False)):
+            self.ui.spectro_widget.set_raman_status(str(text))
+
+    @Slot(int, int)
+    def _on_spectro_progress_changed(self, done: int, total: int):
+        self._on_spectro_status_changed(f"Spectro {done}/{total}")
+
+    @Slot(object)
+    def _on_spectro_acquisition_finished(self, dataset):
+        self.ui.spectro_panel_widget.set_running(False)
+        self.ui.spectro_widget.set_running(False)
+
+        try:
+            folder = self.ui.save_widget.folder_line_edit.text().strip()
+        except Exception:
+            folder = ""
+
+        try:
+            filename = self.ui.save_widget.filename_line_edit.text().strip()
+        except Exception:
+            filename = ""
+
+        try:
+            comment = self.ui.save_widget.comment_text_edit.toPlainText().strip()
+        except Exception:
+            comment = ""
+
+        try:
+            if not filename:
+                filename = "SPECTRO"
+            path = self.save_manager.save_spectro_dataset(
+                folder=folder,
+                filename=filename,
+                comment=comment,
+                dataset=dataset,
+            )
+            self._on_spectro_status_changed(f"Spectro saved: {path}")
+        except Exception as e:
+            self._on_spectro_status_changed(f"Spectro save failed: {e}")
+
+    @Slot(str)
+    def _on_spectro_acquisition_failed(self, message: str):
+        self.ui.spectro_panel_widget.set_running(False)
+        self.ui.spectro_widget.set_running(False)
+        self._on_spectro_status_changed(f"Spectro error: {message}")
     
     @Slot()
     def _on_spectro_acquire(self):
@@ -209,6 +392,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         try:
+            self.spectro_manager.stop_all_live()
+        except Exception:
+            pass
+        try:
             self.hardware.close()
         except Exception:
             pass
@@ -250,27 +437,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.ui.camera_widget.set_status(f"Display failed: {e}")
     
-    def _on_laser_power_changed(self, laser_name: str, value: int):
-        cfg = self.settings_manager.get_laser_settings(laser_name)
-
-        speed = int(cfg.get("speed", 429410))
-        steps_per_degree = float(cfg.get("steps_per_degree", 1919.14))
-
-        self.hardware.set_laser_power_percent(
-            laser_name,
-            float(value),
-            speed=speed,
-            steps_per_degree=steps_per_degree,
-        )
-    
     @Slot()
     def on_stitch_acquire_clicked(self):
         if self.stitching_manager.is_running():
             return
 
         scan_params = self.ui.scan_widget.get_scan_parameters()
-        channels = list(self.ui.detector_widget.detectors) or ["default"]
-        scan_params["active_channels"] = channels
+        scan_params = self._attach_detector_specs(scan_params)
+        channels = list(scan_params.get("active_channels", [])) or ["default"]
         scan_params["repetitions"] = 1
 
         # v1 : XY uniquement
@@ -410,6 +584,47 @@ class MainWindow(QMainWindow):
 
         params["initial_relative_positions"] = initial
         return params
+    
+    def _attach_detector_specs(self, scan_parameters: dict) -> dict:
+        """
+        Attache au dict de scan:
+        - active_channels
+        - detector_channels (description structurée)
+        """
+        params = dict(scan_parameters or {})
+
+        try:
+            detector_specs = self.ui.detector_widget.get_detector_specs()
+        except Exception:
+            detector_specs = []
+
+        params["detector_channels"] = detector_specs
+        params["active_channels"] = [
+            str(d.get("name"))
+            for d in detector_specs
+            if bool(d.get("enabled", True))
+        ] or ["default"]
+
+        return params
+    
+    def _channel_unit_label(self, channel: str) -> str:
+        """
+        Retourne l'unité affichée pour un canal.
+        - analog  -> V
+        - digital -> counts
+        """
+        try:
+            specs = self.ui.detector_widget.get_detector_specs()
+        except Exception:
+            specs = []
+
+        for spec in specs:
+            if str(spec.get("name")) != str(channel):
+                continue
+            kind = str(spec.get("kind", "analog"))
+            return "V" if kind == "analog" else "counts"
+
+        return "value"
     
     def start_scan_outputs(self, scan_parameters: dict, mode: str):
         """Prépare le plan analog/stepper; le temps réel viendra de l'acquisition."""
@@ -625,7 +840,7 @@ class MainWindow(QMainWindow):
             return
 
         scan_params = self.ui.scan_widget.get_scan_parameters()
-        scan_params["active_channels"] = channels
+        scan_params = self._attach_detector_specs(scan_params)
 
         try:
             path = self.save_manager.save_current_view(
@@ -695,8 +910,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def on_view_update_requested(self, params):
-        channels = list(self.ui.detector_widget.detectors) or ["default"]
-        params["active_channels"] = channels
+        params = self._attach_detector_specs(params)
+        channels = list(params.get("active_channels", [])) or ["default"]
         params = self._attach_initial_relative_positions(params)
 
         self._update_estimated_stack_size()
@@ -718,7 +933,10 @@ class MainWindow(QMainWindow):
 
             im_widget.setImage(empty, autoLevels=False, autoRange=False, autoHistogramRange=False)
             self._apply_physical_scale(im_widget, empty, params)
-            im_widget.setLevels(0, 1)
+
+            autoscale = bool(getattr(self.ui, "channel_autoscale", {}).get(ch, True))
+            if autoscale:
+                im_widget.autoLevels()
 
             lock_checked = bool(getattr(self.ui, "channel_lock", {}).get(ch, True))
             im_widget.getView().setAspectLocked(lock_checked)
@@ -971,8 +1189,9 @@ class MainWindow(QMainWindow):
     @Slot()
     def previewsingleButtonClicked(self, checked: bool = False):
         """Démarre une acquisition en mode preview single."""
-        scan_parameters = self._attach_initial_relative_positions(self.ui.scan_widget.get_scan_parameters())
-        scan_parameters["active_channels"] = list(self.ui.detector_widget.detectors)
+        scan_parameters = self.ui.scan_widget.get_scan_parameters()
+        scan_parameters = self._attach_detector_specs(scan_parameters)
+        scan_parameters = self._attach_initial_relative_positions(scan_parameters)
         self.acquisition_manager.set_scan_parameters(scan_parameters)
         self.start_scan_outputs(scan_parameters, mode="preview_single")
         self._mouse_move_proxies.clear()
@@ -983,8 +1202,9 @@ class MainWindow(QMainWindow):
     def previewcontinuousButtonClicked(self, checked: bool):
         """ preview button clicked event """
         if checked:
-            scan_parameters = self._attach_initial_relative_positions(self.ui.scan_widget.get_scan_parameters())
-            scan_parameters["active_channels"] = list(self.ui.detector_widget.detectors) or ["default"]
+            scan_parameters = self.ui.scan_widget.get_scan_parameters()
+            scan_parameters = self._attach_detector_specs(scan_parameters)
+            scan_parameters = self._attach_initial_relative_positions(scan_parameters)
             self.acquisition_manager.set_scan_parameters(scan_parameters)
             self.start_scan_outputs(scan_parameters, mode="preview_continuous")
             self._mouse_move_proxies.clear()
@@ -1010,11 +1230,24 @@ class MainWindow(QMainWindow):
         x = int(mouse_point.x())
         y = int(mouse_point.y())
 
+        unit = self._channel_unit_label(channel)
+
         if 0 <= x < img.shape[1] and 0 <= y < img.shape[0]:
-            intensity = img[y, x]
-            text = f"x: {x:4d}  y: {y:4d}  I: {float(intensity):.2f}"
+            value = float(img[y, x])
+
+            if unit == "V":
+                text = f"x: {x:4d}  y: {y:4d}  V: {value:.4f}"
+            elif unit == "counts":
+                text = f"x: {x:4d}  y: {y:4d}  counts: {value:.0f}"
+            else:
+                text = f"x: {x:4d}  y: {y:4d}  value: {value:.4f}"
         else:
-            text = "x: -  y: -  I: -"
+            if unit == "V":
+                text = "x: -  y: -  V: -"
+            elif unit == "counts":
+                text = "x: -  y: -  counts: -"
+            else:
+                text = "x: -  y: -  value: -"
 
         lbl = self.ui.im_status_labels.get(channel)
         if lbl is not None:
@@ -1058,8 +1291,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def RecButtonClicked(self):      
         scan_parameters = self.ui.scan_widget.get_scan_parameters()
-        channels = list(self.ui.detector_widget.detectors) or ["default"]
-        scan_parameters["active_channels"] = channels
+        scan_parameters = self._attach_detector_specs(scan_parameters)
+        channels = list(scan_parameters.get("active_channels", [])) or ["default"]
 
         # sécurité: interdit P + rep>1
         if "Polarization" in scan_parameters.get("active_axes", []) and int(scan_parameters.get("repetitions", 1)) != 1:
@@ -1114,28 +1347,24 @@ class MainWindow(QMainWindow):
 
     def _connect_laser_controls(self):
         lw = self.ui.laser_widget
-
-        for laser_name in ("Mira 900", "Tumecs"):
-            controls = lw.laser_controls.get(laser_name)
-            if not controls:
-                continue
-
-            slider = controls["slider"]
-            spin = controls["spin"]
-            button = controls["button"]
-
-            self.ui.laser_widget.laser_power_changed.connect(self._on_laser_power_changed)
+        lw.laser_power_changed.connect(self._on_laser_power_changed)
 
     def _on_laser_power_changed(self, laser_name: str, value: int):
-        cfg = self.settings_manager.get_laser_settings(laser_name)
+        laser_name = str(laser_name)
 
-        if "speed" not in cfg or "steps_per_degree" not in cfg or "offset_deg" not in cfg:
-            raise RuntimeError(f"Missing laser settings for {laser_name!r}")
+        if laser_name in ("Mira 900", "Tumecs"):
+            cfg = self.settings_manager.get_laser_settings(laser_name)
 
-        self.hardware.set_laser_power_percent(
-            laser_name,
-            float(value),
-            speed=int(cfg["speed"]),
-            steps_per_degree=float(cfg["steps_per_degree"]),
-            offset_deg=float(cfg["offset_deg"]),
-        )
+            if "speed" not in cfg or "steps_per_degree" not in cfg or "offset_deg" not in cfg:
+                raise RuntimeError(f"Missing laser settings for {laser_name!r}")
+
+            self.hardware.set_laser_power_percent(
+                laser_name,
+                float(value),
+                speed=int(cfg["speed"]),
+                steps_per_degree=float(cfg["steps_per_degree"]),
+                offset_deg=float(cfg["offset_deg"]),
+            )
+            return
+
+        self.laser_manager.set_power_percent(laser_name, float(value))

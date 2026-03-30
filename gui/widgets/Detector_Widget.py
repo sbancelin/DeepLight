@@ -101,6 +101,38 @@ class DetectorWidget(QWidget):
         self.detectors = ["PMT-Vis"]
         self.detectors_changed.emit(self.detectors)
 
+    def get_detector_specs(self):
+        """
+        Retourne la description structurée des 4 canaux détecteurs.
+
+        Convention V1 DeepLight:
+        - PMT-Vis, PMT-IR -> analogiques
+        - Ch 0, Ch 1      -> digitaux
+        """
+        ordered_names = ["PMT-Vis", "PMT-IR", "Ch 0", "Ch 1"]
+        specs = []
+
+        for name in ordered_names:
+            btn = self.toggle_buttons.get(name)
+            enabled = bool(btn and btn.isChecked())
+
+            if name in ("PMT-Vis", "PMT-IR"):
+                kind = "analog"
+                digital_source = None
+            else:
+                kind = "digital"
+                digital_source = name
+
+            specs.append({
+                "name": name,
+                "kind": kind,
+                "enabled": enabled,
+                "digital_source": digital_source,
+                "digital_mode": "counts",
+            })
+
+        return specs
+    
     def on_detector_toggled(self, detector_name):
         """Met à jour la liste des détecteurs actifs puis émet le signal associé."""
         is_checked = self.toggle_buttons[detector_name].isChecked()

@@ -19,6 +19,7 @@ from ..Hardware_Manager import (
 from ..Scan_Types import ExecutionPlan, FrameReconstructionPlan, SampleFramePlan
 from ..Frame_Builder import FrameBuilder
 from ..Sample_Scan_Manager import SampleScanManager
+from ..PMT_Digital_Manager import PMTDigitalManager
 import warnings
 
 
@@ -73,6 +74,11 @@ class NidaqMicroscope(MicroscopeBackendBase):
         super().__init__(scan_parameters=None)
 
         self.sample_scan_manager = SampleScanManager()
+        self.digital_manager = PMTDigitalManager()
+        self.channel_specs = []
+        self.channel_kind_map = {}
+        self.analog_channels = []
+        self.digital_channels = []
 
         self.scan_kind = "laser"
         self.pixel_source_kind = "analog_integrating"
@@ -166,7 +172,53 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
         # Keep the channel names from the UI if present.
         # If none are supplied, fall back to the two physical PMTs.
-        self.channels = list(self.scan_parameters.get("active_channels") or ["PMT_IR", "PMT_Vis"])
+        self.channels = list(self.scan_parameters.get("active_channels") or ["PMT-Vis", "PMT-IR"])
+
+        self.channel_specs = list(self.scan_parameters.get("detector_channels") or [])
+
+        if not self.channel_specs:
+            # fallback legacy
+            self.channel_specs = []
+            for i, ch in enumerate(self.channels):
+                self.channel_specs.append({
+                    "name": ch,
+                    "kind": "analog" if i < 2 else "digital",
+                    "enabled": True,
+                    "digital_mode": "counts",
+                })
+
+        self.channels = [
+            str(c.get("name"))
+            for c in self.channel_specs
+            if bool(c.get("enabled", True))
+        ] or ["default"]
+
+        self.channel_kind_map = {
+            str(c.get("name")): str(c.get("kind", "analog"))
+            for c in self.channel_specs
+            if bool(c.get("enabled", True))
+        }
+
+        self.analog_channels = [
+            ch for ch in self.channels
+            if self.channel_kind_map.get(ch, "analog") == "analog"
+        ]
+
+        self.digital_channels = [
+            ch for ch in self.channels
+            if self.channel_kind_map.get(ch, "analog") == "digital"
+        ]
+
+        self.digital_manager.configure(
+            channel_specs=self.channel_specs,
+            scan_parameters=self.scan_parameters,
+        )
+
+        if self.digital_channels and self.samples_per_pixel != 1:
+            raise ValueError(
+                "Photon counting V1 requires samples_per_pixel == 1. "
+                "Please keep Sampling = 1 when a digital PMT is enabled."
+            )
 
         self.bidirectional_scan = bool(self.scan_parameters.get("bidirectional_scan", False))
         self.bidirectional_shift_px = int(self.scan_parameters.get("bidirectional_shift_px", 0) or 0)
@@ -350,17 +402,34 @@ class NidaqMicroscope(MicroscopeBackendBase):
             ao_task.write([0.0, 0.0], auto_start=True)
     
     def _active_ai_count(self) -> int:
-        return min(2, max(1, len(self.channels)))
+        return min(2, len(self.analog_channels))
 
-    def _map_ai_to_channels(self, ai_data: np.ndarray, n_samples: int) -> dict[str, np.ndarray]:
+    def _ordered_analog_channels_for_ni(self) -> list[str]:
+        ordered = []
+
+        if "PMT-Vis" in self.analog_channels:
+            ordered.append("PMT-Vis")
+        if "PMT-IR" in self.analog_channels:
+            ordered.append("PMT-IR")
+
+        for ch in self.analog_channels:
+            if ch not in ordered:
+                ordered.append(ch)
+
+        return ordered
+    
+    def _map_ai_to_analog_channels(self, ai_data: np.ndarray, n_samples: int) -> dict[str, np.ndarray]:
         out = {}
         n_ai = int(ai_data.shape[0]) if ai_data.ndim == 2 else 1
 
-        for ch_idx, ch in enumerate(self.channels):
+        ordered_channels = self._ordered_analog_channels_for_ni()
+
+        for ch_idx, ch in enumerate(ordered_channels):
             if ch_idx < n_ai:
                 out[ch] = np.asarray(ai_data[ch_idx], dtype=np.float64)
             else:
                 out[ch] = np.zeros((n_samples,), dtype=np.float64)
+
         return out
 
     def _next_step_event_sample_after(self, sample_cursor: int, frame_stop: int) -> int | None:
@@ -387,7 +456,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             break
 
         return None
-    
+
     def _read_frame_from_ni(
         self,
         *,
@@ -417,6 +486,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             arrays=arrays,
             channels=self.channels,
             reconstruction_plan=reconstruction_plan,
+            channel_kinds=self.channel_kind_map,
         )
         builder.reset(clear_arrays=clear_arrays)
 
@@ -426,108 +496,205 @@ class NidaqMicroscope(MicroscopeBackendBase):
         sample_cursor = int(sample_start)
         frame_stop = int(sample_start) + int(n_samples)
 
-        with nidaqmx.Task("DL_AO_Frame") as ao_task, nidaqmx.Task("DL_AI_Frame") as ai_task:
-            self._set_active_tasks(ao_task=ao_task, ai_task=ai_task)
-            try:
-                ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
-                ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
+        digital_started = False
+        if self.digital_channels:
+            self.digital_manager.start_frame(total_gates=int(frame_useful_samples))
+            digital_started = True
 
-                ai_task.ai_channels.add_ai_voltage_chan(
-                    NI_AI_IR,
-                    min_val=NI_AI_MIN_V,
-                    max_val=NI_AI_MAX_V,
-                    terminal_config=self._terminal_config(),
-                )
-                if ai_count >= 2:
-                    ai_task.ai_channels.add_ai_voltage_chan(
-                        NI_AI_VIS,
-                        min_val=NI_AI_MIN_V,
-                        max_val=NI_AI_MAX_V,
-                        terminal_config=self._terminal_config(),
-                    )
-
-                ao_task.timing.cfg_samp_clk_timing(
-                    rate=sr,
-                    sample_mode=AcquisitionType.FINITE,
-                    samps_per_chan=int(n_samples),
-                )
-
-                ai_task.timing.cfg_samp_clk_timing(
-                    rate=sr,
-                    source=f"/{NI_DEVICE_NAME}/ao/SampleClock",
-                    sample_mode=AcquisitionType.FINITE,
-                    samps_per_chan=int(n_samples),
-                )
-                ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(f"/{NI_DEVICE_NAME}/ao/StartTrigger")
-
-                writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
-                reader = AnalogMultiChannelReader(ai_task.in_stream)
-
-                writer.write_many_sample(ao_block)
-
-                self._emit_step_events_up_to(int(sample_start))
-
-                ai_task.start()
-                ao_task.start()
-
-                while remaining > 0 and not self.acquisition_stop_event.is_set():
-                    take = min(chunk_samples, remaining)
-
-                    next_step_sample = self._next_step_event_sample_after(
-                        sample_cursor=int(sample_cursor),
-                        frame_stop=int(frame_stop),
-                    )
-                    if next_step_sample is not None:
-                        take = min(take, max(1, int(next_step_sample) - int(sample_cursor)))
-                    ai_chunk = np.zeros((ai_count, int(take)), dtype=np.float64)
-
+        try:
+            if ai_count <= 0:
+                with nidaqmx.Task("DL_AO_Frame") as ao_task:
+                    self._set_active_tasks(ao_task=ao_task, ai_task=None)
                     try:
-                        reader.read_many_sample(
-                            ai_chunk,
-                            number_of_samples_per_channel=int(take),
-                            timeout=0.1,
+                        ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
+                        ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
+
+                        ao_task.timing.cfg_samp_clk_timing(
+                            rate=sr,
+                            sample_mode=AcquisitionType.FINITE,
+                            samps_per_chan=int(n_samples),
                         )
-                    except DaqWarning as w:
-                        if self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010:
-                            break
-                        raise
-                    except DaqError:
-                        if self.acquisition_stop_event.is_set():
-                            break
-                        raise
-                    except Exception:
-                        if self.acquisition_stop_event.is_set():
-                            break
-                        raise
 
-                    mapped = self._map_ai_to_channels(ai_chunk, int(take))
+                        writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                        writer.write_many_sample(ao_block)
 
-                    for ch in self.channels:
-                        collected[ch].append(mapped[ch])
+                        self._emit_step_events_up_to(int(sample_start))
+                        ao_task.start()
 
-                    builder.consume_samples(mapped)
+                        while remaining > 0 and not self.acquisition_stop_event.is_set():
+                            take = min(chunk_samples, remaining)
 
-                    self.samples_progress.emit(int(take))
-                    sample_cursor += int(take)
-                    self._emit_step_events_up_to(int(sample_cursor))
-                    remaining -= int(take)
+                            next_step_sample = self._next_step_event_sample_after(
+                                sample_cursor=int(sample_cursor),
+                                frame_stop=int(frame_stop),
+                            )
+                            if next_step_sample is not None:
+                                take = min(take, max(1, int(next_step_sample) - int(sample_cursor)))
 
-                if not self.acquisition_stop_event.is_set():
-                    try:
-                        ao_task.wait_until_done(WAIT_INFINITELY)
-                    except DaqWarning as w:
-                        if not (self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010):
-                            raise
-                    except DaqError:
+                            mapped = self.digital_manager.read_pixel_chunk(
+                                n_samples=int(take),
+                                sample_rate_hz=sr,
+                            )
+
+                            for ch in self.channels:
+                                if ch not in mapped:
+                                    mapped[ch] = np.zeros((int(take),), dtype=np.float64)
+
+                            for ch in self.channels:
+                                collected[ch].append(mapped[ch])
+
+                            builder.consume_samples(mapped)
+
+                            self.samples_progress.emit(int(take))
+                            sample_cursor += int(take)
+                            self._emit_step_events_up_to(int(sample_cursor))
+                            remaining -= int(take)
+
                         if not self.acquisition_stop_event.is_set():
-                            raise
-            finally: 
-                self._clear_active_tasks()
+                            try:
+                                ao_task.wait_until_done(WAIT_INFINITELY)
+                            except DaqWarning as w:
+                                if not (self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010):
+                                    raise
+                            except DaqError:
+                                if not self.acquisition_stop_event.is_set():
+                                    raise
+                    finally:
+                        self._clear_active_tasks()
 
-        return {
-            ch: np.concatenate(collected[ch]).astype(np.float64, copy=False) if collected[ch] else np.zeros((0,), dtype=np.float64)
-            for ch in self.channels
-        }
+                return {
+                    ch: np.concatenate(collected[ch]).astype(np.float64, copy=False)
+                    if collected[ch] else np.zeros((0,), dtype=np.float64)
+                    for ch in self.channels
+                }
+
+            with nidaqmx.Task("DL_AO_Frame") as ao_task, nidaqmx.Task("DL_AI_Frame") as ai_task:
+                self._set_active_tasks(ao_task=ao_task, ai_task=ai_task)
+                try:
+                    ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
+                    ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
+
+                    ordered_analog_channels = self._ordered_analog_channels_for_ni()
+
+                    for ch in ordered_analog_channels:
+                        if ch == "PMT-Vis":
+                            physical_ai = NI_AI_VIS
+                        elif ch == "PMT-IR":
+                            physical_ai = NI_AI_IR
+                        else:
+                            raise ValueError(f"Unknown analog channel mapping for {ch!r}")
+
+                        ai_task.ai_channels.add_ai_voltage_chan(
+                            physical_ai,
+                            min_val=NI_AI_MIN_V,
+                            max_val=NI_AI_MAX_V,
+                            terminal_config=self._terminal_config(),
+                        )
+
+                    ao_task.timing.cfg_samp_clk_timing(
+                        rate=sr,
+                        sample_mode=AcquisitionType.FINITE,
+                        samps_per_chan=int(n_samples),
+                    )
+
+                    ai_task.timing.cfg_samp_clk_timing(
+                        rate=sr,
+                        source=f"/{NI_DEVICE_NAME}/ao/SampleClock",
+                        sample_mode=AcquisitionType.FINITE,
+                        samps_per_chan=int(n_samples),
+                    )
+                    ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(f"/{NI_DEVICE_NAME}/ao/StartTrigger")
+
+                    writer = AnalogMultiChannelWriter(ao_task.out_stream, auto_start=False)
+                    reader = AnalogMultiChannelReader(ai_task.in_stream)
+
+                    writer.write_many_sample(ao_block)
+
+                    self._emit_step_events_up_to(int(sample_start))
+
+                    ai_task.start()
+                    ao_task.start()
+
+                    while remaining > 0 and not self.acquisition_stop_event.is_set():
+                        take = min(chunk_samples, remaining)
+
+                        next_step_sample = self._next_step_event_sample_after(
+                            sample_cursor=int(sample_cursor),
+                            frame_stop=int(frame_stop),
+                        )
+                        if next_step_sample is not None:
+                            take = min(take, max(1, int(next_step_sample) - int(sample_cursor)))
+
+                        ai_chunk = np.zeros((ai_count, int(take)), dtype=np.float64)
+
+                        try:
+                            reader.read_many_sample(
+                                ai_chunk,
+                                number_of_samples_per_channel=int(take),
+                                timeout=0.1,
+                            )
+                        except DaqWarning as w:
+                            if self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010:
+                                break
+                            raise
+                        except DaqError:
+                            if self.acquisition_stop_event.is_set():
+                                break
+                            raise
+                        except Exception:
+                            if self.acquisition_stop_event.is_set():
+                                break
+                            raise
+
+                        mapped = {}
+
+                        analog_mapped = self._map_ai_to_analog_channels(ai_chunk, int(take))
+                        mapped.update(analog_mapped)
+
+                        digital_mapped = self.digital_manager.read_pixel_chunk(
+                            n_samples=int(take),
+                            sample_rate_hz=sr,
+                        )
+                        mapped.update(digital_mapped)
+
+                        for ch in self.channels:
+                            if ch not in mapped:
+                                mapped[ch] = np.zeros((int(take),), dtype=np.float64)
+
+                        for ch in self.channels:
+                            collected[ch].append(mapped[ch])
+
+                        builder.consume_samples(mapped)
+
+                        self.samples_progress.emit(int(take))
+                        sample_cursor += int(take)
+                        self._emit_step_events_up_to(int(sample_cursor))
+                        remaining -= int(take)
+
+                    if not self.acquisition_stop_event.is_set():
+                        try:
+                            ao_task.wait_until_done(WAIT_INFINITELY)
+                        except DaqWarning as w:
+                            if not (self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010):
+                                raise
+                        except DaqError:
+                            if not self.acquisition_stop_event.is_set():
+                                raise
+                finally:
+                    self._clear_active_tasks()
+
+            return {
+                ch: np.concatenate(collected[ch]).astype(np.float64, copy=False)
+                if collected[ch] else np.zeros((0,), dtype=np.float64)
+                for ch in self.channels
+            }
+
+        finally:
+            if digital_started:
+                try:
+                    self.digital_manager.stop_frame()
+                except Exception:
+                    pass
 
     def _acquire_plan_frame(
         self,
@@ -667,15 +834,18 @@ class NidaqMicroscope(MicroscopeBackendBase):
         ai_result = np.zeros((ai_count, spp), dtype=np.float64)
 
         with nidaqmx.Task("DL_AI_Pixel") as ai_task:
-            ai_task.ai_channels.add_ai_voltage_chan(
-                NI_AI_IR,
-                min_val=NI_AI_MIN_V,
-                max_val=NI_AI_MAX_V,
-                terminal_config=self._terminal_config(),
-            )
-            if ai_count >= 2:
+            ordered_analog_channels = self._ordered_analog_channels_for_ni()
+
+            for ch in ordered_analog_channels:
+                if ch == "PMT-Vis":
+                    physical_ai = NI_AI_VIS
+                elif ch == "PMT-IR":
+                    physical_ai = NI_AI_IR
+                else:
+                    raise ValueError(f"Unknown analog channel mapping for {ch!r}")
+
                 ai_task.ai_channels.add_ai_voltage_chan(
-                    NI_AI_VIS,
+                    physical_ai,
                     min_val=NI_AI_MIN_V,
                     max_val=NI_AI_MAX_V,
                     terminal_config=self._terminal_config(),
@@ -696,17 +866,37 @@ class NidaqMicroscope(MicroscopeBackendBase):
             )
 
         values = {}
-        for ch_idx, ch in enumerate(self.channels):
-            if ch_idx < ai_result.shape[0]:
-                values[ch] = float(np.mean(ai_result[ch_idx]))
+
+        analog_mapped = self._map_ai_to_analog_channels(ai_result, spp)
+        for ch in self.analog_channels:
+            arr = analog_mapped.get(ch)
+            if arr is not None and arr.size > 0:
+                values[ch] = float(np.mean(arr))
             else:
                 values[ch] = 0.0
+
+        if self.digital_channels:
+            digital_values = self.digital_manager.acquire_software_timed_counts(
+                n_gates=1,
+                dwell_time_s=dwell_s,
+            )
+            for ch in self.digital_channels:
+                arr = digital_values.get(ch)
+                if arr is not None and arr.size > 0:
+                    values[ch] = float(arr[0])
+                else:
+                    values[ch] = 0.0
+        else:
+            for ch in self.digital_channels:
+                values[ch] = 0.0
+
         return values
 
     def _emit_sample_axis_move(self, axis_name: str, target_rel: float, reason: str, t_sched_ms: float):
         self.stepper_move_requested.emit(
             str(axis_name),
             float(target_rel),
+            0.0,
             float(t_sched_ms),
             str(reason),
         )
@@ -756,17 +946,17 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 "scheduled_ms": float(t_sched_ms),
             })
 
-            self.stepper_move_requested.emit(
-                str(event.x_axis_name),
+            self._emit_sample_axis_move(
+                event.x_axis_name,
                 float(event.x_target_rel_um),
-                float(t_sched_ms),
                 "sample_pixel_x",
-            )
-            self.stepper_move_requested.emit(
-                str(event.y_axis_name),
-                float(event.y_target_rel_um),
                 float(t_sched_ms),
+            )
+            self._emit_sample_axis_move(
+                event.y_axis_name,
+                float(event.y_target_rel_um),
                 "sample_pixel_y",
+                float(t_sched_ms),
             )
 
             if settle_s > 0:

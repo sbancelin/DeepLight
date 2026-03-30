@@ -81,7 +81,7 @@ LASER_DEFAULTS = {
     },
 }
 
-LASERS_WITHOUT_POWER_BUTTON = {"Mira 900", "Tumecs"}
+LASERS_WITHOUT_POWER_BUTTON = {"Mira 900", "Tumecs", "Cobolt 660"}
 
 def setup_laser_settings_dialog(dialog):
     laser_widget = dialog.parent()
@@ -331,6 +331,14 @@ class LaserWidget(QWidget):
         minus_button.setFixedSize(20, 20)
         minus_button.setStyleSheet(SMALL_BUTTON_STYLE)
 
+        plus_button.clicked.connect(
+            lambda _, sp=setpoint_spin: sp.setValue(min(100, sp.value() + 1))
+        )
+
+        minus_button.clicked.connect(
+            lambda _, sp=setpoint_spin: sp.setValue(max(0, sp.value() - 1))
+        )
+
         show_power_button = laser_name not in LASERS_WITHOUT_POWER_BUTTON
         power_button = None
 
@@ -364,6 +372,13 @@ class LaserWidget(QWidget):
         setpoint_slider.sliderReleased.connect(
             lambda name=laser_name, sl=setpoint_slider: self.laser_power_changed.emit(name, sl.value())
         )
+        plus_button.clicked.connect(
+            lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, sp.value())
+        )
+
+        minus_button.clicked.connect(
+            lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, sp.value())
+        )
 
         laser_group.setLayout(laser_layout)
         self.laser_layout.addWidget(laser_group)
@@ -377,6 +392,44 @@ class LaserWidget(QWidget):
             'minus_button': minus_button
         }
 
+    def set_laser_power_value(self, laser_name: str, value: int):
+        controls = self.laser_controls.get(laser_name)
+        if not controls:
+            return
+
+        value = max(0, min(100, int(value)))
+
+        spin = controls.get("spin")
+        slider = controls.get("slider")
+        label = controls.get("label")
+
+        if spin is not None:
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+
+        if slider is not None:
+            slider.blockSignals(True)
+            slider.setValue(value)
+            slider.blockSignals(False)
+
+        if label is not None:
+            label.setText(f"{value}%")
+
+    def set_laser_enabled(self, laser_name: str, enabled: bool):
+        controls = self.laser_controls.get(laser_name)
+        if not controls:
+            return
+
+        button = controls.get("button")
+        if button is None:
+            return
+
+        button.blockSignals(True)
+        button.setChecked(bool(enabled))
+        self._update_power_button_style(button, bool(enabled))
+        button.blockSignals(False)
+    
     def open_settings_dialog(self):
         from .Dialogs import SettingsDialog
         dialog = SettingsDialog("Laser - Settings", self)

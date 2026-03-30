@@ -57,6 +57,7 @@ class SpectroPanelWidget(QWidget):
 
     sigSpectroModeChanged = Signal(bool, bool)   # brillouin, raman
     sigAcquireClicked = Signal()
+    sigStopClicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,12 +98,25 @@ class SpectroPanelWidget(QWidget):
         # =========================
         # Bouton Acquire
         # =========================
+        actions_layout = QHBoxLayout()
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(6)
+
         self.button_acquire = QPushButton("Acquire")
+        self.button_acquire.setCheckable(False)
         self.button_acquire.setStyleSheet(_ACQUIRE_BUTTON_STYLE)
         self.button_acquire.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.button_acquire.clicked.connect(self.sigAcquireClicked.emit)
-        main_layout.addWidget(self.button_acquire)
+        actions_layout.addWidget(self.button_acquire)
 
+        self.button_stop = QPushButton("Stop")
+        self.button_stop.setCheckable(False)
+        self.button_stop.setStyleSheet(_ACQUIRE_BUTTON_STYLE)
+        self.button_stop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.button_stop.clicked.connect(self.sigStopClicked.emit)
+        actions_layout.addWidget(self.button_stop)
+
+        main_layout.addLayout(actions_layout)
         main_layout.addStretch()
 
         self._emit_mode_changed()
@@ -130,3 +144,7 @@ class SpectroPanelWidget(QWidget):
         self.button_raman.blockSignals(False)
 
         self._emit_mode_changed()
+
+    def set_running(self, running: bool):
+        self.button_acquire.setEnabled(not bool(running))
+        self.button_stop.setEnabled(True)

@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
+
 import numpy as np
 
 # ---------------------------------------------------------
 # Data Class
 # ---------------------------------------------------------
+@dataclass
+class DetectorChannelSpec:
+    name: str
+    kind: Literal["analog", "digital"] = "analog"
+    enabled: bool = True
+
+    # analog only
+    ni_ai_channel: Optional[str] = None
+
+    # digital only
+    digital_source: Optional[str] = None
+    digital_mode: Literal["counts", "count_rate"] = "counts"
+
 @dataclass
 class ScanParams:
     mode: str
@@ -34,6 +48,7 @@ class ScanParams:
     repetitions: int = 1
     delay_between_rep_s: float = 0.0
     active_channels: List[str] = field(default_factory=list)
+    detector_channels: List[DetectorChannelSpec] = field(default_factory=list)
     initial_relative_positions: Dict[str, float] = field(default_factory=dict)
     samples_per_pixel: int = 1
     scan_kind: str = "laser"

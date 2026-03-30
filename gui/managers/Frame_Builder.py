@@ -25,10 +25,12 @@ class FrameBuilder:
         arrays: dict[str, np.ndarray],
         channels: list[str],
         reconstruction_plan: FrameReconstructionPlan,
+        channel_kinds: dict[str, str] | None = None,
     ):
         self.arrays = arrays
         self.channels = list(channels)
         self.plan = reconstruction_plan
+        self.channel_kinds = dict(channel_kinds or {})
 
         self.dim_image_x = int(self.plan.dim_x)
         self.dim_image_y = int(self.plan.dim_y)
@@ -121,7 +123,21 @@ class FrameBuilder:
         stop_s = stop_pix * self.samples_per_pixel
 
         block = self._line_buffer[:, start_s:stop_s]
-        block = block.reshape(self.n_channels, count, self.samples_per_pixel).mean(axis=2)
+        block = block.reshape(self.n_channels, count, self.samples_per_pixel)
+
+        reduced = np.empty((self.n_channels, count), dtype=np.float32)
+
+        for ci, ch in enumerate(self.channels):
+            kind = str(self.channel_kinds.get(ch, "analog"))
+
+            if kind == "digital":
+                # photon counting: somme des sous-samples du pixel
+                reduced[ci] = block[ci].sum(axis=1)
+            else:
+                # analogique: moyenne / intégration analogique actuelle
+                reduced[ci] = block[ci].mean(axis=1)
+
+        block = reduced
 
         acquired_fast_idx = self._pixel_index_cache[start_pix:stop_pix]
 

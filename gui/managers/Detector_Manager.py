@@ -4,7 +4,8 @@ import hashlib
 import numpy as np
 from PySide6.QtCore import QObject
 
-MOCK_SIGNAL_MAX = 255.0
+MOCK_ANALOG_MAX_V = 10.0
+MOCK_DIGITAL_MAX_COUNTS = 65535.0
 
 class MockDetectorManager(QObject):
     """
@@ -18,8 +19,8 @@ class MockDetectorManager(QObject):
 
         self.random_mode = False
         self.pattern_type = "mixed"   # "rings", "grid", "dots", "mixed"
-        self.high_level = 200.0
-        self.low_level = 10.0
+        self.high_level = 8.0
+        self.low_level = 0.5
         self.noise_on = 0.0
         self.noise_off = 0.0
 
@@ -282,7 +283,7 @@ class MockDetectorManager(QObject):
         if self.random_mode:
             n_pixels_stream = self.dim_fast * self.dim_slow
             n_samples = n_pixels_stream * self.samples_per_pixel
-            return rng.integers(0, int(MOCK_SIGNAL_MAX), size=n_samples).astype(np.float64)
+            return rng.uniform(0.0, MOCK_ANALOG_MAX_V, size=n_samples).astype(np.float64)
 
         mask = self._build_pattern_mask(
             width=self.dim_image_x,
@@ -306,7 +307,7 @@ class MockDetectorManager(QObject):
                 -self.noise_off, self.noise_off, size=np.count_nonzero(off_pixels)
             )
 
-        frame = np.clip(frame, 0.0, MOCK_SIGNAL_MAX)
+        frame = np.clip(frame, 0.0, MOCK_ANALOG_MAX_V)
 
         flat_pixels = self._frame_to_raster_stream(frame)
 

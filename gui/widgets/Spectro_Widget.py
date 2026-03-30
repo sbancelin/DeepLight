@@ -116,7 +116,6 @@ def _apply_combo_style(combo):
         }
     """)
 
-
 def ask_levels_min_max(parent=None, title="Levels", lo0=0.0, hi0=255.0):
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
@@ -528,6 +527,7 @@ class SpectroWidget(QWidget):
 
         self._apply_brillouin_levels(0.0, 255.0)
         self._center_raman_placeholder()
+        self.set_modes(False, False)
 
     # ==========================================================
     # API PUBLIQUE
@@ -536,9 +536,30 @@ class SpectroWidget(QWidget):
         self.brillouin_section.setVisible(brillouin)
         self.raman_section.setVisible(raman)
     
+    def clear_brillouin_image(self):
+        self.set_brillouin_image(np.zeros((512, 512), dtype=np.float32))
+
+    def set_running(self, running: bool):
+        self.button_brillouin_snap.setEnabled(not bool(running))
+        self.button_brillouin_live.setEnabled(not bool(running))
+        self.button_brillouin_stop.setEnabled(bool(running))
+
+        self.button_raman_snap.setEnabled(not bool(running))
+        self.button_raman_live.setEnabled(not bool(running))
+        self.button_raman_stop.setEnabled(bool(running))
+    
+    def set_running(self, running: bool):
+        # utilisé pour le mapping spectro global (Acquire panel)
+        self.button_brillouin_snap.setEnabled(not bool(running))
+        self.button_brillouin_live.setEnabled(not bool(running))
+        self.button_brillouin_stop.setEnabled(True)
+
+        self.button_raman_snap.setEnabled(not bool(running))
+        self.button_raman_live.setEnabled(not bool(running))
+        self.button_raman_stop.setEnabled(True)
+
     def get_brillouin_parameters(self):
         return {
-            "enabled": self.button_brillouin.isChecked(),
             "exposure_ms": self.spin_brillouin_exposure_ms.value(),
             "fps": self.spin_brillouin_fps.value(),
             "gain": self.spin_brillouin_gain.value(),
@@ -549,7 +570,6 @@ class SpectroWidget(QWidget):
 
     def get_raman_parameters(self):
         return {
-            "enabled": self.button_raman.isChecked(),
             "exposure_ms": self.spin_raman_exposure_ms.value(),
             "averages": int(self.spin_raman_averages.value()),
             "center_nm": self.spin_raman_center_nm.value(),
@@ -582,12 +602,6 @@ class SpectroWidget(QWidget):
         if idx >= 0:
             self.combo_brillouin_pixel_format.setCurrentIndex(idx)
         self.combo_brillouin_pixel_format.blockSignals(False)
-
-    def set_brillouin_enabled(self, enabled: bool):
-        self.button_brillouin.setChecked(bool(enabled))
-
-    def set_raman_enabled(self, enabled: bool):
-        self.button_raman.setChecked(bool(enabled))
 
     def set_brillouin_image(self, img, width_um=None, height_um=None):
         self.brillouin_image = np.asarray(img, dtype=np.float32)
@@ -657,12 +671,6 @@ class SpectroWidget(QWidget):
     # ==========================================================
     # Helpers
     # ==========================================================
-    def _set_section_enabled(self, section_widget: QWidget, enabled: bool, header_button: QPushButton):
-        for child in section_widget.findChildren(QWidget):
-            if child is header_button:
-                continue
-            child.setEnabled(enabled)
-
     def _get_brillouin_image_minmax(self):
         arr = np.asarray(self.brillouin_image)
         finite = arr[np.isfinite(arr)]
@@ -720,15 +728,11 @@ class SpectroWidget(QWidget):
     # ==========================================================
     # Slots Brillouin
     # ==========================================================
-    def _on_brillouin_toggled(self, checked):
-        self.brillouin_enabled = bool(checked)
-        self._set_section_enabled(self.brillouin_section, bool(checked), self.button_brillouin)
-
     def _on_brillouin_auto_exposure_toggled(self, checked):
-        self.spin_brillouin_exposure_ms.setEnabled(not bool(checked) and self.button_brillouin.isChecked())
+        self.spin_brillouin_exposure_ms.setEnabled(not bool(checked))
 
     def _on_brillouin_auto_gain_toggled(self, checked):
-        self.spin_brillouin_gain.setEnabled(not bool(checked) and self.button_brillouin.isChecked())
+        self.spin_brillouin_gain.setEnabled(not bool(checked))
 
     def _on_brillouin_autoscale_toggled(self, checked):
         self.brillouin_autoscale_enabled = bool(checked)
@@ -800,10 +804,6 @@ class SpectroWidget(QWidget):
     # ==========================================================
     # Slots Raman
     # ==========================================================
-    def _on_raman_toggled(self, checked):
-        self.raman_enabled = bool(checked)
-        self._set_section_enabled(self.raman_section, bool(checked), self.button_raman)
-
     def _on_raman_autoscale_toggled(self, checked):
         self.raman_autoscale_enabled = bool(checked)
         if checked:

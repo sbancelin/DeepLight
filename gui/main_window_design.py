@@ -16,10 +16,9 @@ from .widgets.FRC_Widget import FRCWidget
 from .widgets.Stitching_Widget import StitchingWidget
 from .widgets.Camera_Widget import CameraWidget
 from .widgets.Spectro_Widget import SpectroWidget
+from .widgets.Spectro_Panel_Widget import SpectroPanelWidget
 from .widgets.Panel_Dock import PanelDock
 from .widgets.Collapsible_Panel import CollapsiblePanel
-from .widgets.Spectro_Panel_Widget import SpectroPanelWidget
-
 
 import numpy as np
 import pyqtgraph as pg
@@ -538,7 +537,7 @@ class Ui_MainWindowDesign:
             # Stocker la référence pour les updates
             self.im_widgets[channel] = im
 
-            status = QLabel("x: -, y: -, Counts: -")
+            status = QLabel("x: -, y: -, Value: -")
             status.setStyleSheet("color: #aaa; padding: 2px;")
             status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             status.setMinimumWidth(220)
@@ -668,7 +667,8 @@ class Ui_MainWindowDesign:
                 cb_autoscale.setChecked(False)
                 cb_autoscale.blockSignals(False)
 
-                _apply_levels(_im, _hist_lut, 0.0, 255.0)
+                lo0, hi0 = _get_image_minmax(im)
+                _apply_levels(im, hist_lut, lo0, hi0)
 
             def _on_autoscale_toggled(checked, _im=im, ch=channel, _hist_lut=hist_lut):
                 self.channel_autoscale[ch] = bool(checked)
@@ -683,7 +683,8 @@ class Ui_MainWindowDesign:
                 _im.getView().setAspectLocked(bool(checked))
 
             # ---------- Initialisation LUT ----------
-            _apply_levels(im, hist_lut, 0.0, 255.0)
+            lo0, hi0 = _get_image_minmax(im)
+            _apply_levels(im, hist_lut, lo0, hi0)
 
             # ---------- Grid ON/OFF ----------
             im.getView().showGrid(cb_grid.isChecked(), cb_grid.isChecked())

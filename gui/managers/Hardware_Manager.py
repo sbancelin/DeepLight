@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import serial
 from typing import Optional
 
 from PySide6.QtCore import QObject, Slot, QTimer
@@ -19,8 +20,9 @@ NI_DEVICE_NAME = "Dev1"
 # NI AO / AI channels
 NI_AO_X = f"{NI_DEVICE_NAME}/ao0"
 NI_AO_Y = f"{NI_DEVICE_NAME}/ao1"
-NI_AI_IR = f"{NI_DEVICE_NAME}/ai0"
-NI_AI_VIS = f"{NI_DEVICE_NAME}/ai1"
+
+NI_AI_VIS = f"{NI_DEVICE_NAME}/ai0"
+NI_AI_IR = f"{NI_DEVICE_NAME}/ai1"
 
 # AI default range / config
 NI_AI_MIN_V = -10.0
@@ -56,6 +58,10 @@ PI_Z_DEFAULT_VEL_MM_S = 0.5
 # - "KCubeStepperMotor"
 THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
 
+# Cobolt Flamenco
+COBOLT_FLAMENCO_PORT = "COM12"
+COBOLT_FLAMENCO_BAUDRATE = 115200
+COBOLT_FLAMENCO_MAX_POWER_MW = 300.0   # <-- à ajuster selon ton modèle réel
 
 # =============================================================================
 # OPTIONAL IMPORTS
@@ -85,6 +91,192 @@ except Exception:
     GCSDevice = None
     GCSError = Exception
     _HAS_PI = False
+
+
+
+# =============================================================================
+# COBOLT LASER CONTROLLERS
+# =============================================================================
+
+class _CoboltLaserController:
+    """
+    Minimal Cobolt serial controller (ASCII protocol).
+    Used only for power read/write in DeepLight.
+    Emission ON/OFF remains controlled by the physical key.
+    """
+
+    def __init__(self, port: str, baudrate: int = 115200):
+        self.port = str(port)
+        self.baudrate = int(baudrate)
+        self.serial = None
+        self.connected = False
+
+    def connect(self):
+        if self.connected and self.serial is not None:
+            return
+
+        self.serial = serial.Serial(
+            self.port,
+            self.baudrate,
+            timeout=1,
+            write_timeout=1,
+        )
+        self.connected = True
+        print(f"[Cobolt] Connected on {self.port} @ {self.baudrate}")
+
+    def close(self):
+        try:
+            if self.serial is not None:
+                self.serial.close()
+        finally:
+            self.serial = None
+            self.connected = False
+
+    def _ensure_connected(self):
+        if not self.connected or self.serial is None:
+            self.connect()
+
+    def _write(self, cmd: str):
+        self._ensure_connected()
+        payload = (str(cmd).strip() + "\r").encode("ascii")
+        self.serial.reset_input_buffer()
+        self.serial.write(payload)
+        self.serial.flush()
+
+    def _query(self, cmd: str) -> str:
+        self._write(cmd)
+        return self.serial.readline().decode("ascii", errors="replace").strip()
+
+    def get_serial_number(self) -> str:
+        return self._query("sn?")
+
+    def set_power_mw(self, power_mw: float):
+        power_mw = max(0.0, float(power_mw))
+        power_w = power_mw / 1000.0
+        self._write(f"p {power_w:.5f}")
+        print(f"[Cobolt] set_power_mw={power_mw:.3f} ({power_w:.5f} W)")
+
+    def get_power_setpoint_w(self) -> float:
+        ans = self._query("p?")
+        return float(ans)
+
+    def get_output_power_w(self) -> float:
+        ans = self._query("pa?")
+        return float(ans)
+
+    def get_laser_on_state(self) -> bool:
+        ans = self._query("l?")
+        return bool(int(ans))
+
+
+# =============================================================================
+# LASER MANAGER
+# =============================================================================
+
+class LaserManager(QObject):
+    """
+    Unified manager for all laser-like devices.
+    V2 scope:
+    - Cobolt via serial
+    - TEC dependency for Cobolt ON
+    - placeholders for Alcor later
+    """
+
+    def __init__(self, backend_name: str = "mock", parent=None):
+        super().__init__(parent)
+
+        self.backend_name = (backend_name or "mock").lower()
+
+        self._cobolt = None
+
+        if self.backend_name == "nidaq":
+            self._cobolt = _CoboltLaserController(
+                port=COBOLT_FLAMENCO_PORT,
+                baudrate=COBOLT_FLAMENCO_BAUDRATE,
+            )
+
+            try:
+                self._cobolt.connect()
+                sn = self._cobolt.get_serial_number()
+                print(f"[Cobolt] Serial number: {sn}")
+            except Exception as e:
+                print(f"[Cobolt] Connection failed: {e}")
+
+    def get_power_percent(self, laser_name: str) -> float:
+        if self.backend_name != "nidaq":
+            return 0.0
+
+        if laser_name == "Cobolt 660":
+            if self._cobolt is None:
+                return 0.0
+            p_w = self._cobolt.get_power_setpoint_w()
+            return 100.0 * p_w * 1000.0 / float(COBOLT_FLAMENCO_MAX_POWER_MW)
+
+        return 0.0
+
+    def get_output_power_mw(self, laser_name: str) -> float:
+        if self.backend_name != "nidaq":
+            return 0.0
+
+        if laser_name == "Cobolt 660":
+            if self._cobolt is None:
+                return 0.0
+            return 1000.0 * self._cobolt.get_output_power_w()
+
+        return 0.0
+    
+    def _is_real_backend(self) -> bool:
+        return self.backend_name == "nidaq"
+
+    def get_enabled(self, laser_name: str) -> bool:
+        if self.backend_name != "nidaq":
+            return False
+
+        laser_name = str(laser_name)
+
+        if laser_name == "Cobolt 660":
+            if self._cobolt is None:
+                return False
+            try:
+                return bool(self._cobolt.get_laser_on_state())
+            except Exception as e:
+                print(f"[LaserManager] Cobolt get_enabled failed: {e}")
+                return False
+
+        return False
+    
+    def set_power_percent(self, laser_name: str, percent: float):
+        if not self._is_real_backend():
+            print(f"[LaserManager] mock set_power_percent laser={laser_name} percent={percent}")
+            return
+
+        laser_name = str(laser_name)
+        percent = max(0.0, min(100.0, float(percent)))
+
+        if laser_name == "Cobolt 660":
+            if self._cobolt is None:
+                raise RuntimeError("Cobolt controller is not initialized.")
+
+            power_mw = (percent / 100.0) * float(COBOLT_FLAMENCO_MAX_POWER_MW)
+            self._cobolt.set_power_mw(power_mw)
+            return
+
+        if laser_name == "Alcor 920":
+            print(f"[LaserManager] Alcor set_power_percent not implemented yet: percent={percent}")
+            return
+
+    def close(self):
+        try:
+            if self._cobolt is not None:
+                self._cobolt.close()
+        except Exception:
+            pass
+
+        try:
+            if self._cobolt_tec is not None:
+                self._cobolt_tec.close()
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -756,9 +948,18 @@ class HardwareManager(QObject):
         self._camera_backend = None
         self._camera_controller = None
 
+        self._laser_manager = None
+
         if self.backend_name == "nidaq":
             self._ensure_real_devices()
 
+    def create_laser_manager(self, parent=None):
+        if self._laser_manager is not None:
+            return self._laser_manager
+
+        self._laser_manager = LaserManager(self.backend_name, parent=parent)
+        return self._laser_manager
+    
     def create_camera_controller(self, parent=None):
         if self._camera_controller is not None:
             return self._camera_controller
@@ -931,6 +1132,12 @@ class HardwareManager(QObject):
         try:
             if self._camera_backend is not None:
                 self._camera_backend.disconnect()
+        except Exception:
+            pass
+
+        try:
+            if self._laser_manager is not None:
+                self._laser_manager.close()
         except Exception:
             pass
 

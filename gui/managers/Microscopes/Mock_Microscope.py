@@ -21,10 +21,10 @@ class MockMicroscope(MicroscopeBackendBase):
         self.detector_manager.configure_mock(
             random_mode=False,
             pattern_type="mixed",
-            high_level=200.0,
-            low_level=50.0,
-            noise_on=50.0,
-            noise_off=50.0,
+            high_level=8.0,
+            low_level=0.5,
+            noise_on=0.3,
+            noise_off=0.2,
         )
 
         self.sample_scan_manager = SampleScanManager()

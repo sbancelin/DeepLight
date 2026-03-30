@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .Scan_Types import ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan
+from .Scan_Types import ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan, DetectorChannelSpec
 
 
 class ScanManager(QObject):
@@ -129,6 +129,24 @@ class ScanManager(QObject):
         pixel_source_kind = str(d.get("pixel_source_kind", "analog_integrating") or "analog_integrating")
         sample_settle_time_s = float(d.get("sample_settle_time_s", 0.0) or 0.0)
 
+        detector_channels_raw = d.get("detector_channels", []) or []
+        detector_channels = []
+
+        for ch in detector_channels_raw:
+            if not isinstance(ch, dict):
+                continue
+
+            detector_channels.append(
+                DetectorChannelSpec(
+                    name=str(ch.get("name", "")),
+                    kind=str(ch.get("kind", "analog")),
+                    enabled=bool(ch.get("enabled", True)),
+                    ni_ai_channel=ch.get("ni_ai_channel"),
+                    digital_source=ch.get("digital_source"),
+                    digital_mode=str(ch.get("digital_mode", "counts")),
+                )
+            )
+
         return ScanParams(
             mode=str(mode),
             axis_order=list(axis_order),
@@ -150,6 +168,7 @@ class ScanManager(QObject):
             repetitions=max(1, int(d.get("repetitions", 1) or 1)),
             delay_between_rep_s=max(0.0, float(d.get("delay_between_rep", 0.0) or 0.0)),
             active_channels=list(d.get("active_channels", [])),
+            detector_channels=detector_channels,
             samples_per_pixel=spp,
             scan_kind=scan_kind,
             pixel_source_kind=pixel_source_kind,

@@ -434,3 +434,61 @@ class SaveManager:
                 "axes_numpy": "TCZYX",
             }
             self._write_json(sidecar, payload)
+
+    # ---------- Spectro dataset ----------
+    def save_spectro_dataset(
+        self,
+        folder: str,
+        filename: str,
+        comment: str,
+        dataset: dict,
+    ) -> str:
+        """
+        Sauvegarde brute d'un mapping spectro mock.
+
+        Structure :
+            <root>/
+                metadata.json
+                positions.npy
+                brillouin_images.npy
+                raman_spectra.npy
+                raman_wavelengths_nm.npy
+        """
+        os.makedirs(folder, exist_ok=True)
+
+        root_path = make_unique_path(folder, filename, ext="", default_stem="SPECTRO")
+        os.makedirs(root_path, exist_ok=True)
+
+        metadata = {
+            "created": self._now_iso(),
+            "comment": comment or "",
+            "modes": dict(dataset.get("modes", {})),
+            "scan_parameters": dict(dataset.get("scan_parameters", {})),
+            "brillouin_parameters": dict(dataset.get("brillouin_parameters", {})),
+            "raman_parameters": dict(dataset.get("raman_parameters", {})),
+            "n_positions": int(len(dataset.get("positions", []))),
+        }
+        self._write_json(os.path.join(root_path, "metadata.json"), metadata)
+
+        positions = np.asarray(dataset.get("positions", []), dtype=object)
+        np.save(os.path.join(root_path, "positions.npy"), positions, allow_pickle=True)
+
+        if "brillouin_images" in dataset:
+            np.save(
+                os.path.join(root_path, "brillouin_images.npy"),
+                np.asarray(dataset["brillouin_images"], dtype=np.float32),
+            )
+
+        if "raman_spectra" in dataset:
+            np.save(
+                os.path.join(root_path, "raman_spectra.npy"),
+                np.asarray(dataset["raman_spectra"], dtype=np.float32),
+            )
+
+        if "raman_wavelengths_nm" in dataset:
+            np.save(
+                os.path.join(root_path, "raman_wavelengths_nm.npy"),
+                np.asarray(dataset["raman_wavelengths_nm"], dtype=np.float32),
+            )
+
+        return root_path
