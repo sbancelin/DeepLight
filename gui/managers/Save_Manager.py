@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import csv
 import numpy as np
 from datetime import datetime
 from threading import Lock
@@ -115,6 +116,20 @@ class SaveManager:
     def _write_json(self, path: str, payload: dict) -> None:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, default=str)
+
+    def _write_positions_csv(self, path: str, dataset: dict) -> None:
+        order = np.asarray(dataset.get("acquisition_order_indices", []), dtype=np.int32)
+        pos_um = np.asarray(dataset.get("acquisition_order_positions_um", []), dtype=np.float32)
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["linear_index", "z_index", "y_index", "x_index", "x_um", "y_um", "z_um"])
+
+            n = min(len(order), len(pos_um))
+            for i in range(n):
+                z_idx, y_idx, x_idx = [int(v) for v in order[i]]
+                x_um, y_um, z_um = [float(v) for v in pos_um[i]]
+                writer.writerow([i, z_idx, y_idx, x_idx, x_um, y_um, z_um])
 
     # ---------- manual save (what you see) ----------
 
@@ -442,53 +457,147 @@ class SaveManager:
         filename: str,
         comment: str,
         dataset: dict,
+        fmt: str = "OME-TIFF",
     ) -> str:
         """
-        Sauvegarde brute d'un mapping spectro mock.
+        Sauvegarde d'un dataset spectro en format clair :
 
-        Structure :
+        OME-TIFF:
             <root>/
                 metadata.json
-                positions.npy
-                brillouin_images.npy
-                raman_spectra.npy
-                raman_wavelengths_nm.npy
+                positions.csv
+                brillouin.ome.tif   (si présent)
+                raman.ome.tif       (si présent)
+
+        OME-ZARR:
+            <root>/
+                metadata.json
+                positions.csv
+                brillouin.zarr      (si présent)
+                raman.zarr          (si présent)
+                raman_wavelengths.npy (si Raman présent)
         """
         os.makedirs(folder, exist_ok=True)
+        fmt = self._norm_fmt(fmt)
+
+        if fmt not in ("OME-TIFF", "OME-ZARR"):
+            raise ValueError(f"Unsupported spectro format: {fmt}")
 
         root_path = make_unique_path(folder, filename, ext="", default_stem="SPECTRO")
         os.makedirs(root_path, exist_ok=True)
 
+        metadata_block = dict(dataset.get("metadata", {}) or {})
+
         metadata = {
             "created": self._now_iso(),
             "comment": comment or "",
-            "modes": dict(dataset.get("modes", {})),
-            "scan_parameters": dict(dataset.get("scan_parameters", {})),
-            "brillouin_parameters": dict(dataset.get("brillouin_parameters", {})),
-            "raman_parameters": dict(dataset.get("raman_parameters", {})),
-            "n_positions": int(len(dataset.get("positions", []))),
+            "format_version": str(dataset.get("version", "spectro_mock")),
+            "grid_shape": list(dataset.get("grid_shape", ())),
+            "axis_order": list(dataset.get("axis_order", ())),
+            "serpentine": bool(dataset.get("serpentine", False)),
+            "modalities": dict(metadata_block.get("modalities", {}) or {}),
+            "acquisition_parameters": dict(metadata_block.get("acquisition_parameters", {}) or {}),
+            "brillouin_parameters": dict(metadata_block.get("brillouin_parameters", {}) or {}),
+            "raman_parameters": dict(metadata_block.get("raman_parameters", {}) or {}),
+            "save_parameters": dict(metadata_block.get("save_parameters", {}) or {}),
+            "raman_wavelengths_nm": (
+                np.asarray(dataset.get("raman_wavelengths", []), dtype=np.float32).tolist()
+                if "raman_wavelengths" in dataset else []
+            ),
+            "data_files": {},
         }
-        self._write_json(os.path.join(root_path, "metadata.json"), metadata)
 
-        positions = np.asarray(dataset.get("positions", []), dtype=object)
-        np.save(os.path.join(root_path, "positions.npy"), positions, allow_pickle=True)
+        # Un seul fichier de positions dans tous les cas
+        positions_csv_name = "positions.csv"
+        self._write_positions_csv(os.path.join(root_path, positions_csv_name), dataset)
+        metadata["data_files"]["positions"] = positions_csv_name
 
+        # -------------------------
+        # Brillouin
+        # dataset["brillouin_images"] attendu en (Z, Y, X, H, W)
+        # -------------------------
         if "brillouin_images" in dataset:
-            np.save(
-                os.path.join(root_path, "brillouin_images.npy"),
-                np.asarray(dataset["brillouin_images"], dtype=np.float32),
-            )
+            arr = np.asarray(dataset["brillouin_images"], dtype=np.float32)
 
+            if fmt == "OME-TIFF":
+                out_name = "brillouin.ome.tif"
+                tifffile.imwrite(
+                    os.path.join(root_path, out_name),
+                    arr,
+                    photometric="minisblack",
+                    metadata={"axes": "ZYXHW"},
+                )
+            else:
+                out_name = "brillouin.zarr"
+                zarr_path = os.path.join(root_path, out_name)
+                root = zarr.open_group(zarr_path, mode="w")
+                root.create_dataset(
+                    "0",
+                    data=arr,
+                    shape=arr.shape,
+                    chunks=(1, 1, 1, min(256, arr.shape[-2]), min(256, arr.shape[-1])),
+                    dtype=np.float32,
+                    overwrite=True,
+                )
+                root.attrs["multiscales"] = [{
+                    "version": "0.4",
+                    "datasets": [{"path": "0"}],
+                    "axes": [
+                        {"name": "z", "type": "space"},
+                        {"name": "y", "type": "space"},
+                        {"name": "x", "type": "space"},
+                        {"name": "cam_y", "type": "space"},
+                        {"name": "cam_x", "type": "space"},
+                    ],
+                }]
+                root.attrs["comment"] = comment or ""
+                root.attrs["raman_wavelengths_nm"] = (
+                    np.asarray(dataset.get("raman_wavelengths", []), dtype=np.float32).tolist()
+                    if "raman_wavelengths" in dataset else []
+                )
+
+            metadata["data_files"]["brillouin"] = out_name
+
+        # -------------------------
+        # Raman
+        # dataset["raman_spectra"] attendu en (Z, Y, X, L)
+        # -------------------------
         if "raman_spectra" in dataset:
-            np.save(
-                os.path.join(root_path, "raman_spectra.npy"),
-                np.asarray(dataset["raman_spectra"], dtype=np.float32),
-            )
+            arr = np.asarray(dataset["raman_spectra"], dtype=np.float32)
 
-        if "raman_wavelengths_nm" in dataset:
-            np.save(
-                os.path.join(root_path, "raman_wavelengths_nm.npy"),
-                np.asarray(dataset["raman_wavelengths_nm"], dtype=np.float32),
-            )
+            if fmt == "OME-TIFF":
+                out_name = "raman.ome.tif"
+                tifffile.imwrite(
+                    os.path.join(root_path, out_name),
+                    arr,
+                    photometric="minisblack",
+                    metadata={"axes": "ZYXS"},
+                )
+            else:
+                out_name = "raman.zarr"
+                zarr_path = os.path.join(root_path, out_name)
+                root = zarr.open_group(zarr_path, mode="w")
+                root.create_dataset(
+                    "0",
+                    data=arr,
+                    shape=arr.shape,
+                    chunks=(1, 1, 1, min(1024, arr.shape[-1])),
+                    dtype=np.float32,
+                    overwrite=True,
+                )
+                root.attrs["multiscales"] = [{
+                    "version": "0.4",
+                    "datasets": [{"path": "0"}],
+                    "axes": [
+                        {"name": "z", "type": "space"},
+                        {"name": "y", "type": "space"},
+                        {"name": "x", "type": "space"},
+                        {"name": "lambda", "type": "spectral"},
+                    ],
+                }]
+                root.attrs["comment"] = comment or ""
 
+            metadata["data_files"]["raman"] = out_name
+
+        self._write_json(os.path.join(root_path, "metadata.json"), metadata)
         return root_path

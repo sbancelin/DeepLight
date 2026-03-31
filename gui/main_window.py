@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self.hardware = HardwareManager(backend_name=self.backend_name, settings_manager=self.settings_manager, parent=self)
         self.laser_manager = self.hardware.create_laser_manager()
         self.camera_controller = self.hardware.create_camera_controller(parent=self)
+        self._connect_camera_controller_signals()
         self._connect_camera_controls()
         self._connect_laser_controls()
         QTimer.singleShot(0, self._sync_laser_widget_from_hardware)
@@ -89,7 +90,7 @@ class MainWindow(QMainWindow):
         self.positioner_manager = self.hardware.create_positioner_manager(parent=self)
         self.scan_manager = ScanManager(self)
         self.ui.positioner_widget.set_manager(self.positioner_manager)
-        self.spectro_manager = SpectroManager(self)
+        self.spectro_manager = SpectroManager(parent=self)
         self._connect_spectro_controls()
 
         self._rec_saving_active = False
@@ -187,6 +188,7 @@ class MainWindow(QMainWindow):
         sm = self.spectro_manager
 
         sp.sigSpectroModeChanged.connect(sw.set_modes)
+        sw.sigBrillouinRoiChanged.connect(sp.set_brillouin_roi_state)
         sp.sigAcquireClicked.connect(self._on_spectro_acquire_clicked)
         sp.sigStopClicked.connect(self._on_spectro_stop_clicked)
 
@@ -195,6 +197,10 @@ class MainWindow(QMainWindow):
         sm.sigSpectrumUpdate.connect(self._on_spectro_spectrum_update)
         sm.sigStatusMessage.connect(self._on_spectro_status_changed)
         sm.sigFinished.connect(self._on_spectro_acquisition_finished)
+        sm.sigProgress.connect(self._on_spectro_progress_changed)
+        sm.sigFailed.connect(self._on_spectro_acquisition_failed)
+        sm.sigBrillouinLiveRunningChanged.connect(sw.set_brillouin_live_button_state)
+        sm.sigRamanLiveRunningChanged.connect(sw.set_raman_live_button_state)
 
         # --- Brillouin mock controls ---
         sw.button_brillouin_snap.clicked.connect(self._on_brillouin_snap_clicked)
@@ -222,6 +228,8 @@ class MainWindow(QMainWindow):
             self.ui.spectro_widget.clear_raman_spectrum(show_placeholder=False)
             self.ui.spectro_widget.clear_brillouin_image()
             self.ui.spectro_widget.set_running(True)
+            self.ui.spectro_panel_widget.set_running(True)
+            self.ui.spectro_panel_widget.reset_progress()
 
             self.spectro_manager.start_mapping(
                 scan_parameters=acquisition_params,
@@ -273,7 +281,8 @@ class MainWindow(QMainWindow):
             if self.spectro_manager.is_brillouin_live_running():
                 self.spectro_manager.stop_live_brillouin()
             else:
-                self.spectro_manager.start_live_brillouin()
+                params = self.ui.spectro_widget.get_brillouin_parameters()
+                self.spectro_manager.start_live_brillouin(params)
         except Exception as e:
             self._on_spectro_status_changed(f"Brillouin live failed: {e}")
 
@@ -291,7 +300,8 @@ class MainWindow(QMainWindow):
             if self.spectro_manager.is_raman_live_running():
                 self.spectro_manager.stop_live_raman()
             else:
-                self.spectro_manager.start_live_raman()
+                params = self.ui.spectro_widget.get_raman_parameters()
+                self.spectro_manager.start_live_raman(params)
         except Exception as e:
             self._on_spectro_status_changed(f"Raman live failed: {e}")
     
@@ -315,6 +325,11 @@ class MainWindow(QMainWindow):
     
     @Slot(int, int)
     def _on_spectro_progress_changed(self, done: int, total: int):
+        try:
+            self.ui.spectro_panel_widget.set_progress(done, total)
+        except Exception:
+            pass
+
         self._on_spectro_status_changed(f"Spectro {done}/{total}")
 
     @Slot(object)
@@ -323,14 +338,22 @@ class MainWindow(QMainWindow):
         self.ui.spectro_widget.set_running(False)
 
         try:
+            total = len(self.spectro_manager.pixel_list)
+            self.ui.spectro_panel_widget.set_progress(total, total)
+        except Exception:
+            pass
+
+        try:
             save_params = self.ui.spectro_panel_widget.get_save_parameters()
             folder = save_params.get("folder", "")
             filename = save_params.get("filename", "")
             comment = save_params.get("comment", "")
+            file_format = save_params.get("format", "OME-TIFF")
         except Exception:
             folder = ""
             filename = ""
             comment = ""
+            file_format = "OME-TIFF"
 
         try:
             if not filename:
@@ -340,6 +363,7 @@ class MainWindow(QMainWindow):
                 filename=filename,
                 comment=comment,
                 dataset=dataset,
+                fmt=file_format,
             )
             self._on_spectro_status_changed(f"Spectro saved: {path}")
         except Exception as e:
@@ -351,49 +375,26 @@ class MainWindow(QMainWindow):
         self.ui.spectro_widget.set_running(False)
         self._on_spectro_status_changed(f"Spectro error: {message}")
     
+    def _connect_camera_controller_signals(self):
+        self.camera_controller.frame_ready.connect(self._on_camera_frame_ready)
+        self.camera_controller.status_changed.connect(self.ui.camera_widget.set_status)
+        self.camera_controller.running_changed.connect(self._on_camera_running_changed)
+
     def _connect_camera_controls(self):
         cw = self.ui.camera_widget
-        cc = self.camera_controller
 
-        try:
-            cw.set_binning_list(cc.list_binning())
-        except Exception:
-            pass
-
-        try:
-            cw.set_pixel_format_list(cc.list_pixel_formats())
-        except Exception:
-            pass
-
+        # boutons d'acquisition
         cw.button_snap.clicked.connect(self._on_camera_snap_clicked)
-        cw.button_live.clicked.connect(self._on_camera_live_clicked)
-        cw.button_stop.clicked.connect(cc.stop_live)
+        cw.button_live.toggled.connect(self._on_camera_live_clicked)
+        cw.button_stop.clicked.connect(self._on_camera_stop_clicked)
+        cw.button_reset.clicked.connect(self._on_camera_reset_clicked)
 
+        # paramètres supportés par le widget
         cw.spin_exposure_ms.valueChanged.connect(self._push_camera_parameters)
-        cw.spin_fps.valueChanged.connect(self._push_camera_parameters)
-        cw.spin_gain.valueChanged.connect(self._push_camera_parameters)
+        cw.cb_auto_exposure.toggled.connect(self._push_camera_parameters)
         cw.combo_binning.currentTextChanged.connect(self._push_camera_parameters)
         cw.combo_pixel_format.currentTextChanged.connect(self._push_camera_parameters)
-        cw.cb_auto_exposure.toggled.connect(self._push_camera_parameters)
-        cw.cb_auto_gain.toggled.connect(self._push_camera_parameters)
 
-        cc.frame_ready.connect(self._on_camera_frame_ready)
-        cc.status_changed.connect(cw.set_status)
-        cc.running_changed.connect(self._on_camera_running_changed)
-
-        self._push_camera_parameters()
-
-    def closeEvent(self, event):
-        try:
-            self.spectro_manager.stop_all_live()
-        except Exception:
-            pass
-        try:
-            self.hardware.close()
-        except Exception:
-            pass
-        super().closeEvent(event)
-    
     @Slot()
     def _push_camera_parameters(self, *_args):
         try:
@@ -408,15 +409,37 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.ui.camera_widget.set_status(f"Snap failed: {e}")
 
-    @Slot()
-    def _on_camera_live_clicked(self):
+    @Slot(bool)
+    def _on_camera_live_clicked(self, checked: bool):
         try:
-            if bool(self.camera_controller.backend.live_running):
-                self.camera_controller.stop_live()
-            else:
+            if checked:
                 self.camera_controller.start_live(self.ui.camera_widget.get_parameters())
+            else:
+                self.camera_controller.stop_live()
         except Exception as e:
             self.ui.camera_widget.set_status(f"Live failed: {e}")
+            self.ui.camera_widget.set_live_button_state(False)
+
+    @Slot()
+    def _on_camera_stop_clicked(self):
+        try:
+            self.camera_controller.stop_live()
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Stop failed: {e}")
+
+    @Slot()
+    def _on_camera_reset_clicked(self):
+        try:
+            self.camera_controller.stop_live()
+        except Exception:
+            pass
+
+        try:
+            self.ui.camera_widget.reset_controls()
+            self.camera_controller.apply_parameters(self.ui.camera_widget.get_parameters())
+            self.ui.camera_widget.set_status("Idle")
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Reset failed: {e}")
 
     @Slot(bool)
     def _on_camera_running_changed(self, running: bool):
@@ -429,6 +452,17 @@ class MainWindow(QMainWindow):
             self.ui.camera_widget.set_image(img)
         except Exception as e:
             self.ui.camera_widget.set_status(f"Display failed: {e}")
+
+    def closeEvent(self, event):
+        try:
+            self.spectro_manager.stop_all_live()
+        except Exception:
+            pass
+        try:
+            self.hardware.close()
+        except Exception:
+            pass
+        super().closeEvent(event)
     
     @Slot()
     def on_stitch_acquire_clicked(self):

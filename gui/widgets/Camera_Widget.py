@@ -1,5 +1,3 @@
-# DeepLight/gui/widgets/Camera_Widget.py
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QDoubleSpinBox, QComboBox, QSizePolicy, QCheckBox,
@@ -87,7 +85,19 @@ QLabel {
 }
 """
 
+_COMBO_STYLE = """
+QComboBox {
+    background-color: #333;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 2px;
+    min-height: 20px;
+}
+"""
+
 _STATUS_VALUE_STYLE = "color: #b0b0b0; background: transparent; border: none;"
+
 
 def _apply_spinbox_palette(spinbox):
     spin_palette = spinbox.palette()
@@ -152,61 +162,49 @@ class CameraWidget(QWidget):
         main_layout.setContentsMargins(6, 6, 6, 6)
         main_layout.setSpacing(6)
 
-                # ==========================================================
-        # Bandeau compact sur 2 lignes
+        # ==========================================================
+        # Bandeau compact sur 1 ligne
         # ==========================================================
         controls_frame = QFrame()
         controls_frame.setStyleSheet(_PANEL_FRAME_STYLE)
 
-        controls_outer_layout = QVBoxLayout(controls_frame)
-        controls_outer_layout.setContentsMargins(8, 6, 8, 6)
-        controls_outer_layout.setSpacing(4)
-
-        # --------------------------
-        # Ligne 1 : actions
-        # --------------------------
-        controls_row_1 = QHBoxLayout()
-        controls_row_1.setContentsMargins(0, 0, 0, 0)
-        controls_row_1.setSpacing(6)
+        controls_layout = QHBoxLayout(controls_frame)
+        controls_layout.setContentsMargins(8, 6, 8, 6)
+        controls_layout.setSpacing(6)
 
         self.button_snap = QPushButton("Snap")
         self.button_snap.setStyleSheet(_BUTTON_STYLE)
         self.button_snap.setFixedWidth(58)
-        controls_row_1.addWidget(self.button_snap)
+        controls_layout.addWidget(self.button_snap)
 
         self.button_live = QPushButton("Live")
         self.button_live.setCheckable(True)
         self.button_live.setStyleSheet(_BUTTON_STYLE_TOGGLE)
         self.button_live.setFixedWidth(58)
-        controls_row_1.addWidget(self.button_live)
+        controls_layout.addWidget(self.button_live)
 
         self.button_stop = QPushButton("Stop")
         self.button_stop.setStyleSheet(_BUTTON_STYLE)
         self.button_stop.setFixedWidth(52)
-        controls_row_1.addWidget(self.button_stop)
+        controls_layout.addWidget(self.button_stop)
 
         self.label_status_run = QLabel("Idle")
         self.label_status_run.setStyleSheet(_STATUS_VALUE_STYLE)
         self.label_status_run.setMinimumWidth(70)
-        controls_row_1.addWidget(self.label_status_run)
+        controls_layout.addWidget(self.label_status_run)
 
         self.button_reset = QPushButton("Reset")
         self.button_reset.setStyleSheet(_BUTTON_STYLE)
         self.button_reset.setFixedWidth(58)
-        controls_row_1.addWidget(self.button_reset)
+        controls_layout.addWidget(self.button_reset)
 
-        controls_row_1.addStretch(1)
-        controls_outer_layout.addLayout(controls_row_1)
-
-        # --------------------------
-        # Ligne 2 : paramètres caméra
-        # --------------------------
-        controls_row_2 = QHBoxLayout()
-        controls_row_2.setContentsMargins(0, 0, 0, 0)
-        controls_row_2.setSpacing(6)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet("color:#444;")
+        controls_layout.addWidget(sep)
 
         exposure_label = QLabel("Exposure")
-        controls_row_2.addWidget(exposure_label)
+        controls_layout.addWidget(exposure_label)
 
         self.spin_exposure_ms = QDoubleSpinBox()
         self.spin_exposure_ms.setDecimals(3)
@@ -215,86 +213,35 @@ class CameraWidget(QWidget):
         self.spin_exposure_ms.setSingleStep(1.0)
         self.spin_exposure_ms.setFixedWidth(78)
         _apply_spinbox_palette(self.spin_exposure_ms)
-        controls_row_2.addWidget(self.spin_exposure_ms)
+        controls_layout.addWidget(self.spin_exposure_ms)
 
         exposure_unit_label = QLabel("(ms)")
         exposure_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
-        controls_row_2.addWidget(exposure_unit_label)
+        controls_layout.addWidget(exposure_unit_label)
 
         self.cb_auto_exposure = QCheckBox("Auto Exp")
         self.cb_auto_exposure.setStyleSheet(_CHECKBOX_STYLE)
-        controls_row_2.addWidget(self.cb_auto_exposure)
-
-        fps_label = QLabel("FPS")
-        fps_label.hide()
-        controls_row_2.addWidget(fps_label)
-
-        self.spin_fps = QDoubleSpinBox()
-        self.spin_fps.setValue(5.0)
-        self.spin_fps.setEnabled(False)
-        self.spin_fps.setToolTip("Display rate fixed to ~5 Hz")
-        self.spin_fps.setFixedWidth(70)
-        _apply_spinbox_palette(self.spin_fps)
-        controls_row_2.addWidget(self.spin_fps)
-        self.spin_fps.hide()
-
-        gain_label = QLabel("Gain")
-        gain_label.hide()
-        controls_row_2.addWidget(gain_label)
-
-        self.spin_gain = QDoubleSpinBox()
-        self.spin_gain.setEnabled(False)
-        self.spin_gain.setToolTip("Gain disabled for now")
-        self.spin_gain.setFixedWidth(70)
-        self.spin_gain.hide()
-        _apply_spinbox_palette(self.spin_gain)
-        controls_row_2.addWidget(self.spin_gain)
-
-        self.cb_auto_gain = QCheckBox("Auto G")
-        self.cb_auto_gain.setStyleSheet(_CHECKBOX_STYLE)
-        self.cb_auto_gain.setChecked(False)
-        self.cb_auto_gain.setEnabled(False)
-        self.cb_auto_gain.hide()
-        controls_row_2.addWidget(self.cb_auto_gain)
+        controls_layout.addWidget(self.cb_auto_exposure)
 
         binning_label = QLabel("Binning")
-        controls_row_2.addWidget(binning_label)
+        controls_layout.addWidget(binning_label)
 
         self.combo_binning = QComboBox()
         self.combo_binning.addItems(["1x1", "2x2", "4x4"])
-        self.combo_binning.setStyleSheet("""
-            QComboBox {
-                background-color: #333;
-                color: white;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 2px;
-                min-height: 20px;
-            }
-        """)
+        self.combo_binning.setStyleSheet(_COMBO_STYLE)
         self.combo_binning.setFixedWidth(72)
-        controls_row_2.addWidget(self.combo_binning)
+        controls_layout.addWidget(self.combo_binning)
 
         format_label = QLabel("Format")
-        controls_row_2.addWidget(format_label)
+        controls_layout.addWidget(format_label)
 
         self.combo_pixel_format = QComboBox()
         self.combo_pixel_format.addItems(["Mono8", "RGB24"])
-        self.combo_pixel_format.setStyleSheet("""
-            QComboBox {
-                background-color: #333;
-                color: white;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 2px;
-                min-height: 20px;
-            }
-        """)
+        self.combo_pixel_format.setStyleSheet(_COMBO_STYLE)
         self.combo_pixel_format.setFixedWidth(86)
-        controls_row_2.addWidget(self.combo_pixel_format)
+        controls_layout.addWidget(self.combo_pixel_format)
 
-        controls_row_2.addStretch(1)
-        controls_outer_layout.addLayout(controls_row_2)
+        controls_layout.addStretch(1)
 
         main_layout.addWidget(controls_frame)
 
@@ -366,8 +313,7 @@ class CameraWidget(QWidget):
         self.button_set_levels.clicked.connect(self._on_set_levels_clicked)
         self.button_reset_levels.clicked.connect(self._on_reset_levels_clicked)
         self.cb_auto_exposure.toggled.connect(self._on_auto_exposure_toggled)
-        self.cb_auto_gain.toggled.connect(self._on_auto_gain_toggled)
-        self.button_reset.clicked.connect(self._reset_controls)
+        self.button_reset.clicked.connect(self.reset_controls)
 
         try:
             self.image_view.getView().scene().sigMouseMoved.connect(self._on_mouse_moved)
@@ -377,30 +323,6 @@ class CameraWidget(QWidget):
         self.image_view.getView().showGrid(True, True)
         self._apply_levels(0.0, 255.0)
 
-    def _make_spin_palette(self):
-        spin_palette = QPalette()
-        spin_palette.setColor(QPalette.Base, QColor("#333333"))
-        spin_palette.setColor(QPalette.Text, QColor("white"))
-        spin_palette.setColor(QPalette.Button, QColor("#333333"))
-        spin_palette.setColor(QPalette.ButtonText, QColor("white"))
-        spin_palette.setColor(QPalette.WindowText, QColor("white"))
-        spin_palette.setColor(QPalette.Highlight, QColor("#2E8B57"))
-        spin_palette.setColor(QPalette.HighlightedText, QColor("white"))
-        return spin_palette
-
-    def _apply_spinbox_palette(self, spinbox):
-        spinbox.setPalette(self._make_spin_palette())
-        spinbox.setStyleSheet("""
-            QDoubleSpinBox {
-                background-color: #333333;
-                color: white;
-                border: 1px solid #555;
-                border-radius: 3px;
-                padding: 2px 6px;
-                min-height: 22px;
-            }
-        """)
-
     def get_parameters(self):
         return {
             "exposure_ms": self.spin_exposure_ms.value(),
@@ -408,7 +330,7 @@ class CameraWidget(QWidget):
             "pixel_format": self.combo_pixel_format.currentText(),
             "auto_exposure": self.cb_auto_exposure.isChecked(),
         }
-    
+
     def set_parameters(
         self,
         exposure_ms=None,
@@ -439,13 +361,10 @@ class CameraWidget(QWidget):
         self.button_reset.setEnabled(True)
 
         self.spin_exposure_ms.setEnabled(not running and not self.cb_auto_exposure.isChecked())
-        self.spin_fps.setEnabled(False)
-        self.spin_gain.setEnabled(False)
         self.combo_binning.setEnabled(not running)
         self.combo_pixel_format.setEnabled(not running)
 
         self.cb_auto_exposure.setEnabled(not running)
-        self.cb_auto_gain.setEnabled(False)
 
         self.cb_autoscale.setEnabled(True)
         self.cb_lock.setEnabled(True)
@@ -591,12 +510,9 @@ class CameraWidget(QWidget):
 
         self._apply_levels(float(lo), float(hi))
 
-    def _reset_controls(self):
+    def reset_controls(self):
         self.spin_exposure_ms.setValue(1.0)
-        self.spin_fps.setValue(5.0)
-        self.spin_gain.setValue(0.0)
         self.cb_auto_exposure.setChecked(False)
-        self.cb_auto_gain.setChecked(False)
 
         idx = self.combo_binning.findText("1x1")
         if idx >= 0:
@@ -608,7 +524,7 @@ class CameraWidget(QWidget):
 
         self.label_status_run.setText("Idle")
         self.button_live.setChecked(False)
-    
+
     def _on_reset_levels_clicked(self):
         self.autoscale_enabled = False
         self.cb_autoscale.blockSignals(True)
@@ -619,9 +535,6 @@ class CameraWidget(QWidget):
 
     def _on_auto_exposure_toggled(self, checked):
         self.spin_exposure_ms.setEnabled(not bool(checked))
-
-    def _on_auto_gain_toggled(self, checked):
-        self.spin_gain.setEnabled(not bool(checked))
 
     def _on_mouse_moved(self, pos):
         if self.current_image is None:
