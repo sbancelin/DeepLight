@@ -14,11 +14,6 @@ from .Hardware_Manager import (
     NI_CI_DEFAULT_START_TRIGGER,
 )
 
-_UI_DIGITAL_DEFAULTS = {
-    "Ch 0": {"counter": f"{NI_DEVICE_NAME}/ctr2", "source": f"/{NI_DEVICE_NAME}/PFI0"},
-    "Ch 1": {"counter": f"{NI_DEVICE_NAME}/ctr0", "source": f"/{NI_DEVICE_NAME}/PFI12"},
-}
-
 try:
     import nidaqmx
     from nidaqmx.constants import AcquisitionType, Edge, TriggerType
@@ -124,24 +119,6 @@ class PMTDigitalManager(QObject):
 
         return f"{NI_DEVICE_NAME}/{value}"
 
-    def _ui_default_counter_for_channel(self, channel_name: str) -> str:
-        return str(_UI_DIGITAL_DEFAULTS.get(str(channel_name), {}).get("counter", NI_CI_DEFAULT_COUNTER))
-
-    def _ui_default_source_for_channel(self, channel_name: str) -> str:
-        return str(_UI_DIGITAL_DEFAULTS.get(str(channel_name), {}).get("source", NI_CI_DEFAULT_SOURCE))
-
-    def _coerce_source_terminal(self, channel_name: str, source_value: str | None) -> str:
-        raw = str(source_value or "").strip()
-        if raw in ("", str(channel_name)):
-            raw = self._ui_default_source_for_channel(channel_name)
-        return self._normalize_terminal(raw, default=self._ui_default_source_for_channel(channel_name))
-
-    def _coerce_counter_name(self, channel_name: str, counter_value: str | None) -> str:
-        raw = str(counter_value or "").strip()
-        if raw in ("", str(channel_name)):
-            raw = self._ui_default_counter_for_channel(channel_name)
-        return self._normalize_counter(raw, default=self._ui_default_counter_for_channel(channel_name))
-
     def _resolve_edge(self, edge_name: str | None):
         name = str(edge_name or "rising").strip().lower()
         return Edge.FALLING if name.startswith("fall") else Edge.RISING
@@ -191,11 +168,11 @@ class PMTDigitalManager(QObject):
             for c in enabled_digital_specs
         }
         self.digital_counter_by_channel = {
-            str(c.get("name")): self._coerce_counter_name(str(c.get("name")), c.get("digital_counter"))
+            str(c.get("name")): self._normalize_counter(c.get("digital_counter", NI_CI_DEFAULT_COUNTER), default=NI_CI_DEFAULT_COUNTER)
             for c in enabled_digital_specs
         }
         self.digital_source_by_channel = {
-            str(c.get("name")): self._coerce_source_terminal(str(c.get("name")), c.get("digital_source"))
+            str(c.get("name")): self._normalize_terminal(c.get("digital_source", NI_CI_DEFAULT_SOURCE), default=NI_CI_DEFAULT_SOURCE)
             for c in enabled_digital_specs
         }
         self.digital_edge_by_channel = {
@@ -313,26 +290,8 @@ class PMTDigitalManager(QObject):
                 runtime.reader.read_many_sample_uint32(
                     cumulative,
                     number_of_samples_per_channel=take,
-                    timeout=max(0.05, float(take) / max(1.0, float(sample_rate_hz)) * 5.0 + 0.02),
+                    timeout=max(1.0, float(take) / max(1.0, float(sample_rate_hz)) * 5.0 + 0.1),
                 )
-            except DaqError as e:
-                # Graceful stop path:
-                # when preview/acquisition is stopped, the counter task can be aborted
-                # while this read is still pending. NI then raises -200284 (samples not yet
-                # available) or another task-stop related error. In that case we do not want
-                # noisy tracebacks; we simply stop this runtime and return zeros for the tail.
-                if int(getattr(e, "error_code", 0)) in (-200284, -200010, -200474):
-                    runtime.frame_running = False
-                    try:
-                        if runtime.task is not None:
-                            runtime.task.close()
-                    except Exception:
-                        pass
-                    runtime.task = None
-                    runtime.reader = None
-                    runtime.prev_count = 0
-                    continue
-                raise RuntimeError(f"Counter read failed for {ch}: {e}") from e
             except Exception as e:
                 raise RuntimeError(f"Counter read failed for {ch}: {e}") from e
 

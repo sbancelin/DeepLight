@@ -190,25 +190,21 @@ class MainWindow(QMainWindow):
         sp.sigAcquireClicked.connect(self._on_spectro_acquire_clicked)
         sp.sigStopClicked.connect(self._on_spectro_stop_clicked)
 
-        sm.brillouin_image_ready.connect(sw.set_brillouin_image)
-        sm.raman_spectrum_ready.connect(sw.set_raman_spectrum)
-        sm.status_changed.connect(self._on_spectro_status_changed)
-        sm.progress_changed.connect(self._on_spectro_progress_changed)
-        sm.acquisition_started.connect(lambda: sp.set_running(True))
-        sm.acquisition_finished.connect(self._on_spectro_acquisition_finished)
-        sm.acquisition_failed.connect(self._on_spectro_acquisition_failed)
+        # --- Nouveau manager spectro ---
+        sm.sigImageUpdate.connect(sw.set_brillouin_image)
+        sm.sigSpectrumUpdate.connect(self._on_spectro_spectrum_update)
+        sm.sigStatusMessage.connect(self._on_spectro_status_changed)
+        sm.sigFinished.connect(self._on_spectro_acquisition_finished)
 
         # --- Brillouin mock controls ---
         sw.button_brillouin_snap.clicked.connect(self._on_brillouin_snap_clicked)
         sw.button_brillouin_live.clicked.connect(self._on_brillouin_live_clicked)
-        sw.button_brillouin_stop.clicked.connect(sm.stop_live_brillouin)
-        sm.brillouin_running_changed.connect(sw.set_brillouin_live_button_state)
+        sw.button_brillouin_stop.clicked.connect(self._on_spectro_stop_clicked)
 
         # --- Raman mock controls ---
         sw.button_raman_snap.clicked.connect(self._on_raman_snap_clicked)
         sw.button_raman_live.clicked.connect(self._on_raman_live_clicked)
-        sw.button_raman_stop.clicked.connect(sm.stop_live_raman)
-        sm.raman_running_changed.connect(sw.set_raman_live_button_state)
+        sw.button_raman_stop.clicked.connect(self._on_spectro_stop_clicked)
     
     @Slot()
     def _on_spectro_acquire_clicked(self):
@@ -216,10 +212,10 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            scan_parameters = self._attach_initial_relative_positions(
-                self.ui.scan_widget.get_scan_parameters()
-            )
             modes = self.ui.spectro_panel_widget.get_modes()
+            acquisition_params = self.ui.spectro_panel_widget.get_acquisition_parameters()
+            save_params = self.ui.spectro_panel_widget.get_save_parameters()
+
             brillouin_params = self.ui.spectro_widget.get_brillouin_parameters()
             raman_params = self.ui.spectro_widget.get_raman_parameters()
 
@@ -228,7 +224,7 @@ class MainWindow(QMainWindow):
             self.ui.spectro_widget.set_running(True)
 
             self.spectro_manager.start_mapping(
-                scan_parameters=scan_parameters,
+                scan_parameters=acquisition_params,
                 modes=modes,
                 brillouin_params=brillouin_params,
                 raman_params=raman_params,
@@ -307,6 +303,16 @@ class MainWindow(QMainWindow):
         if bool(modes.get("raman", False)):
             self.ui.spectro_widget.set_raman_status(str(text))
 
+    @Slot(object)
+    def _on_spectro_spectrum_update(self, spectrum):
+        try:
+            wavelengths = self.spectro_manager.dataset.get("raman_wavelengths", None)
+            if wavelengths is None:
+                return
+            self.ui.spectro_widget.set_raman_spectrum(wavelengths, spectrum)
+        except Exception as e:
+            self._on_spectro_status_changed(f"Spectrum display failed: {e}")
+    
     @Slot(int, int)
     def _on_spectro_progress_changed(self, done: int, total: int):
         self._on_spectro_status_changed(f"Spectro {done}/{total}")
@@ -317,18 +323,13 @@ class MainWindow(QMainWindow):
         self.ui.spectro_widget.set_running(False)
 
         try:
-            folder = self.ui.save_widget.folder_line_edit.text().strip()
+            save_params = self.ui.spectro_panel_widget.get_save_parameters()
+            folder = save_params.get("folder", "")
+            filename = save_params.get("filename", "")
+            comment = save_params.get("comment", "")
         except Exception:
             folder = ""
-
-        try:
-            filename = self.ui.save_widget.filename_line_edit.text().strip()
-        except Exception:
             filename = ""
-
-        try:
-            comment = self.ui.save_widget.comment_text_edit.toPlainText().strip()
-        except Exception:
             comment = ""
 
         try:
@@ -349,14 +350,6 @@ class MainWindow(QMainWindow):
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
         self._on_spectro_status_changed(f"Spectro error: {message}")
-    
-    @Slot()
-    def _on_spectro_acquire(self):
-        try:
-            scan_params = self.ui.scan_widget.get_scan_parameters()
-            print("[Spectro] Acquire requested with scan params:", scan_params)
-        except Exception as e:
-            print("[Spectro] Acquire failed:", e)
     
     def _connect_camera_controls(self):
         cw = self.ui.camera_widget

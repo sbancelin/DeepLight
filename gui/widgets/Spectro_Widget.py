@@ -538,15 +538,6 @@ class SpectroWidget(QWidget):
     
     def clear_brillouin_image(self):
         self.set_brillouin_image(np.zeros((512, 512), dtype=np.float32))
-
-    def set_running(self, running: bool):
-        self.button_brillouin_snap.setEnabled(not bool(running))
-        self.button_brillouin_live.setEnabled(not bool(running))
-        self.button_brillouin_stop.setEnabled(bool(running))
-
-        self.button_raman_snap.setEnabled(not bool(running))
-        self.button_raman_live.setEnabled(not bool(running))
-        self.button_raman_stop.setEnabled(bool(running))
     
     def set_running(self, running: bool):
         # utilisé pour le mapping spectro global (Acquire panel)

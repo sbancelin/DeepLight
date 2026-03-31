@@ -629,16 +629,11 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
                         ai_chunk = np.zeros((ai_count, int(take)), dtype=np.float64)
 
-                        read_timeout = max(
-                            0.5,
-                            (float(take) / float(sr)) * 2.0,
-                        )
-
                         try:
                             reader.read_many_sample(
                                 ai_chunk,
                                 number_of_samples_per_channel=int(take),
-                                timeout=read_timeout,
+                                timeout=0.1,
                             )
                         except DaqWarning as w:
                             if self.acquisition_stop_event.is_set() and getattr(w, "error_code", None) == 200010:

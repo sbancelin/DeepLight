@@ -75,6 +75,19 @@ class MockDetectorManager(QObject):
 
         return float(counts)
         
+    def _digital_max_counts_for_dwell(self, dwell_time_s: float) -> float:
+        """
+        Plafond mock cohérent avec le PMT/compteur utilisé.
+        On garde une saturation réaliste autour de ~16721 counts par pixel,
+        avec borne de sécurité 16 bits si nécessaire.
+        """
+        target_max = 16721.0
+
+        # si on veut plus tard dépendre du dwell, on pourra le faire ici.
+        # pour l'instant on garde le comportement demandé: microscope mock
+        # plafonné autour de 16721 counts/pixel.
+        return min(target_max, 65535.0)
+    
     def acquire_integrated_scalar(self, channel: str, dwell_time_s: float, source_kind: str = "analog_integrating") -> float:
         """
         Retourne un scalaire intégré mock pour un canal et un dwell donnés.
@@ -303,6 +316,54 @@ class MockDetectorManager(QObject):
             )
         )
 
+        is_digital = str(channel) in ("Ch 0", "Ch 1")
+
+        if is_digital:
+            max_counts = self._digital_max_counts_for_dwell(dwell_time_s=0.0)
+            high_counts = 0.85 * max_counts
+            low_counts = 0.02 * max_counts
+
+            if self.random_mode:
+                n_pixels_stream = self.dim_fast * self.dim_slow
+                n_samples = n_pixels_stream * self.samples_per_pixel
+                return rng.uniform(0.0, max_counts, size=n_samples).astype(np.float64)
+
+            mask = self._build_pattern_mask(
+                width=self.dim_image_x,
+                height=self.dim_image_y,
+                pattern_type=self.pattern_type,
+                rng=rng,
+            )
+
+            frame = np.empty((self.dim_image_y, self.dim_image_x), dtype=np.float64)
+
+            on_pixels = mask
+            off_pixels = ~mask
+
+            if np.any(on_pixels):
+                sigma_on = max(5.0, 0.03 * high_counts)
+                vals = rng.normal(loc=high_counts, scale=sigma_on, size=np.count_nonzero(on_pixels))
+                frame[on_pixels] = vals
+
+            if np.any(off_pixels):
+                sigma_off = max(2.0, 0.01 * max_counts)
+                vals = rng.normal(loc=low_counts, scale=sigma_off, size=np.count_nonzero(off_pixels))
+                frame[off_pixels] = vals
+
+            frame = np.clip(np.rint(frame), 0.0, max_counts)
+
+            flat_pixels = self._frame_to_raster_stream(frame)
+
+            if self.samples_per_pixel > 1:
+                # en digital, chaque sous-sample représente un count-gate;
+                # on répartit le pixel sur les sous-samples pour que la somme
+                # au FrameBuilder redonne le count du pixel.
+                repeated = np.repeat(flat_pixels[:, None] / float(self.samples_per_pixel), self.samples_per_pixel, axis=1)
+                flat_pixels = repeated.reshape(-1)
+
+            return flat_pixels.astype(np.float64, copy=False)
+
+        # -------- analog channels --------
         if self.random_mode:
             n_pixels_stream = self.dim_fast * self.dim_slow
             n_samples = n_pixels_stream * self.samples_per_pixel

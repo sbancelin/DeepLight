@@ -258,7 +258,7 @@ class Ui_MainWindowDesign:
 
         self.scan_widget = ScanWidget()
         self.detector_widget = DetectorWidget()
-        self.spectro_panel_widget = SpectroPanelWidget()
+        self.save_widget = SaveWidget() 
         self.laser_widget = LaserWidget()
         self.positioner_widget = PositionerWidget()
 
@@ -275,12 +275,7 @@ class Ui_MainWindowDesign:
             collapsed=False,
             parent=self.left_panel_dock.container
         )
-        self.spectro_panel = CollapsiblePanel(
-            "Spectro",
-            self.spectro_panel_widget,
-            collapsed=False,
-            parent=self.left_panel_dock.container
-        )
+        self.save_panel = CollapsiblePanel("Save", self.save_widget, collapsed=False, parent=self.left_panel_dock.container)
         self.laser_panel = CollapsiblePanel(
             title="Lasers",
             content_widget=self.laser_widget,
@@ -297,17 +292,17 @@ class Ui_MainWindowDesign:
         )
 
         self.left_panel_dock.add_panel(self.scan_panel)
-        self.left_panel_dock.add_panel(self.detector_panel)
-        self.left_panel_dock.add_panel(self.spectro_panel)
-        self.left_panel_dock.add_panel(self.laser_panel)
         self.left_panel_dock.add_panel(self.positioner_panel)
+        self.left_panel_dock.add_panel(self.detector_panel)
+        self.left_panel_dock.add_panel(self.laser_panel)
+        self.left_panel_dock.add_panel(self.save_panel)
 
         MainWindowDesign.addDockWidget(Qt.LeftDockWidgetArea, self.left_panel_dock)
 
 ##################  Right panel dock ####################
         self.right_panel_dock = PanelDock("Helpers", MainWindowDesign)
 
-        self.save_widget = SaveWidget()       
+        self.spectro_panel_widget = SpectroPanelWidget()
         self.analog_out_widget = AnalogOutVisualizerWidget()
         self.visu_step_widget = StepperVisualizerWidget()
         self.nyquist_widget = NyquistWidget()
@@ -315,7 +310,12 @@ class Ui_MainWindowDesign:
         self.histogram_widget = HistogramWidget()
         self.frc_widget = FRCWidget()
 
-        self.save_panel = CollapsiblePanel("Save", self.save_widget, collapsed=False, parent=self.right_panel_dock.container)
+        self.spectro_panel = CollapsiblePanel(
+            "Spectro",
+            self.spectro_panel_widget,
+            collapsed=False,
+            parent=self.right_panel_dock.container
+        )
         self.analog_panel = CollapsiblePanel("Visualizer Analog", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
         self.stepper_panel = CollapsiblePanel("Visualizer Stepper", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
@@ -323,7 +323,7 @@ class Ui_MainWindowDesign:
         self.histogram_panel = CollapsiblePanel("Histogram", self.histogram_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
 
-        self.right_panel_dock.add_panel(self.save_panel)
+        self.right_panel_dock.add_panel(self.spectro_panel)
         self.right_panel_dock.add_panel(self.analog_panel)
         self.right_panel_dock.add_panel(self.stepper_panel)
         self.right_panel_dock.add_panel(self.nyquist_panel)
@@ -508,22 +508,32 @@ class Ui_MainWindowDesign:
 
         self._update_lut_axis(hist_lut, lo, hi, n_ticks=5)
 
-    def _get_image_minmax_from_widget(self, im):
+    def _get_image_minmax_from_widget(self, im, channel=None):
         img = getattr(im, "image", None)
+
+        def _default_range_for_channel(ch):
+            ch = str(ch or "")
+            if ch in ("Ch 0", "Ch 1"):
+                # default counts range for digital channels
+                return 0.0, 20000.0
+            # default voltage range for analog channels
+            return 0.0, 10.0
+
         if img is None:
-            return 0.0, 1.0
+            return _default_range_for_channel(channel)
 
         arr = np.asarray(img, dtype=np.float64)
         finite = arr[np.isfinite(arr)]
 
         if finite.size == 0:
-            return 0.0, 1.0
+            return _default_range_for_channel(channel)
 
         lo = float(np.min(finite))
         hi = float(np.max(finite))
 
+        # image plate: on garde une plage pertinente selon le type de canal
         if hi <= lo:
-            hi = lo + 1.0
+            return _default_range_for_channel(channel)
 
         return lo, hi
 
@@ -551,7 +561,7 @@ class Ui_MainWindowDesign:
         if hist_lut is None and "default" in self.channel_hist_luts:
             hist_lut = self.channel_hist_luts["default"]
 
-        lo, hi = self._get_image_minmax_from_widget(im)
+        lo, hi = self._get_image_minmax_from_widget(im, channel=channel)
         self._apply_levels(im, hist_lut, lo, hi)
 
     def sync_channel_lut_axis_from_current_levels(self, channel):
@@ -571,7 +581,7 @@ class Ui_MainWindowDesign:
             levels = None
 
         if levels is None:
-            lo, hi = self._get_image_minmax_from_widget(im)
+            lo, hi = self._get_image_minmax_from_widget(im, channel=channel)
         else:
             lo, hi = levels
 
@@ -744,7 +754,7 @@ class Ui_MainWindowDesign:
                 try:
                     lo0, hi0 = _im.getLevels()
                 except Exception:
-                    lo0, hi0 = self._get_image_minmax_from_widget(_im)
+                    lo0, hi0 = self._get_image_minmax_from_widget(_im, channel=ch)
 
                 res = ask_levels_min_max(
                     parent=None,
