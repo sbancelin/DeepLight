@@ -58,12 +58,35 @@ class MockDetectorManager(QObject):
         self._sample_cursor += 1
         return value
     
-    def acquire_integrated_scalar(self, channel: str, dwell_time_s: float, source_kind: str = "analog_integrating") -> float:
-        """Retourne un scalaire intégré mock pour un canal et un dwell donnés."""
-        if source_kind != "analog_integrating":
-            raise ValueError(f"Unsupported source_kind: {source_kind}")
+    def _mock_digital_counts(self, channel: str, dwell_time_s: float) -> float:
+        """
+        Mock photon counting correspondant au PMT H16721 + C8855.
+        La saturation est fixée par la linéarité du H16721 (~1.5 MHz).
+        """
 
-        return self._mock_integrated_scalar(channel, dwell_time_s)
+        rng = np.random.default_rng(
+            self._seed_from_key(f"{channel}|{self._sample_cursor}")
+        )
+
+        # plafond réaliste du H16721
+        max_counts = int(1.5e6 * max(dwell_time_s, 1e-9))
+
+        counts = rng.integers(0, max_counts + 1)
+
+        return float(counts)
+        
+    def acquire_integrated_scalar(self, channel: str, dwell_time_s: float, source_kind: str = "analog_integrating") -> float:
+        """
+        Retourne un scalaire intégré mock pour un canal et un dwell donnés.
+        """
+
+        if source_kind == "analog_integrating":
+            return self._mock_integrated_scalar(channel, dwell_time_s)
+
+        if source_kind == "photon_counter":
+            return self._mock_digital_counts(channel, dwell_time_s)
+
+        raise ValueError(f"Unsupported source_kind: {source_kind}")
         
     def _reset_frame_cache(self):
         self._frame_signal_cache.clear()

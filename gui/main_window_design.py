@@ -353,6 +353,7 @@ class Ui_MainWindowDesign:
         self.channel_lock = {}        # channel -> bool
         self.channel_grid = {}        # channel -> bool
         self.channel_controls = {}    # channel -> {"autoscale": QCheckBox, "grid": QCheckBox}
+        self.channel_hist_luts = {}   # channel -> HistogramLUTItem
 
         # Récupérer les valeurs par défaut de #Pix X et #Pix Y
         scan_parameters = self.scan_widget.get_scan_parameters()
@@ -421,6 +422,161 @@ class Ui_MainWindowDesign:
         self.update_scan_layout(active_channels)
         self.stitch_widget.set_channel_list(active_channels)
 
+    def _update_lut_axis(self, hist_lut, lo, hi, n_ticks=5):
+        if hist_lut is None:
+            return
+
+        lo = float(lo)
+        hi = float(hi)
+
+        if not np.isfinite(lo):
+            lo = 0.0
+        if not np.isfinite(hi):
+            hi = lo + 1.0
+
+        if hi <= lo:
+            hi = lo + 1.0
+
+        span = float(hi - lo)
+        pad = max(1e-12, 0.02 * span)
+
+        view_lo = lo - pad
+        view_hi = hi + pad
+
+        try:
+            hist_lut.item.vb.setYRange(view_lo, view_hi, padding=0)
+        except Exception:
+            pass
+
+        raw_ticks = np.linspace(lo, hi, n_ticks)
+
+        # Affichage "entier" seulement pour les comptes,
+        # sinon on garde un affichage float compact.
+        integer_like = (
+            abs(lo - round(lo)) < 1e-9
+            and abs(hi - round(hi)) < 1e-9
+            and max(abs(lo), abs(hi)) >= 10
+        )
+
+        tick_labels = []
+        used = set()
+
+        for val in raw_ticks:
+            if integer_like:
+                pos = float(int(round(val)))
+                label = str(int(round(val)))
+                key = label
+            else:
+                pos = float(val)
+                label = f"{val:.4g}"
+                key = label
+
+            if key in used:
+                continue
+            used.add(key)
+            tick_labels.append((pos, label))
+
+        try:
+            hist_lut.item.axis.setTicks([tick_labels, []])
+        except Exception:
+            pass
+
+    def _apply_levels(self, im, hist_lut, lo, hi):
+        lo = float(lo)
+        hi = float(hi)
+
+        if not np.isfinite(lo):
+            lo = 0.0
+        if not np.isfinite(hi):
+            hi = lo + 1.0
+
+        if hi <= lo:
+            hi = lo + 1.0
+
+        try:
+            im.setLevels(lo, hi)
+        except Exception:
+            pass
+
+        try:
+            im.ui.histogram.region.setRegion((lo, hi))
+        except Exception:
+            try:
+                im.ui.histogram.setLevels(lo, hi)
+            except Exception:
+                pass
+
+        self._update_lut_axis(hist_lut, lo, hi, n_ticks=5)
+
+    def _get_image_minmax_from_widget(self, im):
+        img = getattr(im, "image", None)
+        if img is None:
+            return 0.0, 1.0
+
+        arr = np.asarray(img, dtype=np.float64)
+        finite = arr[np.isfinite(arr)]
+
+        if finite.size == 0:
+            return 0.0, 1.0
+
+        lo = float(np.min(finite))
+        hi = float(np.max(finite))
+
+        if hi <= lo:
+            hi = lo + 1.0
+
+        return lo, hi
+
+    def apply_levels_to_channel(self, channel, lo, hi):
+        im = self.im_widgets.get(channel)
+        if im is None:
+            im = self.im_widgets.get("default")
+        if im is None:
+            return
+
+        hist_lut = self.channel_hist_luts.get(channel)
+        if hist_lut is None and "default" in self.channel_hist_luts:
+            hist_lut = self.channel_hist_luts["default"]
+
+        self._apply_levels(im, hist_lut, lo, hi)
+
+    def autoscale_channel_levels(self, channel):
+        im = self.im_widgets.get(channel)
+        if im is None:
+            im = self.im_widgets.get("default")
+        if im is None:
+            return
+
+        hist_lut = self.channel_hist_luts.get(channel)
+        if hist_lut is None and "default" in self.channel_hist_luts:
+            hist_lut = self.channel_hist_luts["default"]
+
+        lo, hi = self._get_image_minmax_from_widget(im)
+        self._apply_levels(im, hist_lut, lo, hi)
+
+    def sync_channel_lut_axis_from_current_levels(self, channel):
+        im = self.im_widgets.get(channel)
+        if im is None:
+            im = self.im_widgets.get("default")
+        if im is None:
+            return
+
+        hist_lut = self.channel_hist_luts.get(channel)
+        if hist_lut is None and "default" in self.channel_hist_luts:
+            hist_lut = self.channel_hist_luts["default"]
+
+        try:
+            levels = im.getLevels()
+        except Exception:
+            levels = None
+
+        if levels is None:
+            lo, hi = self._get_image_minmax_from_widget(im)
+        else:
+            lo, hi = levels
+
+        self._update_lut_axis(hist_lut, lo, hi, n_ticks=5)
+    
     def retranslateUi(self, MainWindowDesign):
         MainWindowDesign.setWindowTitle(QCoreApplication.translate("MainWindowDesign", u"MainWindow", None))
         self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_preview), QCoreApplication.translate("MainWindowDesign", u"Scan", None))
@@ -454,6 +610,7 @@ class Ui_MainWindowDesign:
         # Garder la même référence (important pour MainWindow)
         self.im_widgets.clear()
         self.im_status_labels.clear()
+        self.channel_hist_luts.clear()
         scan_parameters = self.scan_widget.get_scan_parameters()
         rows = scan_parameters["rows"]
 
@@ -509,6 +666,7 @@ class Ui_MainWindowDesign:
 
             # Accéder à l'objet HistogramLUTItem
             hist_lut = im.ui.histogram
+            self.channel_hist_luts[channel] = hist_lut
 
             # Afficher la barre de LUT
             hist_lut.gradient.show()
@@ -577,64 +735,7 @@ class Ui_MainWindowDesign:
             self.im_status_labels[channel] = status
 
             # ---------- Fonctions LUT / niveaux ----------
-            def _update_lut_axis(_hist_lut, lo, hi, n_ticks=5):
-                if hi <= lo:
-                    hi = lo + 1.0
-
-                # respiration visuelle en haut et en bas
-                span = float(hi - lo)
-                pad = max(1.0, 0.02 * span)
-                view_lo = lo - pad
-                view_hi = hi + pad
-                _hist_lut.item.vb.setYRange(view_lo, view_hi, padding=0)
-
-                # n ticks entre lo et hi, position ET label arrondis à l'entier
-                raw_ticks = np.linspace(lo, hi, n_ticks)
-
-                tick_labels = []
-                used = set()
-                for val in raw_ticks:
-                    pos = int(round(float(val)))
-                    if pos in used:
-                        continue
-                    used.add(pos)
-                    tick_labels.append((pos, str(pos)))
-
-                _hist_lut.item.axis.setTicks([tick_labels, []])
-
-            def _apply_levels(_im, _hist_lut, lo, hi):
-                if hi <= lo:
-                    hi = lo + 1.0
-
-                _im.setLevels(lo, hi)
-
-                try:
-                    _im.ui.histogram.region.setRegion((lo, hi))
-                except Exception:
-                    try:
-                        _im.ui.histogram.setLevels(lo, hi)
-                    except Exception:
-                        pass
-
-                _update_lut_axis(_hist_lut, lo, hi, n_ticks=5)
-
-            def _get_image_minmax(_im):
-                img = getattr(_im, "image", None)
-                if img is None:
-                    return 0.0, 255.0
-
-                arr = np.asarray(img)
-                finite = arr[np.isfinite(arr)]
-                if finite.size == 0:
-                    return 0.0, 255.0
-
-                lo = float(np.min(finite))
-                hi = float(np.max(finite))
-                if hi <= lo:
-                    hi = lo + 1.0
-                return lo, hi
-
-            def _set_levels(_=False, _im=im, ch=channel, _hist_lut=hist_lut):
+            def _set_levels(_=False, _im=im, ch=channel):
                 self.channel_autoscale[ch] = False
                 cb_autoscale.blockSignals(True)
                 cb_autoscale.setChecked(False)
@@ -643,7 +744,7 @@ class Ui_MainWindowDesign:
                 try:
                     lo0, hi0 = _im.getLevels()
                 except Exception:
-                    lo0, hi0 = _get_image_minmax(_im)
+                    lo0, hi0 = self._get_image_minmax_from_widget(_im)
 
                 res = ask_levels_min_max(
                     parent=None,
@@ -659,32 +760,27 @@ class Ui_MainWindowDesign:
                     QMessageBox.warning(None, "Invalid LUT values", "Max must be greater than Min.")
                     return
 
-                _apply_levels(_im, _hist_lut, float(lo), float(hi))
+                self.apply_levels_to_channel(ch, float(lo), float(hi))
 
-            def _reset_levels(_=False, _im=im, ch=channel, _hist_lut=hist_lut):
+            def _reset_levels(_=False, ch=channel):
                 self.channel_autoscale[ch] = False
                 cb_autoscale.blockSignals(True)
                 cb_autoscale.setChecked(False)
                 cb_autoscale.blockSignals(False)
 
-                lo0, hi0 = _get_image_minmax(im)
-                _apply_levels(im, hist_lut, lo0, hi0)
+                self.autoscale_channel_levels(ch)
 
-            def _on_autoscale_toggled(checked, _im=im, ch=channel, _hist_lut=hist_lut):
+            def _on_autoscale_toggled(checked, ch=channel):
                 self.channel_autoscale[ch] = bool(checked)
-                if not checked:
-                    return
-
-                lo, hi = _get_image_minmax(_im)
-                _apply_levels(_im, _hist_lut, lo, hi)
+                if checked:
+                    self.autoscale_channel_levels(ch)
 
             def _on_lock_toggled(checked, _im=im, ch=channel):
                 self.channel_lock[ch] = bool(checked)
                 _im.getView().setAspectLocked(bool(checked))
 
             # ---------- Initialisation LUT ----------
-            lo0, hi0 = _get_image_minmax(im)
-            _apply_levels(im, hist_lut, lo0, hi0)
+            self.autoscale_channel_levels(channel)
 
             # ---------- Grid ON/OFF ----------
             im.getView().showGrid(cb_grid.isChecked(), cb_grid.isChecked())

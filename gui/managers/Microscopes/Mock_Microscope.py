@@ -22,9 +22,9 @@ class MockMicroscope(MicroscopeBackendBase):
             random_mode=False,
             pattern_type="mixed",
             high_level=8.0,
-            low_level=0.5,
-            noise_on=0.3,
-            noise_off=0.2,
+            low_level=1,
+            noise_on=0.8,
+            noise_off=0.8,
         )
 
         self.sample_scan_manager = SampleScanManager()
@@ -32,6 +32,8 @@ class MockMicroscope(MicroscopeBackendBase):
 
         self.scan_kind = "laser"
         self.pixel_source_kind = "analog_integrating"
+        self.channel_specs = []
+        self.channel_kind_map = {}
 
         self._step_event_cursor = 0
 
@@ -99,6 +101,29 @@ class MockMicroscope(MicroscopeBackendBase):
         self.laser_off_between_rep = bool(self.scan_parameters.get("laser_off_between_rep", False))
 
         self.channels = list(self.scan_parameters.get("active_channels") or ["default"])
+
+        self.channel_specs = list(self.scan_parameters.get("detector_channels") or [])
+
+        if not self.channel_specs:
+            self.channel_specs = []
+            for ch in self.channels:
+                if str(ch) in ("Ch 0", "Ch 1"):
+                    kind = "digital"
+                else:
+                    kind = "analog"
+
+                self.channel_specs.append({
+                    "name": ch,
+                    "kind": kind,
+                    "enabled": True,
+                    "digital_mode": "counts",
+                })
+
+        self.channel_kind_map = {
+            str(c.get("name")): str(c.get("kind", "analog"))
+            for c in self.channel_specs
+            if bool(c.get("enabled", True))
+        }
 
         self.bidirectional_scan = bool(self.scan_parameters.get("bidirectional_scan", False))
         self.bidirectional_shift_px = int(self.scan_parameters.get("bidirectional_shift_px", 0) or 0)
@@ -278,6 +303,7 @@ class MockMicroscope(MicroscopeBackendBase):
             arrays=arrays,
             channels=self.channels,
             reconstruction_plan=reconstruction_plan,
+            channel_kinds=self.channel_kind_map,
         )
         builder.reset(clear_arrays=clear_arrays)
 
@@ -484,7 +510,12 @@ class MockMicroscope(MicroscopeBackendBase):
                                 pixel_source_kind=self.pixel_source_kind,
                             )
                         )
-                    arrays[ch][int(event.iy), int(event.ix)] = accum / float(spp)
+
+                    kind = str(self.channel_kind_map.get(ch, "analog"))
+                    if kind == "digital":
+                        arrays[ch][int(event.iy), int(event.ix)] = accum
+                    else:
+                        arrays[ch][int(event.iy), int(event.ix)] = accum / float(spp)
 
                 pixel_done += 1
                 progress_accum += spp

@@ -1116,15 +1116,22 @@ class MainWindow(QMainWindow):
 
         autoscale = bool(getattr(self.ui, "channel_autoscale", {}).get(channel, True))
 
+        # On désactive l'autoscale implicite de pyqtgraph ici
+        # pour garder une logique unique et cohérente via les helpers UI.
         im_widget.setImage(
             shown,
-            autoLevels=autoscale,
+            autoLevels=False,
             autoRange=False,
             autoHistogramRange=False
         )
 
         scan_parameters = self.ui.scan_widget.get_scan_parameters()
         self._apply_physical_scale(im_widget, shown, scan_parameters)
+
+        if autoscale:
+            self.ui.autoscale_channel_levels(channel)
+        else:
+            self.ui.sync_channel_lut_axis_from_current_levels(channel)
 
         lock_checked = bool(getattr(self.ui, "channel_lock", {}).get(channel, True))
         im_widget.getView().setAspectLocked(lock_checked)
@@ -1224,11 +1231,19 @@ class MainWindow(QMainWindow):
         if img is None:
             return
 
-        vb = im_widget.getView().getViewBox()
-        mouse_point = vb.mapSceneToView(pos)
+        img_item = im_widget.getImageItem()
+        if img_item is None:
+            return
 
-        x = int(mouse_point.x())
-        y = int(mouse_point.y())
+        # IMPORTANT:
+        # pos est en coordonnées de scene.
+        # Comme l'image est transformée en unités physiques (µm),
+        # il faut revenir dans le repère propre de l'ImageItem
+        # pour retrouver les indices pixel réels.
+        mouse_point_img = img_item.mapFromScene(pos)
+
+        x = int(mouse_point_img.x())
+        y = int(mouse_point_img.y())
 
         unit = self._channel_unit_label(channel)
 
