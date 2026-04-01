@@ -236,6 +236,7 @@ class MainWindow(QMainWindow):
                 modes=modes,
                 brillouin_params=brillouin_params,
                 raman_params=raman_params,
+                save_params=save_params,
             )
         except Exception as e:
             self._on_spectro_status_changed(f"Spectro start failed: {e}")
@@ -358,6 +359,7 @@ class MainWindow(QMainWindow):
         try:
             if not filename:
                 filename = "SPECTRO"
+            print("[MainWindow] dataset keys before save =", list(dataset.keys()))
             path = self.save_manager.save_spectro_dataset(
                 folder=folder,
                 filename=filename,
@@ -1066,7 +1068,6 @@ class MainWindow(QMainWindow):
         Si acquisition en cours -> override.
         Sinon -> commande normale.
         """
-        print(f"[MainWindow] shutterButtonClicked({checked})")
         if self.acquisition_manager.is_running:
             self.user_shutter_override = checked
         else:

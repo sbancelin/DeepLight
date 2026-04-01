@@ -487,6 +487,8 @@ class SaveManager:
         os.makedirs(root_path, exist_ok=True)
 
         metadata_block = dict(dataset.get("metadata", {}) or {})
+        print("[SaveManager] save_spectro_dataset fmt =", fmt)
+        print("[SaveManager] dataset keys =", list(dataset.keys()))
 
         metadata = {
             "created": self._now_iso(),
@@ -505,6 +507,23 @@ class SaveManager:
                 if "raman_wavelengths" in dataset else []
             ),
             "data_files": {},
+            "axis_interpretation": {
+                "brillouin_ome_tiff": {
+                    "axes": "TCZYX",
+                    "T": "repetition index (currently always 1 in spectro mock)",
+                    "C": "linear scan index within each XY serpentine plane",
+                    "Z": "mapping z index",
+                    "Y": "camera image y",
+                    "X": "camera image x",
+                },
+                "raman_ome_tiff": {
+                    "axes": "ZYXS",
+                    "Z": "mapping z index",
+                    "Y": "mapping y index",
+                    "X": "mapping x index",
+                    "S": "spectral samples",
+                },
+            },
         }
 
         # Un seul fichier de positions dans tous les cas
@@ -517,18 +536,48 @@ class SaveManager:
         # dataset["brillouin_images"] attendu en (Z, Y, X, H, W)
         # -------------------------
         if "brillouin_images" in dataset:
-            arr = np.asarray(dataset["brillouin_images"], dtype=np.float32)
+            arr = np.asarray(dataset["brillouin_images"], dtype=np.float32)   # (pz, py, px, h, w)
 
             if fmt == "OME-TIFF":
+                # On remappe le dataset Brillouin en OME-TIFF standard:
+                # T = répétition (ici 1)
+                # C = indice linéaire dans l'ordre serpentin, par plan Z
+                # Z = index z du mapping
+                # Y,X = image caméra
+                pz, py, px, h, w = arr.shape
+                n_channels = py * px
+
+                stack = np.zeros((1, n_channels, pz, h, w), dtype=np.float32)
+
+                order = np.asarray(dataset.get("acquisition_order_indices", []), dtype=np.int32)
+
+                for linear_idx in range(len(order)):
+                    z_idx, y_idx, x_idx = [int(v) for v in order[linear_idx]]
+
+                    if not (0 <= z_idx < pz and 0 <= y_idx < py and 0 <= x_idx < px):
+                        continue
+
+                    # canal = indice linéaire XY dans le serpentin, indépendamment de z
+                    c_idx = int(y_idx * px + x_idx)
+
+                    stack[0, c_idx, z_idx, :, :] = arr[z_idx, y_idx, x_idx, :, :]
+
                 out_name = "brillouin.ome.tif"
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
-                    arr,
+                    stack,
                     photometric="minisblack",
-                    metadata={"axes": "ZYXHW"},
+                    metadata={
+                        "axes": "TCZYX",
+                        "Channel": [
+                            {"Name": f"scan_idx_{i:04d}"}
+                            for i in range(n_channels)
+                        ],
+                    },
                 )
             else:
                 out_name = "brillouin.zarr"
+                print("[SaveManager] ->", os.path.join(root_path, out_name))
                 zarr_path = os.path.join(root_path, out_name)
                 root = zarr.open_group(zarr_path, mode="w")
                 root.create_dataset(
@@ -564,9 +613,11 @@ class SaveManager:
         # -------------------------
         if "raman_spectra" in dataset:
             arr = np.asarray(dataset["raman_spectra"], dtype=np.float32)
+            print("[SaveManager] writing Raman, shape =", arr.shape)
 
             if fmt == "OME-TIFF":
                 out_name = "raman.ome.tif"
+                print("[SaveManager] ->", os.path.join(root_path, out_name))
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
                     arr,
@@ -575,6 +626,7 @@ class SaveManager:
                 )
             else:
                 out_name = "raman.zarr"
+                print("[SaveManager] ->", os.path.join(root_path, out_name))
                 zarr_path = os.path.join(root_path, out_name)
                 root = zarr.open_group(zarr_path, mode="w")
                 root.create_dataset(
@@ -600,4 +652,6 @@ class SaveManager:
             metadata["data_files"]["raman"] = out_name
 
         self._write_json(os.path.join(root_path, "metadata.json"), metadata)
+        print("[SaveManager] finished root_path =", root_path)
+        print("[SaveManager] files in root_path =", os.listdir(root_path))
         return root_path
