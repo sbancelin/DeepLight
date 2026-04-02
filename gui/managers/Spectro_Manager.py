@@ -45,6 +45,11 @@ class SpectroManager(QObject):
         self._brillouin_params = {}
         self._raman_params = {}
 
+        # --- throttling affichage UI ---
+        self._ui_update_period_s = 1.0   # 1 image / spectre par seconde max
+        self._last_brillouin_ui_emit_t = 0.0
+        self._last_raman_ui_emit_t = 0.0
+
         # --- timer mapping : single-shot pour éviter le sleep bloquant
         self.mapping_timer = QTimer(self)
         self.mapping_timer.setSingleShot(True)
@@ -87,6 +92,26 @@ class SpectroManager(QObject):
         self.stop_live_brillouin()
         self.stop_live_raman()
 
+    def _try_acquire_brillouin_from_hardware(self, params):
+        """
+        Ask HardwareManager for a Brillouin image if a real backend is available.
+        Returns:
+            np.ndarray if hardware acquisition succeeded
+            None if no hardware image is available and caller should use mock
+        """
+        if self.hardware is None:
+            return None
+
+        acquire_fn = getattr(self.hardware, "acquire_brillouin_image", None)
+        if not callable(acquire_fn):
+            return None
+
+        image = acquire_fn(params or {})
+        if image is None:
+            return None
+
+        return np.asarray(image, dtype=np.float32)
+    
     # --------------------------
     # Mapping
     # --------------------------
@@ -126,6 +151,10 @@ class SpectroManager(QObject):
             self._raman_params,
             self._save_parameters,
         )
+        
+        now = time.perf_counter()
+        self._last_brillouin_ui_emit_t = now - self._ui_update_period_s
+        self._last_raman_ui_emit_t = now - self._ui_update_period_s
         self.running = True
         self._mapping_started_t0 = time.perf_counter()
 
@@ -140,13 +169,17 @@ class SpectroManager(QObject):
     def snap_brillouin(self, params=None):
         try:
             params = dict(params or {})
-            image = self._mock_brillouin_image(
-                x_idx=0,
-                y_idx=0,
-                z_idx=0,
-                t_index=int(time.time() * 10) % 100000,
-                params=params,
-            )
+
+            image = self._try_acquire_brillouin_from_hardware(params)
+            if image is None:
+                image = self._mock_brillouin_image(
+                    x_idx=0,
+                    y_idx=0,
+                    z_idx=0,
+                    t_index=int(time.time() * 10) % 100000,
+                    params=params,
+                )
+
             self.sigImageUpdate.emit(image)
             self.sigStatusMessage.emit("Brillouin snap done")
         except Exception as e:
@@ -224,13 +257,16 @@ class SpectroManager(QObject):
     # ==========================================================
     def _on_brillouin_live_timeout(self):
         try:
-            image = self._mock_brillouin_image(
-                x_idx=0,
-                y_idx=0,
-                z_idx=0,
-                t_index=self._brillouin_live_counter,
-                params=self._brillouin_live_params,
-            )
+            image = self._try_acquire_brillouin_from_hardware(self._brillouin_live_params)
+            if image is None:
+                image = self._mock_brillouin_image(
+                    x_idx=0,
+                    y_idx=0,
+                    z_idx=0,
+                    t_index=self._brillouin_live_counter,
+                    params=self._brillouin_live_params,
+                )
+
             self._brillouin_live_counter += 1
             self.sigImageUpdate.emit(image)
         except Exception as e:
@@ -388,6 +424,25 @@ class SpectroManager(QObject):
             self.sigStatusMessage.emit(status_text)
 
         if emit_finished and self.dataset is not None:
+            try:
+                if "brillouin_images" in self.dataset and self.current_pixel_index > 0:
+                    last_idx = min(self.current_pixel_index - 1, len(self.pixel_list) - 1)
+                    info = self.pixel_list[last_idx]
+                    z = int(info["z_index"])
+                    y = int(info["y_index"])
+                    x = int(info["x_index"])
+                    self.sigImageUpdate.emit(self.dataset["brillouin_images"][z, y, x])
+
+                if "raman_spectra" in self.dataset and self.current_pixel_index > 0:
+                    last_idx = min(self.current_pixel_index - 1, len(self.pixel_list) - 1)
+                    info = self.pixel_list[last_idx]
+                    z = int(info["z_index"])
+                    y = int(info["y_index"])
+                    x = int(info["x_index"])
+                    self.sigSpectrumUpdate.emit(self.dataset["raman_spectra"][z, y, x])
+            except Exception:
+                pass
+
             self.sigFinished.emit(self.dataset)
 
     def _acquire_next_pixel(self):
@@ -431,15 +486,22 @@ class SpectroManager(QObject):
 
             # ---- Brillouin
             if "brillouin_images" in self.dataset:
-                image = self._mock_brillouin_image(
-                    x_idx=x,
-                    y_idx=y,
-                    z_idx=z,
-                    t_index=lin,
-                    params=self._brillouin_params,
-                )
+                image = self._try_acquire_brillouin_from_hardware(self._brillouin_params)
+                if image is None:
+                    image = self._mock_brillouin_image(
+                        x_idx=x,
+                        y_idx=y,
+                        z_idx=z,
+                        t_index=lin,
+                        params=self._brillouin_params,
+                    )
+
                 self.dataset["brillouin_images"][z, y, x] = image
-                self.sigImageUpdate.emit(image)
+
+                now = time.perf_counter()
+                if (now - self._last_brillouin_ui_emit_t) >= self._ui_update_period_s:
+                    self.sigImageUpdate.emit(image)
+                    self._last_brillouin_ui_emit_t = now
 
             # ---- Raman
             if "raman_spectra" in self.dataset:
@@ -453,7 +515,11 @@ class SpectroManager(QObject):
                     wavelengths=wavelengths,
                 )
                 self.dataset["raman_spectra"][z, y, x] = spectrum
-                self.sigSpectrumUpdate.emit(spectrum)
+
+                now = time.perf_counter()
+                if (now - self._last_raman_ui_emit_t) >= self._ui_update_period_s:
+                    self.sigSpectrumUpdate.emit(spectrum)
+                    self._last_raman_ui_emit_t = now
 
             self.dataset["pixel_valid"][z, y, x] = True
 

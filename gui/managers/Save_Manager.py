@@ -304,7 +304,6 @@ class SaveManager:
                 )
                 self._rec_active = True
                 self._rec_mode = "ome-tiff"
-                print("[REC] OME-TIFF will be written at end to:", path)
                 return True
             except Exception as e:
                 print("[REC] Could not allocate OME-TIFF buffer:", e)
@@ -346,7 +345,6 @@ class SaveManager:
                 self._rec_active = True
                 self._rec_mode = "ome-zarr"
 
-                print("[REC] OME-Zarr saving to:", path)
                 return True
 
             except Exception as e:
@@ -487,8 +485,6 @@ class SaveManager:
         os.makedirs(root_path, exist_ok=True)
 
         metadata_block = dict(dataset.get("metadata", {}) or {})
-        print("[SaveManager] save_spectro_dataset fmt =", fmt)
-        print("[SaveManager] dataset keys =", list(dataset.keys()))
 
         metadata = {
             "created": self._now_iso(),
@@ -577,7 +573,6 @@ class SaveManager:
                 )
             else:
                 out_name = "brillouin.zarr"
-                print("[SaveManager] ->", os.path.join(root_path, out_name))
                 zarr_path = os.path.join(root_path, out_name)
                 root = zarr.open_group(zarr_path, mode="w")
                 root.create_dataset(
@@ -613,11 +608,9 @@ class SaveManager:
         # -------------------------
         if "raman_spectra" in dataset:
             arr = np.asarray(dataset["raman_spectra"], dtype=np.float32)
-            print("[SaveManager] writing Raman, shape =", arr.shape)
 
             if fmt == "OME-TIFF":
                 out_name = "raman.ome.tif"
-                print("[SaveManager] ->", os.path.join(root_path, out_name))
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
                     arr,
@@ -626,7 +619,6 @@ class SaveManager:
                 )
             else:
                 out_name = "raman.zarr"
-                print("[SaveManager] ->", os.path.join(root_path, out_name))
                 zarr_path = os.path.join(root_path, out_name)
                 root = zarr.open_group(zarr_path, mode="w")
                 root.create_dataset(
@@ -652,6 +644,5 @@ class SaveManager:
             metadata["data_files"]["raman"] = out_name
 
         self._write_json(os.path.join(root_path, "metadata.json"), metadata)
-        print("[SaveManager] finished root_path =", root_path)
-        print("[SaveManager] files in root_path =", os.listdir(root_path))
+
         return root_path

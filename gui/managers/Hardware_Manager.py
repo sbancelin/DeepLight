@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import time
+import struct
 import serial
+from threading import Lock
 from typing import Optional
 
 from PySide6.QtCore import QObject, Slot, QTimer
 
 from .Positioner_Manager import MockPositionerManager, PositionerManager
 from .Motic_Camera_Manager import CameraController, OpenCVCameraBackend, MockCameraBackend
+from .PiCam_Kuro_Manager import PiCamKuroManager
 
 
 # =============================================================================
@@ -69,6 +72,23 @@ THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
 COBOLT_FLAMENCO_PORT = "COM12"
 COBOLT_FLAMENCO_BAUDRATE = 115200
 COBOLT_FLAMENCO_MAX_POWER_MW = 300.0   # <-- à ajuster selon ton modèle réel
+
+# Scientifica Motion 8 XY stage (virtual serial port)
+SCIENTIFICA_STAGE_PORT = "COM11"
+SCIENTIFICA_STAGE_BAUDRATE = 9600
+SCIENTIFICA_STAGE_TIMEOUT_S = 1.0
+SCIENTIFICA_STAGE_DEVICE_ID = 0
+SCIENTIFICA_STAGE_X_AXIS_ID = 1
+SCIENTIFICA_STAGE_Y_AXIS_ID = 0
+SCIENTIFICA_STAGE_HOME_MODE = "in"   # "in" or "out"
+
+SCIENTIFICA_STAGE_PROFILE_INDEX = 0
+SCIENTIFICA_STAGE_DEFAULT_ACCEL_MM_S2 = 1.0
+SCIENTIFICA_STAGE_HOME_USES_BOTH_AXES = True
+SCIENTIFICA_STAGE_HOME_BEHAVIOR = "zero_offset"   # "zero_offset" or "device_home"
+SCIENTIFICA_STAGE_PROFILE_ASSIGN_XY = 0x03
+
+SCIENTIFICA_STAGE_SWAP_XY = True
 
 # =============================================================================
 # OPTIONAL IMPORTS
@@ -649,6 +669,490 @@ class _ThorlabsRotationController:
 
 
 # =============================================================================
+# SCIENTIFICA XY STAGE CONTROLLER
+# =============================================================================
+
+class _ScientificaMotion8XYController:
+    """
+    Scientifica Motion 8 XY controller over the virtual serial port.
+
+    Transport:
+    - binary protocol over virtual serial port
+    - COBS encoded frames, delimited by 0x00
+
+    Public API units:
+    - positions in µm
+    - speeds in mm/s when applicable
+
+    Motion 8 commands used:
+    - Get Position      : 0x00 0x14 device
+    - XY relative move  : 0x02 0x02 device x_distance(int32) y_distance(int32)
+    - XY absolute move  : 0x02 0x03 device x_position(int32) y_position(int32)
+    - Home in / out     : 0x02 0x05 / 0x02 0x06
+    - Graceful stop     : 0x02 0x07
+    - Is moving         : 0x02 0x0F device
+    """
+
+    _POS_SCALE_UM = 0.01
+    _SPEED_SCALE_UM_S = 0.01
+
+    def __init__(
+        self,
+        port: str,
+        *,
+        baudrate: int = 9600,
+        timeout_s: float = 1.0,
+        device_id: int = 0,
+        x_axis_id: int = 0,
+        y_axis_id: int = 1,
+    ):
+        self.port = str(port)
+        self.baudrate = int(baudrate)
+        self.timeout_s = float(timeout_s)
+        self.device_id = int(device_id) & 0xFF
+        self.x_axis_id = int(x_axis_id) & 0xFF
+        self.y_axis_id = int(y_axis_id) & 0xFF
+
+        self.serial = None
+        self.connected = False
+        self._io_lock = Lock()
+
+    @staticmethod
+    def _cobs_encode(data: bytes) -> bytes:
+        read_index = 0
+        write_index = 1
+        code_index = 0
+        code = 1
+        encoded = bytearray(len(data) + len(data) // 254 + 2)
+
+        while read_index < len(data):
+            byte = data[read_index]
+            read_index += 1
+
+            if byte == 0:
+                encoded[code_index] = code
+                code = 1
+                code_index = write_index
+                write_index += 1
+            else:
+                encoded[write_index] = byte
+                write_index += 1
+                code += 1
+
+                if code == 0xFF:
+                    encoded[code_index] = code
+                    code = 1
+                    code_index = write_index
+                    write_index += 1
+
+        encoded[code_index] = code
+        return bytes(encoded[:write_index]) + b"\x00"
+
+    @staticmethod
+    def _cobs_decode(data: bytes) -> bytes:
+        if not data:
+            return b""
+
+        out = bytearray()
+        idx = 0
+        n = len(data)
+
+        while idx < n:
+            code = data[idx]
+            idx += 1
+
+            if code == 0:
+                raise ValueError("Invalid COBS frame: unexpected 0 byte inside payload")
+
+            next_idx = idx + code - 1
+            if next_idx > n and code != 1:
+                raise ValueError("Invalid COBS frame: code exceeds payload length")
+
+            out.extend(data[idx:min(next_idx, n)])
+            idx = next_idx
+
+            if code != 0xFF and idx < n:
+                out.append(0)
+
+        return bytes(out)
+
+    def connect(self):
+        if self.connected and self.serial is not None:
+            return
+
+        self.serial = serial.Serial(
+            self.port,
+            baudrate=self.baudrate,
+            timeout=self.timeout_s,
+            write_timeout=self.timeout_s,
+        )
+
+        try:
+            self.serial.reset_input_buffer()
+            self.serial.reset_output_buffer()
+        except Exception:
+            pass
+
+        time.sleep(0.1)
+        self.connected = True
+        print(f"[ScientificaXY] Connected on {self.port} @ {self.baudrate}")
+
+    def _logical_to_hw_xy(self, x_um: float, y_um: float) -> tuple[float, float]:
+        if SCIENTIFICA_STAGE_SWAP_XY:
+            return float(y_um), float(x_um)
+        return float(x_um), float(y_um)
+
+    def _hw_to_logical_xy(self, x_um: float, y_um: float) -> tuple[float, float]:
+        if SCIENTIFICA_STAGE_SWAP_XY:
+            return float(y_um), float(x_um)
+        return float(x_um), float(y_um)
+        
+    def close(self):
+        try:
+            if self.serial is not None:
+                self.serial.close()
+        finally:
+            self.serial = None
+            self.connected = False
+
+    def _ensure_connected(self):
+        if not self.connected or self.serial is None:
+            self.connect()
+        
+    def _transceive(self, payload: bytes, *, expect_reply: bool = True) -> bytes:
+        self._ensure_connected()
+        frame = self._cobs_encode(payload)
+
+        with self._io_lock:
+            try:
+                self.serial.reset_input_buffer()
+            except Exception:
+                pass
+
+            self.serial.write(frame)
+            self.serial.flush()
+
+            if not expect_reply:
+                return b""
+
+            raw = self.serial.read_until(b"\x00")
+            if not raw:
+                raise TimeoutError("Scientifica stage did not reply")
+
+            if raw.endswith(b"\x00"):
+                raw = raw[:-1]
+
+            decoded = self._cobs_decode(raw)
+            if not decoded:
+                raise RuntimeError("Scientifica stage returned an empty reply")
+
+            status = decoded[0]
+            if status != 0:
+                raise RuntimeError(f"Scientifica command failed with status=0x{status:02X}")
+
+            return decoded
+
+    @classmethod
+    def _um_to_units(cls, value_um: float) -> int:
+        return int(round(float(value_um) / cls._POS_SCALE_UM))
+
+    @classmethod
+    def _units_to_um(cls, value_units: int) -> float:
+        return float(value_units) * cls._POS_SCALE_UM
+
+    @classmethod
+    def _mm_s_to_units(cls, value_mm_s: float) -> int:
+        um_s = max(0.0, float(value_mm_s) * 1000.0)
+        return int(round(um_s / cls._SPEED_SCALE_UM_S))
+
+    @staticmethod
+    def _pack_float64(value: float) -> bytes:
+        return struct.pack("<d", float(value))
+    
+    @classmethod
+    def _mm_s_to_profile_speed_units(cls, value_mm_s: float) -> float:
+        """
+        Motion 8 profile top speed is stored as a float64 in hundredths of µm/s.
+        """
+        um_s = max(0.0, float(value_mm_s) * 1000.0)
+        return um_s / cls._SPEED_SCALE_UM_S
+
+    @classmethod
+    def _mm_s2_to_profile_accel_units(cls, value_mm_s2: float) -> float:
+        """
+        Motion 8 profile acceleration is stored as a float64 in hundredths of µm/s².
+        """
+        um_s2 = max(0.0, float(value_mm_s2) * 1000.0)
+        return um_s2 / cls._SPEED_SCALE_UM_S
+    
+    def set_profile_top_speed(self, profile_index: int, speed_mm_s: float):
+        """
+        Motion 8:
+        0x03 0x05 device profile top_speed(float64)
+        """
+        payload = (
+            struct.pack(
+                "<BBBBB",
+                0xAA,
+                0x03,
+                0x05,
+                self.device_id,
+                int(profile_index) & 0xFF,
+            )
+            + self._pack_float64(self._mm_s_to_profile_speed_units(speed_mm_s))
+        )
+        self._transceive(payload)
+    
+    def set_profile_acceleration(self, profile_index: int, accel_mm_s2: float):
+        """
+        Motion 8:
+        0x03 0x06 device profile acceleration(float64)
+        """
+        payload = (
+            struct.pack(
+                "<BBBBB",
+                0xAA,
+                0x03,
+                0x06,
+                self.device_id,
+                int(profile_index) & 0xFF,
+            )
+            + self._pack_float64(self._mm_s2_to_profile_accel_units(accel_mm_s2))
+        )
+        self._transceive(payload)
+
+    def get_profile_axis_assignment(self, profile_index: int) -> int:
+        """
+        Motion 8:
+        0x03 0x11 device profile -> returns axis assignment for the profile
+        """
+        payload = struct.pack(
+            "<BBBBB",
+            0xAA,
+            0x03,
+            0x11,
+            self.device_id,
+            int(profile_index) & 0xFF,
+        )
+        reply = self._transceive(payload)
+
+        # Expected:
+        # status, echo, 0x03, 0x11, device, profile, axis_assignments
+        if len(reply) < 7:
+            raise RuntimeError(
+                f"Scientifica get_profile_axis_assignment reply too short: {len(reply)} bytes"
+            )
+
+        return int(reply[6])
+
+    def set_profile_axis_assignment(self, profile_index: int, axis_assignments: int):
+        """
+        Motion 8:
+        0x03 0x11 device profile axis_assignments
+        """
+        payload = struct.pack(
+            "<BBBBBB",
+            0xAA,
+            0x03,
+            0x11,
+            self.device_id,
+            int(profile_index) & 0xFF,
+            int(axis_assignments) & 0xFF,
+        )
+        self._transceive(payload)
+
+
+    def get_profile_settings(self, profile_index: int) -> dict:
+        """
+        Motion 8 combined profile settings.
+
+        Expected reply layout:
+        status, echo, 0x03, 0x16, device, profile, axis_assignments,
+        top_speed(float64), acceleration(float64)
+        """
+        payload = struct.pack(
+            "<BBBBB",
+            0xAA,
+            0x03,
+            0x16,
+            self.device_id,
+            int(profile_index) & 0xFF,
+        )
+        reply = self._transceive(payload)
+
+        if len(reply) < 23:
+            raise RuntimeError(
+                f"Scientifica get_profile_settings reply too short: {len(reply)} bytes"
+            )
+
+        axis_assignments = int(reply[6])
+        top_speed = struct.unpack_from("<d", reply, 7)[0]
+        acceleration = struct.unpack_from("<d", reply, 15)[0]
+
+        return {
+            "axis_assignments": axis_assignments,
+            "top_speed_units": float(top_speed),
+            "acceleration_units": float(acceleration),
+        }
+    
+    def configure_xy_profile(self, speed_mm_s: float, accel_mm_s2: float, profile_index: int = 0):
+        """
+        Configure the Motion 8 point-to-point profile used by XY absolute/relative moves.
+        This is the only supported speed-control path for the current Scientifica setup.
+        """
+        wanted_assign = int(SCIENTIFICA_STAGE_PROFILE_ASSIGN_XY)
+
+        try:
+            current_assign = self.get_profile_axis_assignment(profile_index)
+            if current_assign != wanted_assign:
+                print(
+                    f"[ScientificaXY] profile {profile_index} axis assignment "
+                    f"{current_assign:#04x} -> {wanted_assign:#04x}"
+                )
+                self.set_profile_axis_assignment(profile_index, wanted_assign)
+        except Exception as e:
+            print(f"[ScientificaXY] set_profile_axis_assignment warning: {e}")
+
+        try:
+            self.set_profile_top_speed(profile_index, speed_mm_s)
+        except Exception as e:
+            print(f"[ScientificaXY] set_profile_top_speed warning: {e}")
+
+        try:
+            self.set_profile_acceleration(profile_index, accel_mm_s2)
+        except Exception as e:
+            print(f"[ScientificaXY] set_profile_acceleration warning: {e}")
+
+        try:
+            s = self.get_profile_settings(profile_index)
+            print(
+                f"[ScientificaXY] profile {profile_index} configured: "
+                f"axis_assign={s['axis_assignments']:#04x} "
+                f"top_speed_units={s['top_speed_units']:.3f} "
+                f"accel_units={s['acceleration_units']:.3f}"
+            )
+        except Exception as e:
+            print(f"[ScientificaXY] get_profile_settings warning: {e}")
+
+    def get_xy_abs_um(self) -> tuple[float, float]:
+        reply = self._transceive(
+            struct.pack(
+                "<BBBB",
+                0xAA,
+                0x00,
+                0x14,
+                self.device_id,
+            )
+        )
+
+        if len(reply) < 13:
+            raise RuntimeError(f"Scientifica get position reply too short: {len(reply)} bytes")
+
+        device = reply[4]
+        if device != self.device_id:
+            print(
+                f"[ScientificaXY] Warning: position reply device={device}, "
+                f"expected={self.device_id}"
+            )
+
+        x_units, y_units = struct.unpack_from("<ii", reply, 5)
+        x_hw = self._units_to_um(x_units)
+        y_hw = self._units_to_um(y_units)
+        return self._hw_to_logical_xy(x_hw, y_hw)
+
+    def is_moving(self) -> bool:
+        reply = self._transceive(
+            struct.pack(
+                "<BBBB",
+                0xAA,
+                0x02,
+                0x0F,
+                self.device_id,
+            )
+        )
+
+        # status, echo, 0x02, 0x0F, moving
+        if len(reply) < 5:
+            raise RuntimeError(f"Scientifica is_moving reply too short: {len(reply)} bytes")
+
+        return bool(reply[4])
+
+    def move_axis_rel_um(self, axis_id: int, delta_um: float):
+        payload = struct.pack(
+            "<BBBBBi",
+            0xAA,
+            0x02,
+            0x02,
+            self.device_id,
+            int(axis_id) & 0xFF,
+            self._um_to_units(delta_um),
+        )
+        self._transceive(payload)
+
+    def move_xy_rel_um(self, dx_um: float, dy_um: float):
+        dx_hw, dy_hw = self._logical_to_hw_xy(dx_um, dy_um)
+        payload = struct.pack(
+            "<BBBBii",
+            0xAA,
+            0x02,
+            0x02,
+            self.device_id,
+            self._um_to_units(dx_hw),
+            self._um_to_units(dy_hw),
+        )
+        self._transceive(payload)
+
+    def move_xy_abs_um(self, x_um: float, y_um: float):
+        x_hw, y_hw = self._logical_to_hw_xy(x_um, y_um)
+
+        print(
+            f"[ScientificaXY] move_xy_abs_um "
+            f"logical=({x_um:.3f}, {y_um:.3f}) "
+            f"hw=({x_hw:.3f}, {y_hw:.3f})"
+        )
+
+        payload = struct.pack(
+            "<BBBBii",
+            0xAA,
+            0x02,
+            0x03,
+            self.device_id,
+            self._um_to_units(x_hw),
+            self._um_to_units(y_hw),
+        )
+        self._transceive(payload)
+
+    def set_xy_velocity(self, speed_x_mm_s: float, speed_y_mm_s: float):
+        speed_mm_s = max(float(speed_x_mm_s), float(speed_y_mm_s))
+        self.configure_xy_profile(
+            speed_mm_s=speed_mm_s,
+            accel_mm_s2=SCIENTIFICA_STAGE_DEFAULT_ACCEL_MM_S2,
+            profile_index=SCIENTIFICA_STAGE_PROFILE_INDEX,
+        )
+
+    def stop(self, abrupt: bool = False):
+        cmd = 0x08 if abrupt else 0x07
+        payload = struct.pack(
+            "<BBBB",
+            0xAA,
+            0x02,
+            cmd,
+            self.device_id,
+        )
+        self._transceive(payload)
+
+    def home(self, mode: str = "in"):
+        cmd = 0x05 if str(mode).lower() != "out" else 0x06
+        payload = struct.pack(
+            "<BBBB",
+            0xAA,
+            0x02,
+            cmd,
+            self.device_id,
+        )
+        self._transceive(payload)
+
+# =============================================================================
 # REAL POSITIONER MANAGER
 # =============================================================================
 
@@ -666,17 +1170,21 @@ class RealHardwarePositionerManager(PositionerManager):
         self,
         axes: list[str],
         *,
+        xy_controller: Optional[_ScientificaMotion8XYController] = None,
         z_controller: Optional[_PIVoiceCoilController] = None,
         p_controller: Optional[_ThorlabsRotationController] = None,
         parent=None,
         poll_ms: int = 150,
     ):
         super().__init__(axes, parent=parent)
+        self._xy = xy_controller
         self._z = z_controller
         self._p = p_controller
         self._pending_targets_abs = {}
 
         # Initialize abs positions from hardware when possible
+        self._refresh_from_hardware("x")
+        self._refresh_from_hardware("y")
         self._refresh_from_hardware("z")
         self._refresh_from_hardware("p")
 
@@ -691,7 +1199,10 @@ class RealHardwarePositionerManager(PositionerManager):
 
     def _refresh_from_hardware(self, axis: str, force_emit: bool = False) -> bool:
         try:
-            if axis == "z" and self._z is not None:
+            if axis in ("x", "y") and self._xy is not None:
+                x_um, y_um = self._xy.get_xy_abs_um()
+                new_abs = float(x_um if axis == "x" else y_um)
+            elif axis == "z" and self._z is not None:
                 new_abs = float(self._z.get_abs_um())
             elif axis == "p" and self._p is not None:
                 new_abs = float(self._p.get_angle_deg())
@@ -713,7 +1224,7 @@ class RealHardwarePositionerManager(PositionerManager):
 
     @Slot()
     def _poll_hardware_positions(self):
-        for axis in ("z", "p"):
+        for axis in ("x", "y", "z", "p"):
             if axis not in self._state:
                 continue
 
@@ -721,6 +1232,32 @@ class RealHardwarePositionerManager(PositionerManager):
 
             # Toujours relire la position réelle
             self._refresh_from_hardware(axis, force_emit=False)
+
+            if axis in ("x", "y") and st.moving and self._xy is not None:
+                target = self._pending_targets_abs.get(axis, None)
+                cur = float(st.abs_pos)
+                tol = max(float(st.tolerance), 1.0)
+
+                arrived = False
+                if target is not None and abs(cur - float(target)) <= tol:
+                    arrived = True
+
+                hw_stopped = False
+                try:
+                    hw_stopped = not self._xy.is_moving()
+                except Exception:
+                    hw_stopped = False
+
+                if arrived or hw_stopped:
+                    for ax_name in ("x", "y"):
+                        if ax_name in self._state:
+                            st_ax = self._state[ax_name]
+                            st_ax.moving = False
+                            st_ax.target_abs = None
+                            self._pending_targets_abs.pop(ax_name, None)
+                            self.movingChanged.emit(ax_name, False)
+                            self._emit_positions(ax_name)
+                    continue
 
             if axis == "z" and st.moving and self._z is not None:
                 target = self._pending_targets_abs.get(axis, None)
@@ -751,9 +1288,10 @@ class RealHardwarePositionerManager(PositionerManager):
         initial_rel = dict(scan_parameters.get("initial_relative_positions", {}) or {})
         axis_order = list(scan_parameters.get("axis_order", []) or [])
 
-        # position fraîche du Z avant toute validation
-        if "z" in self._state:
-            self._refresh_from_hardware("z", force_emit=False)
+        # positions fraîches avant toute validation
+        for axis in ("x", "y", "z"):
+            if axis in self._state:
+                self._refresh_from_hardware(axis, force_emit=False)
 
         # Offsets absolus issus du ScanWidget
         for scan_axis_name, abs_target in offsets.items():
@@ -783,7 +1321,7 @@ class RealHardwarePositionerManager(PositionerManager):
         st = self._state[axis]
 
         # pour le réel, toujours relire le hardware avant de décider
-        if axis in ("z", "p"):
+        if axis in ("x", "y", "z", "p"):
             self._refresh_from_hardware(axis, force_emit=False)
 
         if not self._validate_move(axis, float(target_abs), float(speed)):
@@ -837,8 +1375,52 @@ class RealHardwarePositionerManager(PositionerManager):
                 self._emit_positions(axis)
             return
 
-        # x / y not provided in the hardware description
-        self._log(f"axis {axis!r} requested, but no real controller is implemented in this V1.")
+        if axis in ("x", "y"):
+            if self._xy is None:
+                self._log(f"axis {axis!r} requested but no Scientifica XY controller is available.")
+                return
+
+            self._refresh_from_hardware("x", force_emit=False)
+            self._refresh_from_hardware("y", force_emit=False)
+
+            x_target = float(target_abs) if axis == "x" else float(self._state["x"].abs_pos)
+            y_target = float(target_abs) if axis == "y" else float(self._state["y"].abs_pos)
+
+            speed = max(0.001, float(speed))
+            self._log(
+                f"[XY MOVE] axis={axis} x_target={x_target:.3f} y_target={y_target:.3f} "
+                f"speed_mm_s={speed:.3f}"
+            )
+
+            for ax_name, ax_target in (("x", x_target), ("y", y_target)):
+                st_ax = self._state[ax_name]
+                st_ax.moving = True
+                st_ax.target_abs = float(ax_target)
+                self._pending_targets_abs[ax_name] = float(ax_target)
+                self.movingChanged.emit(ax_name, True)
+
+            try:
+                self._xy.configure_xy_profile(
+                    speed_mm_s=speed,
+                    accel_mm_s2=SCIENTIFICA_STAGE_DEFAULT_ACCEL_MM_S2,
+                    profile_index=SCIENTIFICA_STAGE_PROFILE_INDEX,
+                )
+
+                self._xy.move_xy_abs_um(x_target, y_target)
+            except Exception:
+                for ax_name in ("x", "y"):
+                    st_ax = self._state[ax_name]
+                    st_ax.moving = False
+                    st_ax.target_abs = None
+                    self._pending_targets_abs.pop(ax_name, None)
+                    self.movingChanged.emit(ax_name, False)
+                raise
+
+            self._refresh_from_hardware("x", force_emit=True)
+            self._refresh_from_hardware("y", force_emit=True)
+            return
+
+        self._log(f"axis {axis!r} requested, but no real controller is implemented in this V2.")
 
     @Slot(str, float, float)
     def move_to_rel(self, axis: str, rel_target: float, speed: float):
@@ -877,7 +1459,9 @@ class RealHardwarePositionerManager(PositionerManager):
         st = self._state[axis]
         target_abs = float(st.zero_offset) + float(target_rel)
 
-        if axis in ("z", "p"):
+        if axis in ("x", "y"):
+            speed = max(0.01, float(velocity) / 1000.0)   # vel_um_s -> mm/s
+        elif axis in ("z", "p"):
             speed = max(0.001, float(velocity))
         else:
             speed = 0.1
@@ -894,12 +1478,54 @@ class RealHardwarePositionerManager(PositionerManager):
 
     @Slot(str)
     def home(self, axis: str):
+        if axis in ("x", "y") and self._xy is not None:
+            # DeepLight semantic:
+            # home = return to logical zero (zero_offset), not Motion 8 hardware home.
+            if SCIENTIFICA_STAGE_HOME_BEHAVIOR == "zero_offset":
+                self._refresh_from_hardware(axis, force_emit=False)
+                st = self._state[axis]
+                self._move_abs(
+                    axis,
+                    target_abs=float(st.zero_offset),
+                    speed=max(0.01, float(st.max_speed)),
+                )
+                return
+
+            # Optional true hardware home
+            for ax_name in ("x", "y"):
+                if ax_name in self._state:
+                    st_ax = self._state[ax_name]
+                    st_ax.moving = True
+                    st_ax.target_abs = None
+                    self.movingChanged.emit(ax_name, True)
+
+            try:
+                self._xy.home(mode=SCIENTIFICA_STAGE_HOME_MODE)
+            finally:
+                self._refresh_from_hardware("x", force_emit=True)
+                self._refresh_from_hardware("y", force_emit=True)
+
+            return
+
         st = self._state[axis]
         self._move_abs(axis, target_abs=float(st.zero_offset), speed=max(0.01, float(st.max_speed)))
 
     @Slot(str)
     def stop(self, axis: str):
-        if axis == "z" and self._z is not None:
+        if axis in ("x", "y") and self._xy is not None:
+            self._xy.stop(abrupt=False)
+
+            for ax_name in ("x", "y"):
+                if ax_name in self._state:
+                    self._state[ax_name].moving = False
+                    self._state[ax_name].target_abs = None
+                    self._pending_targets_abs.pop(ax_name, None)
+                    self.movingChanged.emit(ax_name, False)
+
+            self._refresh_from_hardware("x")
+            self._refresh_from_hardware("y")
+            return
+        elif axis == "z" and self._z is not None:
             self._z.stop()
         elif axis == "p" and self._p is not None:
             self._p.stop()
@@ -918,6 +1544,17 @@ class RealHardwarePositionerManager(PositionerManager):
         st.zero_offset = float(st.abs_pos)
         self._emit_positions(axis)
 
+    def close(self):
+        try:
+            self._poll_timer.stop()
+        except Exception:
+            pass
+
+        try:
+            if self._xy is not None:
+                self._xy.close()
+        except Exception:
+            pass
 
 # =============================================================================
 # HARDWARE MANAGER
@@ -944,16 +1581,19 @@ class HardwareManager(QObject):
         self.settings_manager = settings_manager
 
         self._shutter = None
+        self._xy_controller = None
         self._z_controller = None
         self._rotators = {}
 
         self._devices_initialized = False
         self._shutter_failed = False
+        self._xy_failed = False
         self._z_failed = False
         self._rotator_failed = {}
 
         self._camera_backend = None
         self._camera_controller = None
+        self._brillouin_camera = None
 
         self._laser_manager = None
 
@@ -972,15 +1612,13 @@ class HardwareManager(QObject):
             return self._camera_controller
 
         if self.backend_name == "mock":
-            print("[HardwareManager] using MockCameraBackend")
             self._camera_backend = MockCameraBackend()
         else:
-            print("[HardwareManager] using OpenCVCameraBackend")
             self._camera_backend = OpenCVCameraBackend(camera_index=0)
 
         self._camera_controller = CameraController(self._camera_backend, parent=parent)
         return self._camera_controller
-    
+        
     def _get_laser_runtime_settings(self, laser_name: str) -> dict:
         if self.settings_manager is None:
             raise RuntimeError("HardwareManager has no settings_manager.")
@@ -1009,6 +1647,16 @@ class HardwareManager(QObject):
         if self._shutter is None:
             self._shutter = _ThorlabsShutterController(THORLABS_SHUTTER_SERIAL)
 
+        if self._xy_controller is None:
+            self._xy_controller = _ScientificaMotion8XYController(
+                SCIENTIFICA_STAGE_PORT,
+                baudrate=SCIENTIFICA_STAGE_BAUDRATE,
+                timeout_s=SCIENTIFICA_STAGE_TIMEOUT_S,
+                device_id=SCIENTIFICA_STAGE_DEVICE_ID,
+                x_axis_id=SCIENTIFICA_STAGE_X_AXIS_ID,
+                y_axis_id=SCIENTIFICA_STAGE_Y_AXIS_ID,
+            )
+
         if self._z_controller is None:
             self._z_controller = _PIVoiceCoilController(PI_V308_SERIAL)
 
@@ -1025,6 +1673,21 @@ class HardwareManager(QObject):
         except Exception as e:
             self._shutter_failed = True
             print(f"[HardwareManager] ERROR connecting shutter serial={THORLABS_SHUTTER_SERIAL}: {e}")
+
+        try:
+            if self._xy_controller is not None and not self._xy_controller.connected:
+                self._xy_controller.connect()
+                x_um, y_um = self._xy_controller.get_xy_abs_um()
+                print(
+                    f"[HardwareManager] Connection to Scientifica XY "
+                    f"port={SCIENTIFICA_STAGE_PORT} successful "
+                    f"(X={x_um:.2f} µm, Y={y_um:.2f} µm)"
+                )
+            elif self._xy_controller is not None and self._xy_controller.connected:
+                print(f"[HardwareManager] Scientifica XY port={SCIENTIFICA_STAGE_PORT} already connected")
+        except Exception as e:
+            self._xy_failed = True
+            print(f"[HardwareManager] ERROR connecting Scientifica XY port={SCIENTIFICA_STAGE_PORT}: {e}")
 
         try:
             if self._z_controller is not None and not self._z_controller.connected:
@@ -1067,10 +1730,11 @@ class HardwareManager(QObject):
             self._ensure_real_devices()
             return RealHardwarePositionerManager(
                 self._positioner_axes,
+                xy_controller=self._xy_controller,
                 z_controller=self._z_controller,
                 p_controller=None,
                 parent=parent,
-                poll_ms=150,
+                poll_ms=80,
             )
 
         return MockPositionerManager(self._positioner_axes, parent=parent)
@@ -1128,6 +1792,46 @@ class HardwareManager(QObject):
             raise KeyError(f"No rotator configured for laser {laser_name!r}")
 
         return rot.get_power_percent()
+    
+    # ==========================================================
+    # Brillouin camera (Kuro / PICam)
+    # ==========================================================
+
+    def _get_brillouin_camera(self):
+        """
+        Lazy initialization of the Kuro camera backend.
+        """
+        if self._brillouin_camera is None:
+            self._brillouin_camera = PiCamKuroManager()
+        return self._brillouin_camera
+
+
+    def acquire_brillouin_image(self, params=None):
+        """
+        Acquire a single Brillouin image.
+
+        Behaviour depends on the global backend:
+            mock  -> returns None (SpectroManager keeps using its mock)
+            nidaq -> acquire real image from Kuro camera
+        """
+        print(f"[HardwareManager] acquire_brillouin_image backend={self.backend_name}")
+
+        if self.backend_name == "mock":
+            print("[HardwareManager] Brillouin source = mock fallback")
+            return None
+
+        if self.backend_name == "nidaq":
+            print("[HardwareManager] Brillouin source = PICam/Kuro")
+            cam = self._get_brillouin_camera()
+            img = cam.snap(params or {})
+            print(
+                f"[HardwareManager] Kuro image shape={getattr(img, 'shape', None)} "
+                f"dtype={getattr(img, 'dtype', None)}"
+            )
+            return img
+
+        print("[HardwareManager] Brillouin source unavailable")
+        return None
 
     def close(self):
         try:
@@ -1143,14 +1847,23 @@ class HardwareManager(QObject):
             pass
 
         try:
+            if self._brillouin_camera is not None:
+                self._brillouin_camera.disconnect()
+        except Exception:
+            pass
+
+        try:
             if self._laser_manager is not None:
                 self._laser_manager.close()
         except Exception:
             pass
 
-        for dev in (self._shutter, self._z_controller, *self._rotators.values()):
+        for dev in (self._shutter, self._xy_controller, self._z_controller, *self._rotators.values()):
             try:
                 if dev is not None:
                     dev.close()
             except Exception:
                 pass
+
+
+    

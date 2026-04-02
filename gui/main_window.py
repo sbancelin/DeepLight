@@ -86,11 +86,30 @@ class MainWindow(QMainWindow):
         self._connect_laser_controls()
         QTimer.singleShot(0, self._sync_laser_widget_from_hardware)
         QTimer.singleShot(1000, self._sync_laser_widget_from_hardware)
+
         self.save_manager = SaveManager()
         self.positioner_manager = self.hardware.create_positioner_manager(parent=self)
+
         self.scan_manager = ScanManager(self)
         self.ui.positioner_widget.set_manager(self.positioner_manager)
-        self.spectro_manager = SpectroManager(parent=self)
+
+        self.spectro_manager = SpectroManager(hardware_manager=self.hardware, parent=self)
+
+        # --- Spectro UI throttling ---
+        self._pending_brillouin_image = None
+        self._pending_raman_spectrum = None
+        self._pending_raman_wavelengths = None
+
+        self._spectro_brillouin_ui_timer = QTimer(self)
+        self._spectro_brillouin_ui_timer.setInterval(500)
+        self._spectro_brillouin_ui_timer.timeout.connect(self._flush_pending_brillouin_image)
+        self._spectro_brillouin_ui_timer.start()
+
+        self._spectro_raman_ui_timer = QTimer(self)
+        self._spectro_raman_ui_timer.setInterval(500)
+        self._spectro_raman_ui_timer.timeout.connect(self._flush_pending_raman_spectrum)
+        self._spectro_raman_ui_timer.start()
+
         self._connect_spectro_controls()
 
         self._rec_saving_active = False
@@ -182,6 +201,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[MainWindow] Cobolt sync failed: {e}")
 
+    def _clear_spectro_ui_buffers(self):
+        self._pending_brillouin_image = None
+        self._pending_raman_spectrum = None
+        self._pending_raman_wavelengths = None
+    
     def _connect_spectro_controls(self):
         sp = self.ui.spectro_panel_widget
         sw = self.ui.spectro_widget
@@ -192,8 +216,8 @@ class MainWindow(QMainWindow):
         sp.sigAcquireClicked.connect(self._on_spectro_acquire_clicked)
         sp.sigStopClicked.connect(self._on_spectro_stop_clicked)
 
-        # --- Nouveau manager spectro ---
-        sm.sigImageUpdate.connect(sw.set_brillouin_image)
+        # --- Manager spectro ---
+        sm.sigImageUpdate.connect(self._on_spectro_image_update)
         sm.sigSpectrumUpdate.connect(self._on_spectro_spectrum_update)
         sm.sigStatusMessage.connect(self._on_spectro_status_changed)
         sm.sigFinished.connect(self._on_spectro_acquisition_finished)
@@ -211,7 +235,7 @@ class MainWindow(QMainWindow):
         sw.button_raman_snap.clicked.connect(self._on_raman_snap_clicked)
         sw.button_raman_live.clicked.connect(self._on_raman_live_clicked)
         sw.button_raman_stop.clicked.connect(self._on_spectro_stop_clicked)
-    
+
     @Slot()
     def _on_spectro_acquire_clicked(self):
         if self.spectro_manager.is_running():
@@ -224,6 +248,8 @@ class MainWindow(QMainWindow):
 
             brillouin_params = self.ui.spectro_widget.get_brillouin_parameters()
             raman_params = self.ui.spectro_widget.get_raman_parameters()
+
+            self._clear_spectro_ui_buffers()
 
             self.ui.spectro_widget.clear_raman_spectrum(show_placeholder=False)
             self.ui.spectro_widget.clear_brillouin_image()
@@ -260,6 +286,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        self._clear_spectro_ui_buffers()
+
         try:
             self.ui.spectro_panel_widget.set_running(False)
             self.ui.spectro_widget.set_running(False)
@@ -267,7 +295,7 @@ class MainWindow(QMainWindow):
             pass
 
         self._on_spectro_status_changed("Spectro stopped")
-    
+
     @Slot()
     def _on_brillouin_snap_clicked(self):
         try:
@@ -305,7 +333,7 @@ class MainWindow(QMainWindow):
                 self.spectro_manager.start_live_raman(params)
         except Exception as e:
             self._on_spectro_status_changed(f"Raman live failed: {e}")
-    
+
     @Slot(str)
     def _on_spectro_status_changed(self, text: str):
         modes = self.ui.spectro_panel_widget.get_modes()
@@ -315,15 +343,52 @@ class MainWindow(QMainWindow):
             self.ui.spectro_widget.set_raman_status(str(text))
 
     @Slot(object)
+    def _on_spectro_image_update(self, image):
+        try:
+            self._pending_brillouin_image = np.asarray(image, dtype=np.float32)
+        except Exception as e:
+            self._on_spectro_status_changed(f"Brillouin buffer failed: {e}")
+
+    @Slot()
+    def _flush_pending_brillouin_image(self):
+        if self._pending_brillouin_image is None:
+            return
+
+        try:
+            image = self._pending_brillouin_image
+            self._pending_brillouin_image = None
+            self.ui.spectro_widget.set_brillouin_image(image)
+        except Exception as e:
+            self._on_spectro_status_changed(f"Brillouin display failed: {e}")
+
+    @Slot(object)
     def _on_spectro_spectrum_update(self, spectrum):
         try:
             wavelengths = self.spectro_manager.dataset.get("raman_wavelengths", None)
             if wavelengths is None:
                 return
+
+            self._pending_raman_spectrum = np.asarray(spectrum, dtype=np.float32)
+            self._pending_raman_wavelengths = np.asarray(wavelengths, dtype=np.float32)
+        except Exception as e:
+            self._on_spectro_status_changed(f"Spectrum buffer failed: {e}")
+
+    @Slot()
+    def _flush_pending_raman_spectrum(self):
+        if self._pending_raman_spectrum is None or self._pending_raman_wavelengths is None:
+            return
+
+        try:
+            spectrum = self._pending_raman_spectrum
+            wavelengths = self._pending_raman_wavelengths
+
+            self._pending_raman_spectrum = None
+            self._pending_raman_wavelengths = None
+
             self.ui.spectro_widget.set_raman_spectrum(wavelengths, spectrum)
         except Exception as e:
-            self._on_spectro_status_changed(f"Spectrum display failed: {e}")
-    
+            self._on_spectro_status_changed(f"Raman display failed: {e}")
+
     @Slot(int, int)
     def _on_spectro_progress_changed(self, done: int, total: int):
         try:
@@ -335,6 +400,9 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_spectro_acquisition_finished(self, dataset):
+        self._flush_pending_brillouin_image()
+        self._flush_pending_raman_spectrum()
+
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
 
@@ -359,7 +427,7 @@ class MainWindow(QMainWindow):
         try:
             if not filename:
                 filename = "SPECTRO"
-            print("[MainWindow] dataset keys before save =", list(dataset.keys()))
+
             path = self.save_manager.save_spectro_dataset(
                 folder=folder,
                 filename=filename,
@@ -373,6 +441,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_spectro_acquisition_failed(self, message: str):
+        self._clear_spectro_ui_buffers()
+
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
         self._on_spectro_status_changed(f"Spectro error: {message}")
@@ -457,13 +527,25 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         try:
+            self._spectro_brillouin_ui_timer.stop()
+        except Exception:
+            pass
+
+        try:
+            self._spectro_raman_ui_timer.stop()
+        except Exception:
+            pass
+
+        try:
             self.spectro_manager.stop_all_live()
         except Exception:
             pass
+
         try:
             self.hardware.close()
         except Exception:
             pass
+
         super().closeEvent(event)
     
     @Slot()

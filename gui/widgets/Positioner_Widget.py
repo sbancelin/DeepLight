@@ -470,8 +470,24 @@ class PositionerWidget(QWidget):
         self.manager.relPositionChanged.connect(self._on_rel_position_changed)
         self.manager.absPositionChanged.connect(self._on_abs_position_changed)
 
+        try:
+            self.manager.movingChanged.connect(self._on_moving_changed)
+        except Exception:
+            pass
+
         # GUI -> manager
         self._connect_buttons_to_manager()
+
+        # sync initial display
+        for axis in self.axis_ui.keys():
+            try:
+                self._on_rel_position_changed(axis, float(self.manager.get_rel_pos(axis)))
+            except Exception:
+                pass
+            try:
+                self._on_abs_position_changed(axis, float(self.manager.get_abs_pos(axis)))
+            except Exception:
+                pass
 
     def _connect_buttons_to_manager(self):
         if self.manager is None:
@@ -481,7 +497,11 @@ class PositionerWidget(QWidget):
         self._buttons_connected = True
 
         for axis, ui in self.axis_ui.items():
-            ui["home"].clicked.connect(partial(self.manager.home, axis))
+            def do_home(*_arg, a=axis):
+                self.manager.home(a)
+
+            ui["home"].clicked.connect(do_home)
+
             ui["set0"].clicked.connect(partial(self.manager.set_zero, axis))
 
             def validate_speed(a=axis, u=ui):
@@ -564,7 +584,6 @@ class PositionerWidget(QWidget):
             ui["plus"].clicked.connect(move_plus)
             ui["minus"].clicked.connect(move_minus)
             ui["pos"].returnPressed.connect(go_to_typed_position)
-            ui["pos"].editingFinished.connect(go_to_typed_position)
 
         self.stop_all_button.clicked.connect(self.manager.stop_all)
 
@@ -586,8 +605,8 @@ class PositionerWidget(QWidget):
         if ui is None:
             return
 
-        if not ui["pos"].hasFocus():
-            ui["pos"].setText(f"{rel:.2f}")
+        # Toujours refléter la position réelle pour éviter un affichage figé après Home
+        ui["pos"].setText(f"{rel:.2f}")
 
         visu_name = self._axis_to_stepper_visualizer_name.get(axis)
         if visu_name is not None:
@@ -606,3 +625,34 @@ class PositionerWidget(QWidget):
             shared_axis_name = self._axis_to_stepper_visualizer_name.get(axis)
             if shared_axis_name is not None:
                 self.axis_settings_manager.set_axis_position_um(shared_axis_name, float(abs_pos))
+
+    @Slot(str, bool)
+    def _on_moving_changed(self, axis: str, moving: bool):
+        ui = self.axis_ui.get(axis)
+        if ui is None:
+            return
+
+        is_xy_pair = axis in ("x", "y")
+
+        try:
+            ui["plus"].setEnabled(not bool(moving))
+            ui["minus"].setEnabled(not bool(moving))
+            ui["set0"].setEnabled(not bool(moving))
+        except Exception:
+            pass
+
+        # home on Scientifica is device-level XY, so keep both buttons visually coherent
+        if is_xy_pair:
+            for ax2 in ("x", "y"):
+                ui2 = self.axis_ui.get(ax2)
+                if ui2 is None:
+                    continue
+                try:
+                    ui2["home"].setEnabled(not bool(moving))
+                except Exception:
+                    pass
+        else:
+            try:
+                ui["home"].setEnabled(not bool(moving))
+            except Exception:
+                pass
