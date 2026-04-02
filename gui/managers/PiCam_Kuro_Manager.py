@@ -375,6 +375,9 @@ class PiCamKuroManager:
 
     def _set_pixel_format(self, params: dict):
         fmt = str((params or {}).get("pixel_format", "Mono16")).lower()
+
+        # Pour la Kuro / PICam on force pour l’instant un chemin simple et robuste :
+        # tout ce qui n’est pas explicitement 32 bits sera acquis en 16 bits.
         if "32" in fmt:
             picam_fmt = PicamPixelFormat_Monochrome32Bit
             self._last_dtype = np.uint32
@@ -477,14 +480,14 @@ class PiCamKuroManager:
             "Picam_Acquire",
         )
 
-        readout_stride_bytes = self._get_integer_parameter(PicamParameter_ReadoutStride)
         frame_size_bytes = self._get_integer_parameter(PicamParameter_FrameSize)
 
         if frame_size_bytes <= 0:
             raise RuntimeError("PICam returned an invalid frame size")
 
-        raw = ctypes.string_at(available.initial_readout, readout_stride_bytes)
-        arr = np.frombuffer(raw[:frame_size_bytes], dtype=self._last_dtype)
+        # On lit uniquement la taille utile du frame.
+        raw = ctypes.string_at(available.initial_readout, frame_size_bytes)
+        arr = np.frombuffer(raw, dtype=self._last_dtype)
 
         h, w = self._last_shape
         expected = int(h) * int(w)
@@ -496,6 +499,7 @@ class PiCamKuroManager:
             )
 
         image = arr[:expected].reshape((h, w)).astype(np.float32, copy=False)
+
         print(
             f"[PICam] snap ok shape={image.shape} dtype={image.dtype} "
             f"min={float(image.min())} max={float(image.max())}"

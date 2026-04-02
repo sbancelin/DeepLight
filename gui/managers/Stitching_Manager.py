@@ -258,8 +258,19 @@ class StitchingManager(QObject):
         self._waiting_for_acq = False
 
         try:
-            self.positioner_manager.move_to_rel("x", self._target_x_rel, self._cfg.stage_speed_x_mm_s)
-            self.positioner_manager.move_to_rel("y", self._target_y_rel, self._cfg.stage_speed_y_mm_s)
+            move_xy = getattr(self.positioner_manager, "move_xy_to_rel", None)
+
+            if callable(move_xy):
+                move_xy(
+                    self._target_x_rel,
+                    self._target_y_rel,
+                    self._cfg.stage_speed_x_mm_s,
+                    self._cfg.stage_speed_y_mm_s,
+                )
+            else:
+                # fallback legacy
+                self.positioner_manager.move_to_rel("x", self._target_x_rel, self._cfg.stage_speed_x_mm_s)
+                self.positioner_manager.move_to_rel("y", self._target_y_rel, self._cfg.stage_speed_y_mm_s)
         except Exception as e:
             self._fail_and_stop(f"Move error: {e}")
             return

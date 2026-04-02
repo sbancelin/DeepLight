@@ -284,7 +284,7 @@ class SpectroWidget(QWidget):
         brillouin_controls_row2.addWidget(format_label)
 
         self.combo_brillouin_pixel_format = QComboBox()
-        self.combo_brillouin_pixel_format.addItems(["Mono8", "Mono12", "Mono16"])
+        self.combo_brillouin_pixel_format.addItems(["Mono16", "Mono32"])
         _apply_combo_style(self.combo_brillouin_pixel_format)
         self.combo_brillouin_pixel_format.setMinimumWidth(86)
         brillouin_controls_row2.addWidget(self.combo_brillouin_pixel_format)

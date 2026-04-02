@@ -1,114 +1,124 @@
-import serial
-import struct
-import time
+import ctypes
+from ctypes import *
 
-PORT = "COM11"
-DEVICE_ID = 0
+# ---------- types ----------
+piint = c_int
+pibln = c_int
+PicamHandle = c_void_p
 
-def cobs_encode(data: bytes) -> bytes:
-    read_index = 0
-    write_index = 1
-    code_index = 0
-    code = 1
-    encoded = bytearray(len(data) + len(data) // 254 + 2)
+class PicamCameraID(Structure):
+    _fields_ = [
+        ("model", piint),
+        ("computer_interface", piint),
+        ("sensor_name", c_char * 64),
+        ("serial_number", c_char * 64),
+    ]
 
-    while read_index < len(data):
-        byte = data[read_index]
-        read_index += 1
-        if byte == 0:
-            encoded[code_index] = code
-            code = 1
-            code_index = write_index
-            write_index += 1
-        else:
-            encoded[write_index] = byte
-            write_index += 1
-            code += 1
-            if code == 0xFF:
-                encoded[code_index] = code
-                code = 1
-                code_index = write_index
-                write_index += 1
+# ---------- constants ----------
+PicamError_None = 0
+PicamEnumeratedType_Model = 2
+PicamEnumeratedType_ComputerInterface = 3
+PicamEnumeratedType_Error = 1
 
-    encoded[code_index] = code
-    return bytes(encoded[:write_index]) + b"\x00"
+dll_path = r"C:\Program Files\Princeton Instruments\PICam\Runtime\Picam.dll"
+picam = ctypes.WinDLL(dll_path)
 
-def cobs_decode(data: bytes) -> bytes:
-    if not data:
-        return b""
-    out = bytearray()
-    idx = 0
-    n = len(data)
-    while idx < n:
-        code = data[idx]
-        idx += 1
-        if code == 0:
-            raise ValueError("Invalid COBS frame")
-        end = idx + code - 1
-        out.extend(data[idx:min(end, n)])
-        idx = end
-        if code != 0xFF and idx < n:
-            out.append(0)
-    return bytes(out)
+# ---------- prototypes ----------
+picam.Picam_InitializeLibrary.argtypes = []
+picam.Picam_InitializeLibrary.restype = piint
 
-def transact(ser, payload, label=""):
-    ser.reset_input_buffer()
-    ser.write(cobs_encode(payload))
-    ser.flush()
-    raw = ser.read_until(b"\x00")
-    if not raw:
-        raise TimeoutError(label)
-    raw = raw[:-1]
-    dec = cobs_decode(raw)
-    status = dec[0] if dec else None
-    print(f"{label}: STATUS=0x{status:02X}")
-    if not dec or status != 0:
-        raise RuntimeError(f"{label} failed")
-    return dec
+picam.Picam_UninitializeLibrary.argtypes = []
+picam.Picam_UninitializeLibrary.restype = piint
 
-def set_profile_axis_assignment(ser, profile_index: int, axis_assign: int):
-    payload = struct.pack(
-        "<BBBBBB",
-        0xAA, 0x03, 0x11, DEVICE_ID,
-        int(profile_index) & 0xFF,
-        int(axis_assign) & 0xFF,
-    )
-    transact(ser, payload, f"set_profile_assign_{profile_index}")
+picam.Picam_GetAvailableCameraIDs.argtypes = [POINTER(POINTER(PicamCameraID)), POINTER(piint)]
+picam.Picam_GetAvailableCameraIDs.restype = piint
 
-def set_profile_top_speed(ser, profile_index: int, speed_units: float):
-    payload = (
-        struct.pack("<BBBBB", 0xAA, 0x03, 0x05, DEVICE_ID, int(profile_index) & 0xFF)
-        + struct.pack("<d", float(speed_units))
-    )
-    transact(ser, payload, f"set_profile_speed_{profile_index}")
+picam.Picam_GetUnavailableCameraIDs.argtypes = [POINTER(POINTER(PicamCameraID)), POINTER(piint)]
+picam.Picam_GetUnavailableCameraIDs.restype = piint
 
-def set_profile_accel(ser, profile_index: int, accel_units: float):
-    payload = (
-        struct.pack("<BBBBB", 0xAA, 0x03, 0x06, DEVICE_ID, int(profile_index) & 0xFF)
-        + struct.pack("<d", float(accel_units))
-    )
-    transact(ser, payload, f"set_profile_accel_{profile_index}")
+picam.Picam_DestroyCameraIDs.argtypes = [POINTER(PicamCameraID)]
+picam.Picam_DestroyCameraIDs.restype = piint
+
+picam.Picam_IsCameraIDConnected.argtypes = [POINTER(PicamCameraID), POINTER(pibln)]
+picam.Picam_IsCameraIDConnected.restype = piint
+
+picam.Picam_IsCameraIDOpenElsewhere.argtypes = [POINTER(PicamCameraID), POINTER(pibln)]
+picam.Picam_IsCameraIDOpenElsewhere.restype = piint
+
+picam.Picam_GetEnumerationString.argtypes = [piint, piint, POINTER(c_char_p)]
+picam.Picam_GetEnumerationString.restype = piint
+
+picam.Picam_DestroyString.argtypes = [c_char_p]
+picam.Picam_DestroyString.restype = piint
+
+
+def enum_string(enum_type, value):
+    s = c_char_p()
+    err = picam.Picam_GetEnumerationString(enum_type, int(value), byref(s))
+    if err != PicamError_None or not s.value:
+        return f"<enum {enum_type}:{value}>"
+    try:
+        return s.value.decode(errors="replace")
+    finally:
+        picam.Picam_DestroyString(s)
+
+
+def print_camera_list(title, arr_ptr, count):
+    print(f"\n=== {title}: {count} ===")
+    if count <= 0 or not arr_ptr:
+        return
+
+    for i in range(count):
+        cam = arr_ptr[i]
+
+        connected = pibln(0)
+        open_elsewhere = pibln(0)
+
+        err_conn = picam.Picam_IsCameraIDConnected(byref(cam), byref(connected))
+        err_open = picam.Picam_IsCameraIDOpenElsewhere(byref(cam), byref(open_elsewhere))
+
+        model_str = enum_string(PicamEnumeratedType_Model, cam.model)
+        iface_str = enum_string(PicamEnumeratedType_ComputerInterface, cam.computer_interface)
+
+        print(f"[{i}] model={cam.model} -> {model_str}")
+        print(f"    serial={cam.serial_number.decode(errors='replace')}")
+        print(f"    sensor={cam.sensor_name.decode(errors='replace')}")
+        print(f"    interface={cam.computer_interface} -> {iface_str}")
+        print(f"    connected={bool(connected.value)} (err={int(err_conn)})")
+        print(f"    open_elsewhere={bool(open_elsewhere.value)} (err={int(err_open)})")
+
 
 def main():
-    ser = serial.Serial(PORT, baudrate=9600, timeout=1, write_timeout=1)
-    time.sleep(1.0)
+    print("Initializing PICam...")
+    err = picam.Picam_InitializeLibrary()
+    if err != PicamError_None:
+        print("Init failed:", err, enum_string(PicamEnumeratedType_Error, err))
+        return
+
     try:
-        # profil 0 = XY
-        set_profile_axis_assignment(ser, 0, 0x03)
+        avail_ptr = POINTER(PicamCameraID)()
+        avail_count = piint(0)
 
-        # 1 mm/s -> 100000 en hundredths of µm/s
-        set_profile_top_speed(ser, 0, 100000.0)
+        err = picam.Picam_GetAvailableCameraIDs(byref(avail_ptr), byref(avail_count))
+        print("\nGetAvailableCameraIDs err =", int(err), enum_string(PicamEnumeratedType_Error, err))
+        print_camera_list("AVAILABLE", avail_ptr, int(avail_count.value))
 
-        # 1 mm/s² -> 100000 en hundredths of µm/s²
-        set_profile_accel(ser, 0, 100000.0)
+        unavail_ptr = POINTER(PicamCameraID)()
+        unavail_count = piint(0)
 
-        # les autres profils hors XY
-        set_profile_axis_assignment(ser, 1, 0x00)
-        set_profile_axis_assignment(ser, 2, 0x00)
+        err = picam.Picam_GetUnavailableCameraIDs(byref(unavail_ptr), byref(unavail_count))
+        print("\nGetUnavailableCameraIDs err =", int(err), enum_string(PicamEnumeratedType_Error, err))
+        print_camera_list("UNAVAILABLE", unavail_ptr, int(unavail_count.value))
 
-        print("Profile 0 restored to sane XY defaults.")
+        if avail_ptr:
+            picam.Picam_DestroyCameraIDs(avail_ptr)
+        if unavail_ptr:
+            picam.Picam_DestroyCameraIDs(unavail_ptr)
+
     finally:
-        ser.close()
+        picam.Picam_UninitializeLibrary()
+        print("\nPICam uninitialized.")
+
 
 if __name__ == "__main__":
     main()

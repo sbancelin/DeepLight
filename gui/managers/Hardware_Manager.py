@@ -537,26 +537,76 @@ class _PIVoiceCoilController:
             except Exception:
                 pass
 
-    def wait_until_stopped(self, target_mm: float, timeout_s: float = 30.0):
+    def wait_until_xy_reached(self, x_rel_target: float, y_rel_target: float, timeout_s: float = 30.0):
+        """
+        Attend que la platine XY atteigne la cible relative demandée.
+        Critère robuste:
+        - lecture réelle de position
+        - plusieurs lectures stables à la cible
+        - timeout basé aussi sur la distance à parcourir
+        """
+        if self._xy is None:
+            raise RuntimeError("XY controller is not available.")
+
+        # position de départ réelle
+        self._refresh_from_hardware("x", force_emit=False)
+        self._refresh_from_hardware("y", force_emit=False)
+
+        start_x = float(self.get_rel_pos("x"))
+        start_y = float(self.get_rel_pos("y"))
+
+        dx = float(x_rel_target) - start_x
+        dy = float(y_rel_target) - start_y
+        distance_um = max(abs(dx), abs(dy))
+
+        # vitesse max plausible du move courant
+        speed_mm_s = max(
+            0.01,
+            float(self.get_max_speed("x")),
+            float(self.get_max_speed("y")),
+        )
+        speed_um_s = speed_mm_s * 1000.0
+
+        # temps théorique + marge
+        estimated_s = distance_um / speed_um_s if speed_um_s > 0 else 0.0
+        effective_timeout_s = max(float(timeout_s), estimated_s + 3.0)
+
+        tol_x = max(float(self.get_tolerance("x")), 0.1)
+        tol_y = max(float(self.get_tolerance("y")), 0.1)
+
+        # petit temps de grâce après émission commande
+        time.sleep(0.05)
+
         t0 = time.time()
+        stable_hits = 0
+        required_stable_hits = 3
+
         while True:
-            moving = False
-            try:
-                moving = bool(self.device.IsMoving(self.axis))
-            except Exception:
-                pass
+            self._refresh_from_hardware("x", force_emit=False)
+            self._refresh_from_hardware("y", force_emit=False)
 
-            try:
-                pos = self.device.qPOS(self.axis)
-                cur_mm = float(pos[self.axis]) if isinstance(pos, dict) else float(pos)
-            except Exception:
-                cur_mm = target_mm
+            cur_x = float(self.get_rel_pos("x"))
+            cur_y = float(self.get_rel_pos("y"))
 
-            if (not moving) and abs(cur_mm - target_mm) < 1e-4:
+            arrived = (
+                abs(cur_x - float(x_rel_target)) <= tol_x
+                and abs(cur_y - float(y_rel_target)) <= tol_y
+            )
+
+            if arrived:
+                stable_hits += 1
+            else:
+                stable_hits = 0
+
+            if stable_hits >= required_stable_hits:
                 break
 
-            if time.time() - t0 > timeout_s:
-                raise RuntimeError("Timeout while waiting for PI V-308 motion to complete.")
+            if time.time() - t0 > effective_timeout_s:
+                raise RuntimeError(
+                    f"Timeout while waiting for XY target: "
+                    f"target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f}) "
+                    f"current=({cur_x:.3f}, {cur_y:.3f})"
+                )
 
             time.sleep(0.02)
 
@@ -1181,6 +1231,7 @@ class RealHardwarePositionerManager(PositionerManager):
         self._z = z_controller
         self._p = p_controller
         self._pending_targets_abs = {}
+        self._pending_sample_xy_rel = {"x": None, "y": None}
 
         # Initialize abs positions from hardware when possible
         self._refresh_from_hardware("x")
@@ -1242,13 +1293,11 @@ class RealHardwarePositionerManager(PositionerManager):
                 if target is not None and abs(cur - float(target)) <= tol:
                     arrived = True
 
-                hw_stopped = False
-                try:
-                    hw_stopped = not self._xy.is_moving()
-                except Exception:
-                    hw_stopped = False
-
-                if arrived or hw_stopped:
+                # IMPORTANT:
+                # on ne se fie plus à self._xy.is_moving() pour la Scientifica,
+                # car ce retour peut être faux trop tôt selon le contrôleur / protocole.
+                # La seule source de vérité ici est la position réellement relue.
+                if arrived:
                     for ax_name in ("x", "y"):
                         if ax_name in self._state:
                             st_ax = self._state[ax_name]
@@ -1430,6 +1479,165 @@ class RealHardwarePositionerManager(PositionerManager):
         target_abs = float(st.zero_offset) + float(rel_target)
         self._move_abs(axis, target_abs=target_abs, speed=float(speed))
 
+    @Slot(float, float, float, float)
+    def move_xy_to_rel(self, x_rel_target: float, y_rel_target: float, speed_x: float, speed_y: float):
+        """
+        Déplacement XY atomique en coordonnées relatives DeepLight.
+        Important pour les contrôleurs XY couplés comme la Scientifica :
+        on calcule les deux cibles puis on envoie un seul move XY.
+        """
+        if self._xy is None:
+            raise RuntimeError("XY controller is not available.")
+
+        self._refresh_from_hardware("x", force_emit=False)
+        self._refresh_from_hardware("y", force_emit=False)
+
+        st_x = self._state["x"]
+        st_y = self._state["y"]
+
+        x_target_abs = float(st_x.zero_offset) + float(x_rel_target)
+        y_target_abs = float(st_y.zero_offset) + float(y_rel_target)
+
+        speed = max(float(speed_x), float(speed_y), 0.01)
+
+        for ax_name, ax_target in (("x", x_target_abs), ("y", y_target_abs)):
+            st_ax = self._state[ax_name]
+            st_ax.moving = True
+            st_ax.target_abs = float(ax_target)
+            self._pending_targets_abs[ax_name] = float(ax_target)
+            self.movingChanged.emit(ax_name, True)
+
+        try:
+            self._xy.configure_xy_profile(
+                speed_mm_s=speed,
+                accel_mm_s2=SCIENTIFICA_STAGE_DEFAULT_ACCEL_MM_S2,
+                profile_index=SCIENTIFICA_STAGE_PROFILE_INDEX,
+            )
+            self._xy.move_xy_abs_um(x_target_abs, y_target_abs)
+        except Exception:
+            for ax_name in ("x", "y"):
+                st_ax = self._state[ax_name]
+                st_ax.moving = False
+                st_ax.target_abs = None
+                self._pending_targets_abs.pop(ax_name, None)
+                self.movingChanged.emit(ax_name, False)
+            raise
+
+        self._refresh_from_hardware("x", force_emit=True)
+        self._refresh_from_hardware("y", force_emit=True)
+    
+    def wait_until_xy_reached(self, x_rel_target: float, y_rel_target: float, timeout_s: float = 30.0):
+        """
+        Attend que la platine XY atteigne la cible relative demandée.
+        Source de vérité = position réellement relue sur le hardware.
+        """
+        if self._xy is None:
+            raise RuntimeError("XY controller is not available.")
+
+        t0 = time.time()
+
+        while True:
+            self._refresh_from_hardware("x", force_emit=False)
+            self._refresh_from_hardware("y", force_emit=False)
+
+            cur_x = float(self.get_rel_pos("x"))
+            cur_y = float(self.get_rel_pos("y"))
+
+            tol_x = max(float(self.get_tolerance("x")), 0.1)
+            tol_y = max(float(self.get_tolerance("y")), 0.1)
+
+            if (
+                abs(cur_x - float(x_rel_target)) <= tol_x
+                and abs(cur_y - float(y_rel_target)) <= tol_y
+            ):
+                break
+
+            if time.time() - t0 > float(timeout_s):
+                raise RuntimeError(
+                    f"Timeout while waiting for XY target: "
+                    f"target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f}) "
+                    f"current=({cur_x:.3f}, {cur_y:.3f})"
+                )
+
+            time.sleep(0.01)
+
+    def move_xy_to_rel_blocking(
+        self,
+        x_rel_target: float,
+        y_rel_target: float,
+        speed_x: float,
+        speed_y: float,
+        timeout_s: float = 30.0,
+    ):
+        """
+        Déplacement XY atomique + attente de la cible.
+        Utilisé pour le sample scan point par point.
+
+        Robustesse:
+        - 1er envoi du move
+        - attente de la cible
+        - si timeout: relire la position, réémettre UNE fois la même commande
+        - si nouvel échec: lever l'erreur
+        """
+        self.move_xy_to_rel(
+            float(x_rel_target),
+            float(y_rel_target),
+            float(speed_x),
+            float(speed_y),
+        )
+
+        try:
+            self.wait_until_xy_reached(
+                float(x_rel_target),
+                float(y_rel_target),
+                timeout_s=float(timeout_s),
+            )
+            return
+        except RuntimeError as first_error:
+            # lecture fraîche avant retry
+            try:
+                self._refresh_from_hardware("x", force_emit=False)
+                self._refresh_from_hardware("y", force_emit=False)
+
+                cur_x = float(self.get_rel_pos("x"))
+                cur_y = float(self.get_rel_pos("y"))
+
+                tol_x = max(float(self.get_tolerance("x")), 0.1)
+                tol_y = max(float(self.get_tolerance("y")), 0.1)
+
+                if (
+                    abs(cur_x - float(x_rel_target)) <= tol_x
+                    and abs(cur_y - float(y_rel_target)) <= tol_y
+                ):
+                    return
+            except Exception:
+                pass
+
+            self._log(
+                "[XY MOVE BLOCKING] first wait timed out, retrying once "
+                f"target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f})"
+            )
+
+            # petit délai avant réémission
+            time.sleep(0.05)
+
+            self.move_xy_to_rel(
+                float(x_rel_target),
+                float(y_rel_target),
+                float(speed_x),
+                float(speed_y),
+            )
+
+            try:
+                self.wait_until_xy_reached(
+                    float(x_rel_target),
+                    float(y_rel_target),
+                    timeout_s=max(float(timeout_s), 5.0),
+                )
+                return
+            except RuntimeError:
+                raise first_error
+    
     @Slot(str, float, float)
     def move_relative(self, axis: str, delta: float, speed: float):
         self._require_axis(axis)
@@ -1455,6 +1663,67 @@ class RealHardwarePositionerManager(PositionerManager):
             )
             return
 
+        # ------------------------------------------------------------------
+        # Sample scan XY: on regroupe sample_pixel_x + sample_pixel_y
+        # en un seul move XY atomique.
+        # ------------------------------------------------------------------
+        if axis in ("x", "y") and reason in ("sample_pixel_x", "sample_pixel_y"):
+            self._pending_sample_xy_rel[axis] = float(target_rel)
+
+            other_axis = "y" if axis == "x" else "x"
+            other_rel = self._pending_sample_xy_rel.get(other_axis, None)
+
+            print(
+                f"[RealHardwarePositioner] move_from_scan "
+                f"axis_name={axis_name} axis={axis} "
+                f"target_rel={target_rel} target_abs={float(self.rel_to_abs(axis, target_rel))} "
+                f"velocity={velocity} t_sched_ms={t_sched_ms} "
+                f"converted_speed=pending_xy reason={reason}"
+            )
+
+            # On attend d'avoir les 2 coordonnées du pixel avant de bouger.
+            if other_rel is None:
+                return
+
+            x_rel = self._pending_sample_xy_rel["x"]
+            y_rel = self._pending_sample_xy_rel["y"]
+            self._pending_sample_xy_rel = {"x": None, "y": None}
+
+            # En sample scan, velocity arrive actuellement à 0.0.
+            # On prend une vitesse XY réaliste depuis les limites du manager.
+            speed_x = max(0.01, float(self.get_max_speed("x")))
+            speed_y = max(0.01, float(self.get_max_speed("y")))
+
+            print(
+                f"[RealHardwarePositioner] [SAMPLE XY ATOMIC] "
+                f"x_rel={x_rel:.3f} y_rel={y_rel:.3f} "
+                f"speed_x={speed_x:.3f} speed_y={speed_y:.3f}"
+            )
+
+            move_xy = getattr(self, "move_xy_to_rel", None)
+            if callable(move_xy):
+                move_xy(
+                    float(x_rel),
+                    float(y_rel),
+                    float(speed_x),
+                    float(speed_y),
+                )
+            else:
+                # fallback de sécurité
+                self._refresh_from_hardware("x", force_emit=False)
+                self._refresh_from_hardware("y", force_emit=False)
+                st_x = self._state["x"]
+                st_y = self._state["y"]
+                x_target_abs = float(st_x.zero_offset) + float(x_rel)
+                y_target_abs = float(st_y.zero_offset) + float(y_rel)
+                self._move_abs("x", target_abs=x_target_abs, speed=float(speed_x))
+                self._move_abs("y", target_abs=y_target_abs, speed=float(speed_y))
+
+            return
+
+        # ------------------------------------------------------------------
+        # Cas standard (laser / Z / P / autres commandes)
+        # ------------------------------------------------------------------
         self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
         target_abs = float(st.zero_offset) + float(target_rel)
@@ -1803,9 +2072,25 @@ class HardwareManager(QObject):
         """
         if self._brillouin_camera is None:
             self._brillouin_camera = PiCamKuroManager()
+
+        if not getattr(self._brillouin_camera, "connected", False):
+            self._brillouin_camera.connect()
+
         return self._brillouin_camera
 
 
+    def ensure_brillouin_camera_ready(self):
+        """
+        Force l'initialisation / connexion de la caméra Brillouin (Kuro)
+        sans lancer d'acquisition.
+        Utilisé pour préchauffer la caméra dès l'activation du mode Brillouin.
+        """
+        if self.backend_name == "mock":
+            return None
+
+        cam = self._get_brillouin_camera()
+        return cam
+    
     def acquire_brillouin_image(self, params=None):
         """
         Acquire a single Brillouin image.

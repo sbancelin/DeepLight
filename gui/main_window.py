@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
         self.scan_manager = ScanManager(self)
         self.ui.positioner_widget.set_manager(self.positioner_manager)
 
-        self.spectro_manager = SpectroManager(hardware_manager=self.hardware, parent=self)
+        self.spectro_manager = SpectroManager(hardware_manager=self.hardware, positioner_manager=self.positioner_manager, parent=self)
 
         # --- Spectro UI throttling ---
         self._pending_brillouin_image = None
@@ -125,6 +125,11 @@ class MainWindow(QMainWindow):
             scan_parameters=scan_parameters,
             microscope_backend=self.microscope_backend,
         )
+        try:
+            self.acquisition_manager.microscope.positioner_manager = self.positioner_manager
+        except Exception as e:
+            print(f"[MainWindow] positioner_manager injection into microscope failed: {e}")
+
         self.acquisition_manager.acquisition_started.connect(self.on_acquisition_started)
         self.acquisition_manager.acquisition_stopped.connect(self.on_acquisition_stopped)
         self.acquisition_manager.image_updated.connect(self.update_image_views_with_data)
@@ -212,6 +217,7 @@ class MainWindow(QMainWindow):
         sm = self.spectro_manager
 
         sp.sigSpectroModeChanged.connect(sw.set_modes)
+        sp.sigSpectroModeChanged.connect(self._on_spectro_mode_changed)
         sw.sigBrillouinRoiChanged.connect(sp.set_brillouin_roi_state)
         sp.sigAcquireClicked.connect(self._on_spectro_acquire_clicked)
         sp.sigStopClicked.connect(self._on_spectro_stop_clicked)
@@ -236,6 +242,18 @@ class MainWindow(QMainWindow):
         sw.button_raman_live.clicked.connect(self._on_raman_live_clicked)
         sw.button_raman_stop.clicked.connect(self._on_spectro_stop_clicked)
 
+    @Slot(bool, bool)
+    def _on_spectro_mode_changed(self, brillouin: bool, raman: bool):
+        if not bool(brillouin):
+            return
+
+        try:
+            self._on_spectro_status_changed("Initializing Brillouin camera...")
+            self.hardware.ensure_brillouin_camera_ready()
+            self._on_spectro_status_changed("Brillouin camera ready")
+        except Exception as e:
+            self._on_spectro_status_changed(f"Brillouin init failed: {e}")
+    
     @Slot()
     def _on_spectro_acquire_clicked(self):
         if self.spectro_manager.is_running():
@@ -302,7 +320,9 @@ class MainWindow(QMainWindow):
             params = self.ui.spectro_widget.get_brillouin_parameters()
             self.spectro_manager.snap_brillouin(params)
         except Exception as e:
-            self._on_spectro_status_changed(f"Brillouin snap failed: {e}")
+            print(f"[Spectro] ERROR: Brillouin snap failed: {e}")
+            self._on_spectro_status_changed("Error")
+
 
     @Slot()
     def _on_brillouin_live_clicked(self):
@@ -313,7 +333,9 @@ class MainWindow(QMainWindow):
                 params = self.ui.spectro_widget.get_brillouin_parameters()
                 self.spectro_manager.start_live_brillouin(params)
         except Exception as e:
-            self._on_spectro_status_changed(f"Brillouin live failed: {e}")
+            print(f"[Spectro] ERROR: Brillouin live failed: {e}")
+            self._on_spectro_status_changed("Error")
+
 
     @Slot()
     def _on_raman_snap_clicked(self):
@@ -321,7 +343,9 @@ class MainWindow(QMainWindow):
             params = self.ui.spectro_widget.get_raman_parameters()
             self.spectro_manager.snap_raman(params)
         except Exception as e:
-            self._on_spectro_status_changed(f"Raman snap failed: {e}")
+            print(f"[Spectro] ERROR: Raman snap failed: {e}")
+            self._on_spectro_status_changed("Error")
+
 
     @Slot()
     def _on_raman_live_clicked(self):
@@ -332,7 +356,8 @@ class MainWindow(QMainWindow):
                 params = self.ui.spectro_widget.get_raman_parameters()
                 self.spectro_manager.start_live_raman(params)
         except Exception as e:
-            self._on_spectro_status_changed(f"Raman live failed: {e}")
+            print(f"[Spectro] ERROR: Raman live failed: {e}")
+            self._on_spectro_status_changed("Error")
 
     @Slot(str)
     def _on_spectro_status_changed(self, text: str):
@@ -445,7 +470,9 @@ class MainWindow(QMainWindow):
 
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
-        self._on_spectro_status_changed(f"Spectro error: {message}")
+
+        print(f"[Spectro] ERROR: {message}")
+        self._on_spectro_status_changed("Error")
     
     def _connect_camera_controller_signals(self):
         self.camera_controller.frame_ready.connect(self._on_camera_frame_ready)
