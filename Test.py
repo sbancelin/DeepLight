@@ -1,5 +1,7 @@
-from gui.managers.PiCam_Kuro_Manager import PiCamKuroManager
+from pywinauto import Application
 
-cam = PiCamKuroManager()
-cam.connect()
-cam.disconnect()
+app = Application(backend="uia").connect(title_re=".*Spark.*")
+win = app.top_window()
+
+print("TITLE:", win.window_text())
+win.print_control_identifiers()

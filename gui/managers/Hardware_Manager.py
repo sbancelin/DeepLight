@@ -2149,6 +2149,3 @@ class HardwareManager(QObject):
                     dev.close()
             except Exception:
                 pass
-
-
-    

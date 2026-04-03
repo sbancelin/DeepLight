@@ -5,13 +5,14 @@ from PySide6.QtGui import QPainter, QPen, QColor
 from math import sqrt
 
 class SliderWithNyquistLine(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, nyquist_value=2.1, parent=None):
         super().__init__(parent)
 
-        # Configuration du slider
+        self.nyquist_value = nyquist_value
+
         self.slider = QSlider(Qt.Horizontal)
-        self.slider.setRange(10, 100)  # 10 à 100 pour 0.5 à 5.0
-        self.slider.setValue(40)  # Valeur par défaut : 2.0
+        self.slider.setRange(10, 100)   # 0.5 -> 5.0 avec step de 0.05
+        self.slider.setValue(42)        # 2.1 par défaut
         self.slider.setTickPosition(QSlider.TicksBelow)
         self.slider.setTickInterval(15)
         self.slider.setStyleSheet("""
@@ -30,7 +31,6 @@ class SliderWithNyquistLine(QWidget):
             }
         """)
 
-        # Layout principal
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QVBoxLayout(self)
@@ -38,25 +38,26 @@ class SliderWithNyquistLine(QWidget):
         layout.setSpacing(0)
         layout.addWidget(self.slider)
 
-        # Valeur de Nyquist
-        #self.nyquist_value = 2.0
+    def _sampling_to_slider(self, value: float) -> int:
+        return int(round(value / 0.05))
 
     def paintEvent(self, event):
         super().paintEvent(event)
 
-        # Récupération des paramètres du slider
         opt = QStyleOptionSlider()
         self.slider.initStyleOption(opt)
 
-        # Position du handle pour la valeur 2.0
-        opt.sliderPosition = 40  # Position du slider pour 2.0
-        handle_center_rect = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self.slider)
-        line_x = handle_center_rect.center().x()
+        opt.sliderPosition = self._sampling_to_slider(self.nyquist_value)
+        handle_rect = self.slider.style().subControlRect(
+            QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self.slider
+        )
+        line_x = handle_rect.center().x()
 
-        # Dessiner la ligne verticale orange
+        slider_geo = self.slider.geometry()
+
         painter = QPainter(self)
         painter.setPen(QPen(QColor("#FF7700"), 2, Qt.SolidLine))
-        painter.drawLine(line_x, 0, line_x, 18)
+        painter.drawLine(line_x, slider_geo.top(), line_x, slider_geo.top() + 18)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -302,24 +303,23 @@ class NyquistWidget(QWidget):
         main_grid_layout.addWidget(z_res_label, 4, 2)
         main_grid_layout.addWidget(self.z_res_edit, 4, 3)
 
-        # Ligne 5: Sampling label
+        # Ligne 5: En-tête sampling
         sampling_label = QLabel("Sampling:")
         sampling_label.setStyleSheet("color: white;")
         main_grid_layout.addWidget(sampling_label, 5, 0)
 
-        Over_label = QLabel("Over")
-        Over_label.setStyleSheet("color: white;")
-        Over_label.setAlignment(Qt.AlignRight)
+        under_label = QLabel("Under")
+        under_label.setStyleSheet("color: white;")
 
-        Under_label = QLabel("Under")
-        Under_label.setStyleSheet("color: white;")
+        over_label = QLabel("Over")
+        over_label.setStyleSheet("color: white;")
+        over_label.setAlignment(Qt.AlignRight)
 
-        main_grid_layout.addWidget(Under_label, 5, 1)
-        main_grid_layout.addWidget(Over_label, 5, 3)
+        main_grid_layout.addWidget(under_label, 5, 1)
+        main_grid_layout.addWidget(over_label, 5, 3)
 
-        # Ligne 6: Sampling avec slider et ligne verticale de Nyquist
-        self.sampling_value_edit = QLineEdit("2.00")
-        self.sampling_value_edit.setStyleSheet("""
+        # Styles communs
+        editable_style = """
             QLineEdit {
                 background-color: #333;
                 color: white;
@@ -327,59 +327,62 @@ class NyquistWidget(QWidget):
                 border-radius: 3px;
                 padding: 2px;
                 min-height: 20px;
-                max-width: 50px;
             }
-        """)
-        self.sampling_value_edit.setMinimumWidth(0)
-        self.sampling_value_edit.setMaximumWidth(60)
-        self.sampling_value_edit.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        main_grid_layout.addWidget(self.sampling_value_edit, 6, 0)
+        """
 
-        # Utilisation du widget personnalisé
-        self.slider_with_line = SliderWithNyquistLine()
-        self.slider = self.slider_with_line.slider  # Accès au slider intégré
-        self.slider_with_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        main_grid_layout.addWidget(self.slider_with_line, 6, 1, 1, 3)
+        # Ligne 6: XY sampling
+        xy_sampling_label = QLabel("XY Nyquist:")
+        xy_sampling_label.setStyleSheet("color: white;")
+        main_grid_layout.addWidget(xy_sampling_label, 6, 0)
 
-        # Ligne 7: Pixel Size et Z Step
+        self.sampling_xy_edit = QLineEdit("2.10")
+        self.sampling_xy_edit.setStyleSheet(editable_style)
+        self.sampling_xy_edit.setMinimumWidth(0)
+        self.sampling_xy_edit.setMaximumWidth(60)
+        self.sampling_xy_edit.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        main_grid_layout.addWidget(self.sampling_xy_edit, 6, 1)
+
+        self.slider_xy_with_line = SliderWithNyquistLine(nyquist_value=2.1)
+        self.slider_xy = self.slider_xy_with_line.slider
+        self.slider_xy_with_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        main_grid_layout.addWidget(self.slider_xy_with_line, 6, 2, 1, 2)
+
+        # Ligne 7: Pixel Size
         pixel_size_label = QLabel("Pixel Size (nm):")
         pixel_size_label.setStyleSheet("color: white;")
+        main_grid_layout.addWidget(pixel_size_label, 7, 0)
 
         self.pixel_size_edit = QLineEdit()
-        self.pixel_size_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: #252525;
-                color: #888;
-                border: 1px solid #444;
-                border-radius: 3px;
-                padding: 2px;
-                min-height: 20px;
-            }
-        """)
+        self.pixel_size_edit.setStyleSheet(editable_style)
         self.pixel_size_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.pixel_size_edit.setReadOnly(True)
+        main_grid_layout.addWidget(self.pixel_size_edit, 7, 1, 1, 3)
 
+        # Ligne 8: Z sampling
+        z_sampling_label = QLabel("Z Nyquist:")
+        z_sampling_label.setStyleSheet("color: white;")
+        main_grid_layout.addWidget(z_sampling_label, 8, 0)
+
+        self.sampling_z_edit = QLineEdit("2.10")
+        self.sampling_z_edit.setStyleSheet(editable_style)
+        self.sampling_z_edit.setMinimumWidth(0)
+        self.sampling_z_edit.setMaximumWidth(60)
+        self.sampling_z_edit.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        main_grid_layout.addWidget(self.sampling_z_edit, 8, 1)
+
+        self.slider_z_with_line = SliderWithNyquistLine(nyquist_value=2.1)
+        self.slider_z = self.slider_z_with_line.slider
+        self.slider_z_with_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        main_grid_layout.addWidget(self.slider_z_with_line, 8, 2, 1, 2)
+
+        # Ligne 9: Z Step
         z_step_label = QLabel("Z Step (nm):")
         z_step_label.setStyleSheet("color: white;")
+        main_grid_layout.addWidget(z_step_label, 9, 0)
 
         self.z_step_edit = QLineEdit()
-        self.z_step_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: #252525;
-                color: #888;
-                border: 1px solid #444;
-                border-radius: 3px;
-                padding: 2px;
-                min-height: 20px;
-            }
-        """)
+        self.z_step_edit.setStyleSheet(editable_style)
         self.z_step_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.z_step_edit.setReadOnly(True)
-
-        main_grid_layout.addWidget(pixel_size_label, 7, 0)
-        main_grid_layout.addWidget(self.pixel_size_edit, 7, 1)
-        main_grid_layout.addWidget(z_step_label, 7, 2)
-        main_grid_layout.addWidget(self.z_step_edit, 7, 3)
+        main_grid_layout.addWidget(self.z_step_edit, 9, 1, 1, 3)
 
         nyquist_group.setLayout(main_grid_layout)
         self.nyquist_layout.addWidget(nyquist_group)
@@ -392,8 +395,15 @@ class NyquistWidget(QWidget):
         self.order_1p_radio.toggled.connect(self.update_values)
         self.order_2p_radio.toggled.connect(self.update_values)
         self.order_3p_radio.toggled.connect(self.update_values)
-        self.slider.valueChanged.connect(self.update_slider_value)
-        self.sampling_value_edit.editingFinished.connect(self.update_edit_value)
+
+        self.slider_xy.valueChanged.connect(self.update_xy_slider_value)
+        self.slider_z.valueChanged.connect(self.update_z_slider_value)
+
+        self.sampling_xy_edit.editingFinished.connect(self.update_xy_from_sampling)
+        self.sampling_z_edit.editingFinished.connect(self.update_z_from_sampling)
+
+        self.pixel_size_edit.editingFinished.connect(self.update_xy_from_pixel_size)
+        self.z_step_edit.editingFinished.connect(self.update_z_from_z_step)
 
         # Mise à jour initiale des valeurs
         self.update_values()
@@ -423,25 +433,112 @@ class NyquistWidget(QWidget):
                 }
             """)
     
-    def update_slider_value(self, value):
-        """Met à jour la valeur du champ de texte en fonction du slider."""
-        sampling_value = value * 0.05  # Conversion de la valeur du slider en float (0.1 à 5)
-        self.sampling_value_edit.blockSignals(True)
-        self.sampling_value_edit.setText(f"{sampling_value:.2f}")
-        self.sampling_value_edit.blockSignals(False)
-        self.update_values()
+    def _slider_to_sampling(self, slider_value: int) -> float:
+        return slider_value * 0.05
 
-    def update_edit_value(self):
-        """Met à jour la valeur du slider en fonction du champ de texte."""
+    def _sampling_to_slider(self, sampling: float) -> int:
+        value = int(round(sampling / 0.05))
+        return max(10, min(100, value))
+
+    def _safe_float(self, line_edit: QLineEdit):
         try:
-            value = float(self.sampling_value_edit.text())
-            if 0.5 <= value <= 5.0:
-                self.slider.blockSignals(True)
-                self.slider.setValue(int(value / 0.05))
-                self.slider.blockSignals(False)
-            self.update_values()
+            return float(line_edit.text().strip().replace(",", "."))
         except ValueError:
-            pass
+            return None
+
+    def update_xy_slider_value(self, value):
+        sampling_xy = self._slider_to_sampling(value)
+        self.sampling_xy_edit.blockSignals(True)
+        self.sampling_xy_edit.setText(f"{sampling_xy:.2f}")
+        self.sampling_xy_edit.blockSignals(False)
+        self.update_xy_from_sampling()
+
+    def update_z_slider_value(self, value):
+        sampling_z = self._slider_to_sampling(value)
+        self.sampling_z_edit.blockSignals(True)
+        self.sampling_z_edit.setText(f"{sampling_z:.2f}")
+        self.sampling_z_edit.blockSignals(False)
+        self.update_z_from_sampling()
+
+    def update_xy_from_sampling(self):
+        try:
+            xy_res = float(self.xy_res_edit.text())
+        except ValueError:
+            return
+
+        sampling_xy = self._safe_float(self.sampling_xy_edit)
+        if sampling_xy is None or sampling_xy <= 0:
+            return
+
+        pixel_size = round(xy_res / sampling_xy)
+
+        self.pixel_size_edit.blockSignals(True)
+        self.pixel_size_edit.setText(f"{pixel_size}")
+        self.pixel_size_edit.blockSignals(False)
+
+        self.slider_xy.blockSignals(True)
+        self.slider_xy.setValue(self._sampling_to_slider(sampling_xy))
+        self.slider_xy.blockSignals(False)
+
+    def update_z_from_sampling(self):
+        try:
+            z_res = float(self.z_res_edit.text())
+        except ValueError:
+            return
+
+        sampling_z = self._safe_float(self.sampling_z_edit)
+        if sampling_z is None or sampling_z <= 0:
+            return
+
+        z_step = round(z_res / sampling_z)
+
+        self.z_step_edit.blockSignals(True)
+        self.z_step_edit.setText(f"{z_step}")
+        self.z_step_edit.blockSignals(False)
+
+        self.slider_z.blockSignals(True)
+        self.slider_z.setValue(self._sampling_to_slider(sampling_z))
+        self.slider_z.blockSignals(False)
+
+    def update_xy_from_pixel_size(self):
+        try:
+            xy_res = float(self.xy_res_edit.text())
+        except ValueError:
+            return
+
+        pixel_size = self._safe_float(self.pixel_size_edit)
+        if pixel_size is None or pixel_size <= 0:
+            return
+
+        sampling_xy = xy_res / pixel_size
+
+        self.sampling_xy_edit.blockSignals(True)
+        self.sampling_xy_edit.setText(f"{sampling_xy:.2f}")
+        self.sampling_xy_edit.blockSignals(False)
+
+        self.slider_xy.blockSignals(True)
+        self.slider_xy.setValue(self._sampling_to_slider(sampling_xy))
+        self.slider_xy.blockSignals(False)
+
+    def update_z_from_z_step(self):
+        try:
+            z_res = float(self.z_res_edit.text())
+        except ValueError:
+            return
+
+        z_step = self._safe_float(self.z_step_edit)
+        if z_step is None or z_step <= 0:
+            return
+
+        sampling_z = z_res / z_step
+
+        self.sampling_z_edit.blockSignals(True)
+        self.sampling_z_edit.setText(f"{sampling_z:.2f}")
+        self.sampling_z_edit.blockSignals(False)
+
+        self.slider_z.blockSignals(True)
+        self.slider_z.setValue(self._sampling_to_slider(sampling_z))
+        self.slider_z.blockSignals(False)
 
     def update_values(self):
         """Met à jour NA/RefIndex selon l'objectif, puis calcule res/pixel."""
@@ -494,19 +591,19 @@ class NyquistWidget(QWidget):
                 )
                 return
 
-            xy_res = round(0.514*wavelength / (na*sqrt(order)))
-            z_res = round(0.88*wavelength / (sqrt(order)*(ref_index - sqrt(ref_index**2-na**2))))  # Conversion en nm
+            xy_res = round(0.514 * wavelength / (na * sqrt(order)))
+            z_res = round(
+                0.88 * wavelength /
+                (sqrt(order) * (ref_index - sqrt(ref_index**2 - na**2)))
+            )
 
             self.xy_res_edit.setText(f"{xy_res}")
             self.z_res_edit.setText(f"{z_res}")
 
-            # Calcul de Pixel Size et Z Step
-            sampling_value = self.slider.value() * 0.05
-            pixel_size = round(xy_res / sampling_value)
-            z_step = round(z_res / sampling_value)
+            # Recalcule les champs dépendants à partir des Nyquist XY/Z
+            self.update_xy_from_sampling()
+            self.update_z_from_sampling()
 
-            self.pixel_size_edit.setText(f"{pixel_size}")
-            self.z_step_edit.setText(f"{z_step}")
         except ValueError:
             self.xy_res_edit.setText("")
             self.z_res_edit.setText("")

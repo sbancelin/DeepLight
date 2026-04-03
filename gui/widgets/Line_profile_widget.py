@@ -1,8 +1,33 @@
-from PySide6.QtWidgets import (QVBoxLayout, QWidget, QLabel, QHBoxLayout, QPushButton, QComboBox, QSizePolicy)
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QVBoxLayout, QWidget, QLabel, QHBoxLayout, QPushButton, QComboBox,
+    QSizePolicy, QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox
+)
+from PySide6.QtCore import Qt, QLocale
 from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
+
+
+class DoubleClickAxis(pg.AxisItem):
+    def __init__(self, orientation, on_double_click=None, *args, **kwargs):
+        super().__init__(orientation=orientation, *args, **kwargs)
+        self.on_double_click = on_double_click
+
+    def mouseDoubleClickEvent(self, ev):
+        ev.accept()
+        if callable(self.on_double_click):
+            self.on_double_click(self.orientation)
+
+
+class DoubleClickViewBox(pg.ViewBox):
+    def __init__(self, on_double_click=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.on_double_click = on_double_click
+
+    def mouseDoubleClickEvent(self, ev):
+        ev.accept()
+        if callable(self.on_double_click):
+            self.on_double_click()
 
 
 class LineProfileWidget(QWidget):
@@ -21,6 +46,7 @@ class LineProfileWidget(QWidget):
         self.line_segment = None
         self.temp_image_line = None
         self._start_point = None
+        self._current_temp_end_point = None
         self._waiting_for_end_point = False
 
         self.scale_um_per_pixel = 1.0
@@ -95,7 +121,13 @@ class LineProfileWidget(QWidget):
 
         layout.addLayout(top_layout)
 
-        self.profile_plot = pg.PlotWidget()
+        self.profile_plot = pg.PlotWidget(
+            viewBox=DoubleClickViewBox(self.reset_profile_view),
+            axisItems={
+                'left': DoubleClickAxis('left', self._on_axis_double_clicked),
+                'bottom': DoubleClickAxis('bottom', self._on_axis_double_clicked),
+            }
+        )
         self.profile_plot.setBackground("#2b2b2b")
         self.profile_plot.showGrid(x=True, y=True, alpha=0.3)
         self.profile_plot.setLabel("left", "Intensity", color="w")
@@ -136,6 +168,81 @@ class LineProfileWidget(QWidget):
         else:
             self.set_image_view(None)
 
+    def _on_axis_double_clicked(self, orientation: str):
+        if self.profile_plot is None:
+            return
+
+        plot_item = self.profile_plot.getPlotItem()
+        view_box = plot_item.vb
+        x_range, y_range = view_box.viewRange()
+
+        if orientation == 'bottom':
+            current_min, current_max = float(x_range[0]), float(x_range[1])
+            title = "Set X axis range"
+        elif orientation == 'left':
+            current_min, current_max = float(y_range[0]), float(y_range[1])
+            title = "Set Y axis range"
+        else:
+            return
+
+        result = self._ask_axis_range(title, current_min, current_max)
+        if result is None:
+            return
+
+        new_min, new_max = result
+        if new_max <= new_min:
+            return
+
+        if orientation == 'bottom':
+            self.profile_plot.enableAutoRange(axis='x', enable=False)
+            self.profile_plot.setXRange(new_min, new_max, padding=0)
+        elif orientation == 'left':
+            self.profile_plot.enableAutoRange(axis='y', enable=False)
+            self.profile_plot.setYRange(new_min, new_max, padding=0)
+
+    def _ask_axis_range(self, title: str, current_min: float, current_max: float):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+
+        min_spin = QDoubleSpinBox(dialog)
+        min_spin.setLocale(QLocale.c())
+        min_spin.setDecimals(6)
+        min_spin.setRange(-1e12, 1e12)
+        min_spin.setValue(current_min)
+        min_spin.setSingleStep(max(0.1, abs(current_max - current_min) / 100.0))
+
+        max_spin = QDoubleSpinBox(dialog)
+        max_spin.setLocale(QLocale.c())
+        max_spin.setDecimals(6)
+        max_spin.setRange(-1e12, 1e12)
+        max_spin.setValue(current_max)
+        max_spin.setSingleStep(max(0.1, abs(current_max - current_min) / 100.0))
+
+        form.addRow("Min:", min_spin)
+        form.addRow("Max:", max_spin)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        new_min = float(min_spin.value())
+        new_max = float(max_spin.value())
+        return new_min, new_max
+
+    def reset_profile_view(self):
+        plot_item = self.profile_plot.getPlotItem()
+        plot_item.enableAutoRange(axis='x', enable=True)
+        plot_item.enableAutoRange(axis='y', enable=True)
+        plot_item.vb.autoRange()
+    
     def _on_profile_plot_clicked(self, ev):
         if ev.button() != Qt.LeftButton:
             return
@@ -268,6 +375,7 @@ class LineProfileWidget(QWidget):
     def _reset_drawing_state(self):
         self._waiting_for_end_point = False
         self._start_point = None
+        self._current_temp_end_point = None
         self._start_marker.setVisible(False)
 
         if self.temp_image_line is not None and self.image_view is not None:
@@ -290,7 +398,7 @@ class LineProfileWidget(QWidget):
             return
 
         p = vb.mapSceneToView(ev.scenePos())
-        image_data = getattr(self.image_view, "image", None)
+        image_data = self._get_displayed_image_data()
 
         if image_data is None or not hasattr(image_data, "shape"):
             return
@@ -299,10 +407,29 @@ class LineProfileWidget(QWidget):
         y = np.clip(float(p.y()), 0, image_data.shape[0] - 1)
 
         if not self._waiting_for_end_point:
+            # Si une ancienne ligne existe déjà, on l'efface immédiatement
+            if self.line_segment is not None:
+                try:
+                    view.removeItem(self.line_segment)
+                except Exception:
+                    pass
+                self.line_segment = None
+
+            if self.temp_image_line is not None:
+                try:
+                    view.removeItem(self.temp_image_line)
+                except Exception:
+                    pass
+                self.temp_image_line = None
+
             self._start_point = (x, y)
+            self._current_temp_end_point = (x, y)
             self._waiting_for_end_point = True
             self._start_marker.setData([x], [y])
             self._start_marker.setVisible(True)
+            self.profile_plot.clear()
+            self.distance_label.setText("Length: 0.00 µm")
+            self.update_profile()
             return
 
         x0, y0 = self._start_point
@@ -326,8 +453,15 @@ class LineProfileWidget(QWidget):
             return
 
         p = vb.mapSceneToView(pos)
-        x, y = float(p.x()), float(p.y())
+
+        image_data = self._get_displayed_image_data()
+        if image_data is None or image_data.ndim < 2:
+            return
+
+        x = np.clip(float(p.x()), 0, image_data.shape[1] - 1)
+        y = np.clip(float(p.y()), 0, image_data.shape[0] - 1)
         x0, y0 = self._start_point
+        self._current_temp_end_point = (x, y)
 
         if self.temp_image_line is not None:
             try:
@@ -345,6 +479,8 @@ class LineProfileWidget(QWidget):
             view.addItem(self.temp_image_line, ignoreBounds=True)
         except Exception:
             pass
+
+        self.update_profile()
 
     def _create_line_segment(self, x0, y0, x1, y1):
         if self.image_view is None:
@@ -379,24 +515,60 @@ class LineProfileWidget(QWidget):
         except Exception:
             pass
 
+    def _get_displayed_image_data(self):
+        if self.image_view is None:
+            return None
+
+        try:
+            image_item = self.image_view.getImageItem()
+        except Exception:
+            return None
+
+        image_data = getattr(image_item, "image", None)
+        if image_data is None or not hasattr(image_data, "shape"):
+            return None
+
+        return np.asarray(image_data)
+    
+    def _get_active_line_points(self):
+        # Ligne finale
+        if self.line_segment is not None and self.toggle_btn.isChecked():
+            try:
+                if self.line_segment.isVisible():
+                    pts = self.line_segment.listPoints()
+                    if pts is not None and len(pts) >= 2:
+                        return pts[0], pts[1]
+            except Exception:
+                pass
+
+        # Ligne temporaire entre 1er et 2e clic
+        if (
+            self.toggle_btn.isChecked()
+            and self._waiting_for_end_point
+            and self._start_point is not None
+            and self._current_temp_end_point is not None
+        ):
+            x0, y0 = self._start_point
+            x1, y1 = self._current_temp_end_point
+            return pg.Point(x0, y0), pg.Point(x1, y1)
+
+        return None, None
+    
     def update_profile(self):
         self.profile_plot.clear()
         self.distance_label.setText("Length: 0.00 µm")
 
-        if self.image_view is None or not self.toggle_btn.isChecked() or self.line_segment is None:
-            return
-        if not self.line_segment.isVisible():
+        if self.image_view is None or not self.toggle_btn.isChecked():
             return
 
-        image_data = getattr(self.image_view, "image", None)
+        image_data = self._get_displayed_image_data()
         if image_data is None or not hasattr(image_data, "shape"):
             return
 
-        pts = self.line_segment.listPoints()
-        if pts is None or len(pts) < 2:
+        start_pos, end_pos = self._get_active_line_points()
+        if start_pos is None or end_pos is None:
             return
 
-        start_pos, end_pos = pts[0], pts[1]
         x0, y0 = start_pos.x(), start_pos.y()
         x1, y1 = end_pos.x(), end_pos.y()
 
@@ -408,7 +580,7 @@ class LineProfileWidget(QWidget):
 
         x_axis = np.linspace(0, length_um, profile.size)
         self.profile_plot.plot(x_axis, profile, pen=pg.mkPen(color="#FF7700", width=2))
-        self.profile_plot.setXRange(0, length_um, padding=0)
+        self.profile_plot.setXRange(0, max(length_um, 1e-9), padding=0)
         self.distance_label.setText(f"Length: {length_um:.2f} µm")
 
     def extract_line_profile(self, image_data, start_pos, end_pos):

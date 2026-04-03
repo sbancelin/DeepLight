@@ -727,6 +727,16 @@ class ScanWidget(QWidget):
         self.rep_checkbox.toggled.connect(self._on_rep_checkbox_toggled)
         self.rep_checkbox.toggled.connect(self._update_scan_duration)
 
+        self.dwell_edit.textChanged.connect(self._update_scan_duration)
+        self.samples_per_pixel_edit.textChanged.connect(self._update_scan_duration)
+        self.rep_edit.textChanged.connect(self._update_scan_duration)
+        self.delay_edit.textChanged.connect(self._update_scan_duration)
+
+        self.dwell_edit.textChanged.connect(self._on_param_changed)
+        self.samples_per_pixel_edit.textChanged.connect(self._on_param_changed)
+        self.rep_edit.textChanged.connect(self._on_param_changed)
+        self.delay_edit.textChanged.connect(self._on_param_changed)
+
         self.rep_edit.returnPressed.connect(self._on_rep_return_pressed)
         self.delay_edit.returnPressed.connect(self._on_delay_return_pressed)
 

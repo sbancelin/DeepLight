@@ -217,7 +217,7 @@ class PositionerWidget(QWidget):
         grid_layout.setColumnStretch(8, 1)
 
         # En-têtes
-        headers = ["Axis", "Home", "Position \n (µm)", "Set 0", "", "Step \n (µm)", "", "Speed \n (mm/s)", "Abs Pos"]
+        headers = ["Axis", "Home", "Pos (µm)", "Set 0", "", "Step (µm)", "", "Speed (mm/s)", "Abs Pos"]
         for col, header in enumerate(headers):
             label = QLabel(header)
             label.setStyleSheet("color: white; font-weight: bold; padding-bottom: 5px;")
@@ -349,7 +349,8 @@ class PositionerWidget(QWidget):
             setattr(self, f"plus_button_{pos.lower().replace('-', '_')}", plus_button)
 
             # Colonne 7: Speed
-            speed_edit = QLineEdit("1")
+            default_speed = "100" if pos == "Z-VCoil" else "1"
+            speed_edit = QLineEdit(default_speed)
             speed_edit.setStyleSheet("""
                 QLineEdit {
                     background-color: #333;
@@ -632,11 +633,11 @@ class PositionerWidget(QWidget):
 
             # Z : + / -
             if key in (Qt.Key_Plus, Qt.Key_Equal):
-                self._move_axis_step("z", +1)
+                self._move_axis_step("z", -1)
                 return True
 
             if key == Qt.Key_Minus:
-                self._move_axis_step("z", -1)
+                self._move_axis_step("z", +1)
                 return True
 
         return super().eventFilter(obj, event)

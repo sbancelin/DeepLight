@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QVBoxLayout, QWidget, QHBoxLayout, QPushButton, QComboBox, 
                                QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox, QCheckBox, QSizePolicy)
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, QLocale
 from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
@@ -217,12 +217,14 @@ class HistogramWidget(QWidget):
         form = QFormLayout()
 
         min_spin = QDoubleSpinBox(dialog)
+        min_spin.setLocale(QLocale.c())
         min_spin.setDecimals(6)
         min_spin.setRange(-1e12, 1e12)
         min_spin.setValue(current_min)
         min_spin.setSingleStep(max(0.1, abs(current_max - current_min) / 100.0))
 
         max_spin = QDoubleSpinBox(dialog)
+        max_spin.setLocale(QLocale.c())
         max_spin.setDecimals(6)
         max_spin.setRange(-1e12, 1e12)
         max_spin.setValue(current_max)
@@ -362,6 +364,19 @@ class HistogramWidget(QWidget):
 
         return np.asarray(image_data)
 
+    def _extract_displayed_pixel_values(self):
+        image_data = self._get_displayed_image_data()
+        if image_data is None:
+            return None
+
+        vals = np.asarray(image_data, dtype=np.float64).ravel()
+        vals = vals[np.isfinite(vals)]
+
+        if vals.size == 0:
+            return None
+
+        return vals
+    
     def _extract_pixel_values_in_roi(self):
         if self.image_view is None or self.rect_roi is None:
             return None
@@ -420,7 +435,11 @@ class HistogramWidget(QWidget):
     # ------------------------------------------------------------------
     def toggle_rect_visibility(self, checked: bool):
         self._apply_visibility()
-        self.update_histogram()
+
+        if checked:
+            self.update_histogram()
+        else:
+            self._clear_histogram()
 
     def _apply_visibility(self):
         if self.rect_roi is None:
@@ -577,8 +596,12 @@ class HistogramWidget(QWidget):
 
         if self.image_view is None:
             return
+
+        # IMPORTANT:
+        # Aucun calcul si ROI non activée.
         if not self.toggle_btn.isChecked():
             return
+
         if self.rect_roi is None or not self.rect_roi.isVisible():
             return
 

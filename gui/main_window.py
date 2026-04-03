@@ -14,6 +14,7 @@ from .managers.Scan_manager import ScanManager
 from .managers.Settings_Manager import SettingsManager
 from .managers.Stitching_Manager import StitchingManager
 from .managers.Spectro_Manager import SpectroManager
+from .managers.Laser_Manager import LaserManager
 
 
 class MainWindow(QMainWindow):
@@ -83,6 +84,7 @@ class MainWindow(QMainWindow):
         self.camera_controller = self.hardware.create_camera_controller(parent=self)
         self._connect_camera_controller_signals()
         self._connect_camera_controls()
+        self._setup_laser_worker()
         self._connect_laser_controls()
         QTimer.singleShot(0, self._sync_laser_widget_from_hardware)
         QTimer.singleShot(1000, self._sync_laser_widget_from_hardware)
@@ -206,6 +208,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[MainWindow] Cobolt sync failed: {e}")
 
+    def _setup_laser_worker(self):
+        self.laser_command_manager = LaserManager(
+            hardware_manager=self.hardware,
+            laser_manager=self.laser_manager,
+            settings_manager=self.settings_manager,
+            parent=self,
+        )
+    
     def _clear_spectro_ui_buffers(self):
         self._pending_brillouin_image = None
         self._pending_raman_spectrum = None
@@ -553,6 +563,12 @@ class MainWindow(QMainWindow):
             self.ui.camera_widget.set_status(f"Display failed: {e}")
 
     def closeEvent(self, event):
+        try:
+            if getattr(self, "laser_command_manager", None) is not None:
+                self.laser_command_manager.close()
+        except Exception:
+            pass
+        
         try:
             self._spectro_brillouin_ui_timer.stop()
         except Exception:
@@ -1275,6 +1291,34 @@ class MainWindow(QMainWindow):
         else:
             self.ui.sync_channel_lut_axis_from_current_levels(channel)
 
+        # Histogram refresh (uniquement si ROI active et visible)
+        try:
+            hw = self.ui.histogram_widget
+            current_hist_channel = hw.channel_combo.currentText()
+
+            if (
+                hw.toggle_btn.isChecked()
+                and hw.rect_roi is not None
+                and hw.rect_roi.isVisible()
+                and str(current_hist_channel) == str(channel)
+            ):
+                hw.update_histogram()
+        except Exception as e:
+            print("[MainWindow] histogram refresh error:", e)
+
+        # Line profile refresh (si activé sur ce canal)
+        try:
+            lpw = self.ui.line_profile_widget
+            current_lp_channel = lpw.channel_combo.currentText()
+
+            if (
+                lpw.toggle_btn.isChecked()
+                and str(current_lp_channel) == str(channel)
+            ):
+                lpw.update_profile()
+        except Exception as e:
+            print("[MainWindow] line profile refresh error:", e)
+
         lock_checked = bool(getattr(self.ui, "channel_lock", {}).get(channel, True))
         im_widget.getView().setAspectLocked(lock_checked)
 
@@ -1504,24 +1548,21 @@ class MainWindow(QMainWindow):
 
     def _connect_laser_controls(self):
         lw = self.ui.laser_widget
-        lw.laser_power_changed.connect(self._on_laser_power_changed)
+        lw.laser_power_changed.connect(self.laser_command_manager.enqueue_power)
+        self.laser_command_manager.command_finished.connect(self._on_laser_command_finished)
+        self.laser_command_manager.command_failed.connect(self._on_laser_command_failed)
 
-    def _on_laser_power_changed(self, laser_name: str, value: int):
-        laser_name = str(laser_name)
+    @Slot(str, int)
+    def _on_laser_command_finished(self, laser_name: str, value: int):
+        try:
+            self.statusBar().showMessage(f"{laser_name} set to {int(value)}%", 1500)
+        except Exception:
+            pass
 
-        if laser_name in ("Mira 900", "Tumecs"):
-            cfg = self.settings_manager.get_laser_settings(laser_name)
-
-            if "speed" not in cfg or "steps_per_degree" not in cfg or "offset_deg" not in cfg:
-                raise RuntimeError(f"Missing laser settings for {laser_name!r}")
-
-            self.hardware.set_laser_power_percent(
-                laser_name,
-                float(value),
-                speed=int(cfg["speed"]),
-                steps_per_degree=float(cfg["steps_per_degree"]),
-                offset_deg=float(cfg["offset_deg"]),
-            )
-            return
-
-        self.laser_manager.set_power_percent(laser_name, float(value))
+    @Slot(str, int, str)
+    def _on_laser_command_failed(self, laser_name: str, value: int, message: str):
+        print(f"[MainWindow] laser command failed for {laser_name}={value}%: {message}")
+        try:
+            self.statusBar().showMessage(f"Laser error ({laser_name}): {message}", 5000)
+        except Exception:
+            pass
