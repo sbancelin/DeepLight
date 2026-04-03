@@ -1,8 +1,32 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout, QLabel, QLineEdit, QMessageBox, QSizePolicy)
-from PySide6.QtCore import Signal, Qt, Slot
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout, QLabel, QLineEdit, QMessageBox, QSizePolicy, QCheckBox, QApplication)
+from PySide6.QtCore import Signal, Qt, Slot, QEvent
 from PySide6.QtGui import QIcon
 from functools import partial
+
 from ..managers.Scan_Types import STEPPER_AXIS_DEFAULTS
+
+CHECKBOX_STYLE = """
+    QCheckBox::indicator {
+        width: 12px;
+        height: 12px;
+        background-color: #333;
+        border: 1px solid #555;
+        border-radius: 3px;
+    }
+    QCheckBox::indicator:checked {
+        background-color: #2E8B57;
+        border: 1px solid #555;
+        border-radius: 3px;
+    }
+    QCheckBox::indicator:checked:hover {
+        border: 1px solid #777;
+        background-color: #3AB16F;
+    }
+    QCheckBox::indicator:unchecked:hover {
+        background-color: #444;
+        border: 1px solid #777;
+    }
+"""
 
 def setup_positioner_settings_dialog(dialog):
     """Construit le dialogue de configuration des limites/vitesses/tolérances des axes stepper."""
@@ -133,6 +157,8 @@ class PositionerWidget(QWidget):
         self.axis_keys = ["x", "y", "z", "p"]
         self.axis_labels = {"x": "X - stage", "y": "Y - stage", "z": "Z-VCoil", "p": "P"}
         self._buttons_connected = False
+        self._keyboard_shortcuts_locked = True
+
         # lien entre label UI et clé d’axe manager
         self._label_to_axis = {
             "X - stage": "x",
@@ -371,28 +397,47 @@ class PositionerWidget(QWidget):
                 "speed": speed_edit,
             }
 
-        # Ajout du layout grid au layout principal
         content_layout.addLayout(grid_layout)
 
-        # Ajout du bouton "Stop All"
+        # ---- bottom control row ----
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(6)
+
+        # checkbox shortcuts
+        self.keyboard_shortcuts_lock_checkbox = QCheckBox("Lock shortcuts")
+        self.keyboard_shortcuts_lock_checkbox.setChecked(True)
+        self.keyboard_shortcuts_lock_checkbox.setToolTip(
+            "When checked, keyboard arrows and +/- cannot move the stages."
+        )
+        self.keyboard_shortcuts_lock_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.keyboard_shortcuts_lock_checkbox.toggled.connect(self.set_keyboard_shortcuts_locked)
+
+        # stop button
         self.stop_all_button = QPushButton("Stop All")
+        self.stop_all_button.setFixedHeight(24)
         self.stop_all_button.setStyleSheet("""
                 QPushButton {
                     background-color: #333;
                     color: white;
                     border: 1px solid #555;
                     border-radius: 3px;
-                    min-height: 20px;
-                    padding: 0px;
+                    padding: 2px 6px;
                 }
                 QPushButton:hover {
                     background-color: #444;
                 }
             """)
-        content_layout.addWidget(self.stop_all_button)
+
+        bottom_row.addWidget(self.stop_all_button)
+        bottom_row.addWidget(self.keyboard_shortcuts_lock_checkbox)
+
+        content_layout.addLayout(bottom_row)
 
         self.main_layout.addWidget(content_widget)
         self.main_layout.addStretch()
+
+        QApplication.instance().installEventFilter(self)
 
         if manager is not None:
             self.set_manager(manager)
@@ -489,6 +534,113 @@ class PositionerWidget(QWidget):
             except Exception:
                 pass
 
+    def set_keyboard_shortcuts_locked(self, locked: bool):
+        self._keyboard_shortcuts_locked = bool(locked)
+
+        try:
+            if hasattr(self, "keyboard_shortcuts_lock_checkbox"):
+                self.keyboard_shortcuts_lock_checkbox.blockSignals(True)
+                self.keyboard_shortcuts_lock_checkbox.setChecked(bool(locked))
+                self.keyboard_shortcuts_lock_checkbox.blockSignals(False)
+        except Exception:
+            pass
+
+    def keyboard_shortcuts_locked(self) -> bool:
+        return bool(self._keyboard_shortcuts_locked)
+
+    def _focused_widget_blocks_shortcuts(self) -> bool:
+        fw = QApplication.focusWidget()
+        if fw is None:
+            return False
+
+        # Si on édite un champ texte, on laisse les touches au champ
+        return isinstance(fw, QLineEdit)
+
+    def _validate_axis_speed(self, axis: str, ui: dict) -> bool:
+        speed = self._read_float(ui["speed"], 0.0)
+
+        if speed > self.axis_velocity_limits[axis]["max"]:
+            QMessageBox.warning(
+                self,
+                "Vitesse invalide",
+                f"La vitesse {speed} pour l'axe {axis} dépasse la limite autorisée "
+                f"({self.axis_velocity_limits[axis]['max']} mm/s)."
+            )
+            ui["speed"].setText(str(self.axis_velocity_limits[axis]["max"]))
+            return False
+
+        return True
+
+    def _move_axis_step(self, axis: str, direction: int):
+        if self.manager is None:
+            return
+
+        ui = self.axis_ui.get(axis)
+        if ui is None:
+            return
+
+        if not self._validate_axis_speed(axis, ui):
+            return
+
+        step = self._read_float(ui["step"], 0.0)
+        speed = self._read_float(ui["speed"], 0.0)
+
+        delta = abs(step) * (1 if int(direction) > 0 else -1)
+
+        current_rel = self.manager.get_rel_pos(axis)
+        target_rel = current_rel + delta
+
+        if not self.manager.is_rel_target_allowed(axis, target_rel):
+            min_abs, max_abs = self.manager.get_limits(axis)
+            QMessageBox.warning(
+                self,
+                "Position invalide",
+                f"La cible relative {target_rel:.2f} pour l'axe {axis} est hors limites "
+                f"(plage absolue device : {min_abs:.2f} à {max_abs:.2f})."
+            )
+            return
+
+        self.manager.move_relative(axis, delta, speed)
+    
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress:
+            if self.keyboard_shortcuts_locked():
+                return super().eventFilter(obj, event)
+
+            if self._focused_widget_blocks_shortcuts():
+                return super().eventFilter(obj, event)
+
+            key = event.key()
+
+            # X : gauche / droite
+            if key == Qt.Key_Left:
+                self._move_axis_step("x", -1)
+                return True
+
+            if key == Qt.Key_Right:
+                self._move_axis_step("x", +1)
+                return True
+
+            # Y : haut / bas
+            if key == Qt.Key_Up:
+                self._move_axis_step("y", +1)
+                return True
+
+            if key == Qt.Key_Down:
+                self._move_axis_step("y", -1)
+                return True
+
+            # Z : + / -
+            if key in (Qt.Key_Plus, Qt.Key_Equal):
+                self._move_axis_step("z", +1)
+                return True
+
+            if key == Qt.Key_Minus:
+                self._move_axis_step("z", -1)
+                return True
+
+        return super().eventFilter(obj, event)
+    
     def _connect_buttons_to_manager(self):
         if self.manager is None:
             return
@@ -504,64 +656,8 @@ class PositionerWidget(QWidget):
 
             ui["set0"].clicked.connect(partial(self.manager.set_zero, axis))
 
-            def validate_speed(a=axis, u=ui):
-                speed = self._read_float(u["speed"], 0.0)
-                if speed > self.axis_velocity_limits[a]["max"]:
-                    QMessageBox.warning(
-                        None,
-                        "Vitesse invalide",
-                        f"La vitesse {speed} pour l'axe {a} dépasse la limite autorisée ({self.axis_velocity_limits[a]['max']} mm/s)."
-                    )
-                    u["speed"].setText(str(self.axis_velocity_limits[a]["max"]))
-                    return False
-                return True
-
-            def move_plus(*_arg, a=axis, u=ui):
-                if not validate_speed(a, u):
-                    return
-
-                step = self._read_float(u["step"], 0.0)
-                speed = self._read_float(u["speed"], 0.0)
-
-                current_rel = self.manager.get_rel_pos(a)
-                target_rel = current_rel + step
-
-                if not self.manager.is_rel_target_allowed(a, target_rel):
-                    min_abs, max_abs = self.manager.get_limits(a)
-                    QMessageBox.warning(
-                        None,
-                        "Position invalide",
-                        f"La cible relative {target_rel:.2f} pour l'axe {a} est hors limites "
-                        f"(plage absolue device : {min_abs:.2f} à {max_abs:.2f})."
-                    )
-                    return
-
-                self.manager.move_relative(a, +step, speed)
-    
-            def move_minus(*_arg, a=axis, u=ui):
-                if not validate_speed(a, u):
-                    return
-
-                step = self._read_float(u["step"], 0.0)
-                speed = self._read_float(u["speed"], 0.0)
-
-                current_rel = self.manager.get_rel_pos(a)
-                target_rel = current_rel - step
-
-                if not self.manager.is_rel_target_allowed(a, target_rel):
-                    min_abs, max_abs = self.manager.get_limits(a)
-                    QMessageBox.warning(
-                        None,
-                        "Position invalide",
-                        f"La cible relative {target_rel:.2f} pour l'axe {a} est hors limites "
-                        f"(plage absolue device : {min_abs:.2f} à {max_abs:.2f})."
-                    )
-                    return
-
-                self.manager.move_relative(a, -step, speed)
-
             def go_to_typed_position(*_arg, a=axis, u=ui):
-                if not validate_speed(a, u):
+                if not self._validate_axis_speed(a, u):
                     return
 
                 rel_target = self._read_float(u["pos"], 0.0)
@@ -571,7 +667,7 @@ class PositionerWidget(QWidget):
                     min_abs, max_abs = self.manager.get_limits(a)
                     target_abs = self.manager.rel_to_abs(a, rel_target)
                     QMessageBox.warning(
-                        None,
+                        self,
                         "Position invalide",
                         f"La position absolue correspondante {target_abs:.2f} pour l'axe {a} "
                         f"dépasse les limites autorisées ({min_abs:.2f} à {max_abs:.2f})."
@@ -580,9 +676,15 @@ class PositionerWidget(QWidget):
 
                 self.manager.move_to_rel(a, rel_target, speed)
 
-            ui["speed"].editingFinished.connect(validate_speed)
-            ui["plus"].clicked.connect(move_plus)
-            ui["minus"].clicked.connect(move_minus)
+            ui["speed"].editingFinished.connect(
+                lambda a=axis, u=ui: self._validate_axis_speed(a, u)
+            )
+            ui["plus"].clicked.connect(
+                lambda *_arg, a=axis: self._move_axis_step(a, +1)
+            )
+            ui["minus"].clicked.connect(
+                lambda *_arg, a=axis: self._move_axis_step(a, -1)
+            )
             ui["pos"].returnPressed.connect(go_to_typed_position)
 
         self.stop_all_button.clicked.connect(self.manager.stop_all)

@@ -1190,6 +1190,11 @@ class MainWindow(QMainWindow):
     def on_acquisition_started(self):
         """Gère le démarrage de l'acquisition."""
         try:
+            self.ui.positioner_widget.set_keyboard_shortcuts_locked(True)
+        except Exception:
+            pass
+        
+        try:
             self.ui.visu_step_widget.set_running(True)
         except Exception:
             pass
