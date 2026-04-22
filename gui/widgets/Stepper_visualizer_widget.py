@@ -513,8 +513,8 @@ class StepperVisualizerWidget(QWidget):
         plot.getAxis('left').setPen(pg.mkPen(color='w', width=1))
         plot.getAxis('bottom').setPen(pg.mkPen(color='w', width=1))
         styles = {"color": "white", "font-size": "10pt"}
-        plot.setLabel('bottom', 'Time', units='s', **styles)
-        plot.setLabel('left', 'Pos', units='µm', **styles)
+        plot.setLabel('bottom', 'Time (s)', **styles)
+        plot.setLabel('left', 'Pos (µm)', **styles)
         plot.setYRange(-5, 5, padding=0)
 
         zero_line = pg.InfiniteLine(
@@ -526,10 +526,12 @@ class StepperVisualizerWidget(QWidget):
 
     def update_plot_labels(self, text):
         styles = {"color": "white", "font-size": "10pt"}
+        self.stepper_plot.setLabel('bottom', 'Time (s)', **styles)
+
         if text in ("Z-Vcoil", "X-Stage", "Y-Stage", "None"):
-            self.stepper_plot.setLabel('left', 'Pos', units='µm', **styles)
+            self.stepper_plot.setLabel('left', 'Pos (µm)', **styles)
         elif text == "Polarization":
-            self.stepper_plot.setLabel('left', 'Angle', units='°', **styles)
+            self.stepper_plot.setLabel('left', 'Angle (°)', **styles)
 
     def toggle_autoscale(self, state):
         if state == Qt.CheckState.Checked.value:

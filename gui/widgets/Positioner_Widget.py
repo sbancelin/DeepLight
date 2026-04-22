@@ -174,14 +174,14 @@ class PositionerWidget(QWidget):
         }
         # Limites par défaut des axes
         self.axis_limits = {
-            "x": {"min": 0, "max": 10000},
-            "y": {"min": 0, "max": 10000},
+            "x": {"min": -25000, "max": 25000},
+            "y": {"min": -25000, "max": 25000},
             "z": {"min": 0, "max": 7000},
             "p": {"min": 0, "max": 180}
         }
         self.axis_velocity_limits = {
-            "x": {"min": 0.01, "max": 1},
-            "y": {"min": 0.01, "max": 1},
+            "x": {"min": 0.01, "max": 4},
+            "y": {"min": 0.01, "max": 4},
             "z": {"min": 0.01, "max": 200},
             "p": {"min": 0.01, "max": 100}
         }
@@ -349,18 +349,37 @@ class PositionerWidget(QWidget):
             setattr(self, f"plus_button_{pos.lower().replace('-', '_')}", plus_button)
 
             # Colonne 7: Speed
-            default_speed = "100" if pos == "Z-VCoil" else "1"
+            if pos in ("X - stage", "Y - stage"):
+                default_speed = "4.0"
+            elif pos == "Z-VCoil":
+                default_speed = "200"
+            else:
+                default_speed = "1"
             speed_edit = QLineEdit(default_speed)
-            speed_edit.setStyleSheet("""
-                QLineEdit {
-                    background-color: #333;
-                    color: white;
-                    border: 1px solid #555;
-                    border-radius: 3px;
-                    padding: 2px;
-                    min-height: 20px;
-                }
-            """)
+            if pos in ("X - stage", "Y - stage"):
+                speed_edit.setReadOnly(True)
+                speed_edit.setFocusPolicy(Qt.NoFocus)
+                speed_edit.setStyleSheet("""
+                    QLineEdit {
+                        background-color: #252525;
+                        color: #888;
+                        border: 1px solid #444;
+                        border-radius: 3px;
+                        padding: 2px;
+                        min-height: 20px;
+                    }
+                """)
+            else:
+                speed_edit.setStyleSheet("""
+                    QLineEdit {
+                        background-color: #333;
+                        color: white;
+                        border: 1px solid #555;
+                        border-radius: 3px;
+                        padding: 2px;
+                        min-height: 20px;
+                    }
+                """)
             speed_edit.setMinimumWidth(20)
             speed_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             grid_layout.addWidget(speed_edit, row, 7)
@@ -631,12 +650,12 @@ class PositionerWidget(QWidget):
                 self._move_axis_step("y", -1)
                 return True
 
-            # Z : + / -
-            if key in (Qt.Key_Plus, Qt.Key_Equal):
+            # Z : Page Up / Page Down
+            if key == Qt.Key_PageUp:
                 self._move_axis_step("z", -1)
                 return True
 
-            if key == Qt.Key_Minus:
+            if key == Qt.Key_PageDown:
                 self._move_axis_step("z", +1)
                 return True
 

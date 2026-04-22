@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import math
 import struct
 import serial
 from threading import Lock
@@ -665,11 +666,67 @@ class _ThorlabsRotationController:
 
         self.connected = True
 
+    @staticmethod
+    def _clamp_relative_angle_deg(angle_deg: float) -> float:
+        return max(MIRA_ROTATOR_REL_MIN_DEG, min(MIRA_ROTATOR_REL_MAX_DEG, float(angle_deg)))
+
+    def _power_percent_to_absolute_angle_deg(self, percent: float, offset_deg: float) -> float:
+        """
+        Mapping user power (%) -> HWP absolute angle.
+
+        Requested convention:
+        - 0%   -> offset_deg
+        - 100% -> offset_deg + 45°
+
+        Behaviour:
+        - for 0..100%: Malus-law inverse using HWP convention
+              P = sin²(2 * theta_rel)
+              theta_rel = 0.5 * asin(sqrt(P))
+        - for values <0 or >100: linear angular extrapolation
+          to allow checking the calibrated 0 and max positions.
+        """
+        percent = float(percent)
+        offset_deg = float(offset_deg)
+
+        if 0.0 <= percent <= 100.0:
+            p = percent / 100.0
+            theta_rel_rad = 0.5 * math.asin(math.sqrt(p))
+            theta_rel_deg = math.degrees(theta_rel_rad)
+        elif percent < 0.0:
+            # Linear angular extension below 0%
+            theta_rel_deg = (percent / 100.0) * MIRA_ROTATOR_REL_MAX_DEG
+        else:
+            # Linear angular extension above 100%
+            theta_rel_deg = MIRA_ROTATOR_REL_MAX_DEG + ((percent - 100.0) / 100.0) * MIRA_ROTATOR_REL_MAX_DEG
+
+        return offset_deg + theta_rel_deg
+
+    def _absolute_angle_deg_to_power_percent(self, angle_deg: float, offset_deg: float) -> float:
+        """
+        Inverse mapping for display/readback.
+
+        Behaviour:
+        - relative angle in [0°, 45°] -> physical Malus mapping
+        - below 0° and above 45° -> linear angular extrapolation
+          back to the virtual test range (%)
+        """
+        theta_rel_deg = float(angle_deg) - float(offset_deg)
+
+        if 0.0 <= theta_rel_deg <= MIRA_ROTATOR_REL_MAX_DEG:
+            theta_rel_rad = math.radians(theta_rel_deg)
+            p = math.sin(2.0 * theta_rel_rad) ** 2
+            return 100.0 * p
+
+        if theta_rel_deg < 0.0:
+            return 100.0 * theta_rel_deg / MIRA_ROTATOR_REL_MAX_DEG
+
+        return 100.0 + 100.0 * (theta_rel_deg - MIRA_ROTATOR_REL_MAX_DEG) / MIRA_ROTATOR_REL_MAX_DEG
+    
     def move_to_angle_deg(self, angle_deg: float, speed: int, steps_per_degree: float, blocking: bool = True):
         if not self.connected:
             self.connect()
 
-        angle_deg = max(MIRA_ROTATOR_MIN_DEG, min(MIRA_ROTATOR_MAX_DEG, float(angle_deg)))
+        angle_deg = float(angle_deg)
         self._last_angle_deg = angle_deg
 
         target = SystemDecimal.Parse(str(angle_deg), CultureInfo.InvariantCulture)
@@ -690,10 +747,10 @@ class _ThorlabsRotationController:
         return float(self._last_angle_deg)
 
     def set_power_percent(self, percent: float, speed: int, steps_per_degree: float, offset_deg: float):
-        percent = max(MIRA_POWER_MIN_PERCENT, min(MIRA_POWER_MAX_PERCENT, float(percent)))
-        offset_deg = float(offset_deg)
-
-        angle = offset_deg + (percent / 100.0) * (MIRA_ROTATOR_MAX_DEG - MIRA_ROTATOR_MIN_DEG)
+        angle = self._power_percent_to_absolute_angle_deg(
+            percent=float(percent),
+            offset_deg=float(offset_deg),
+        )
 
         self.move_to_angle_deg(
             angle,
@@ -702,11 +759,12 @@ class _ThorlabsRotationController:
             blocking=True,
         )
 
-    def get_power_percent(self) -> float:
+    def get_power_percent(self, offset_deg: float = 0.0) -> float:
         angle = self.get_angle_deg()
-        if MIRA_ROTATOR_MAX_DEG == MIRA_ROTATOR_MIN_DEG:
-            return 0.0
-        return 100.0 * (angle - MIRA_ROTATOR_MIN_DEG) / (MIRA_ROTATOR_MAX_DEG - MIRA_ROTATOR_MIN_DEG)
+        return self._absolute_angle_deg_to_power_percent(
+            angle_deg=angle,
+            offset_deg=float(offset_deg),
+        )
 
     def close(self):
         try:
@@ -2060,7 +2118,8 @@ class HardwareManager(QObject):
         if rot is None:
             raise KeyError(f"No rotator configured for laser {laser_name!r}")
 
-        return rot.get_power_percent()
+        cfg = self._get_laser_runtime_settings(laser_name)
+        return rot.get_power_percent(offset_deg=float(cfg["offset_deg"]))
     
     # ==========================================================
     # Brillouin camera (Kuro / PICam)

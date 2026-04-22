@@ -1,6 +1,6 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QPushButton, QGridLayout, QLabel, QSpinBox, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QPushButton, QGridLayout, QLabel, QDoubleSpinBox, 
                                QSlider, QSizePolicy, QDialog, QHBoxLayout, QLineEdit, QMessageBox)
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QLocale
 from PySide6.QtGui import QPalette, QColor
 
 SMALL_BUTTON_STYLE = """
@@ -82,6 +82,14 @@ LASER_DEFAULTS = {
 }
 
 LASERS_WITHOUT_POWER_BUTTON = {"Mira 900", "Tumecs", "Cobolt 660"}
+POWER_UI_MIN = -10.0
+POWER_UI_MAX = 110.0
+POWER_UI_DECIMALS = 1
+POWER_UI_STEP = 0.1
+POWER_SLIDER_SCALE = 10   # 0.1% resolution -> 0..1000
+
+def _force_dot_locale_on_spinbox(spinbox):
+    spinbox.setLocale(QLocale.c())
 
 def setup_laser_settings_dialog(dialog):
     laser_widget = dialog.parent()
@@ -131,7 +139,7 @@ def setup_laser_settings_dialog(dialog):
 
     def _read_float(le: QLineEdit, default: float) -> float:
         try:
-            return float(le.text().replace(",", "."))
+            return float(le.text())
         except Exception:
             return float(default)
 
@@ -194,7 +202,7 @@ def setup_laser_settings_dialog(dialog):
 
 class LaserWidget(QWidget):
     """Widget pour le contrôle des lasers."""
-    laser_power_changed = Signal(str, int)
+    laser_power_changed = Signal(str, float)
     laser_power_toggled = Signal(str, bool)
 
     def __init__(self, parent=None):
@@ -282,12 +290,16 @@ class LaserWidget(QWidget):
         laser_name_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         laser_name_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 
-        setpoint_spin = QSpinBox()
+        setpoint_spin = QDoubleSpinBox()
         setpoint_spin.setMinimumWidth(70)
         setpoint_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        setpoint_spin.setRange(0, 100)
-        setpoint_spin.setValue(0)
+        setpoint_spin.setDecimals(POWER_UI_DECIMALS)
+        setpoint_spin.setSingleStep(POWER_UI_STEP)
+        setpoint_spin.setRange(POWER_UI_MIN, POWER_UI_MAX)
+        setpoint_spin.setValue(0.0)
         setpoint_spin.setSuffix(" %")
+        _force_dot_locale_on_spinbox(setpoint_spin)
+
         spin_palette = setpoint_spin.palette()
         spin_palette.setColor(QPalette.Base, QColor("#333333"))
         spin_palette.setColor(QPalette.Text, QColor("white"))
@@ -303,7 +315,10 @@ class LaserWidget(QWidget):
         setpoint_slider = QSlider(Qt.Horizontal)
         setpoint_slider.setMinimumWidth(60)
         setpoint_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        setpoint_slider.setRange(0, 100)
+        setpoint_slider.setRange(
+            int(round(POWER_UI_MIN * POWER_SLIDER_SCALE)),
+            int(round(POWER_UI_MAX * POWER_SLIDER_SCALE)),
+        )
         setpoint_slider.setValue(0)
         setpoint_slider.setStyleSheet("""
             QSlider::groove:horizontal {
@@ -321,7 +336,7 @@ class LaserWidget(QWidget):
             }
         """)
 
-        current_value_label = QLabel("0%")
+        current_value_label = QLabel("0.0%")
 
         plus_button = QPushButton("+")
         plus_button.setFixedSize(20, 20)
@@ -332,11 +347,11 @@ class LaserWidget(QWidget):
         minus_button.setStyleSheet(SMALL_BUTTON_STYLE)
 
         plus_button.clicked.connect(
-            lambda _, sp=setpoint_spin: sp.setValue(min(100, sp.value() + 1))
+            lambda _, sp=setpoint_spin: sp.setValue(min(POWER_UI_MAX, sp.value() + POWER_UI_STEP))
         )
 
         minus_button.clicked.connect(
-            lambda _, sp=setpoint_spin: sp.setValue(max(0, sp.value() - 1))
+            lambda _, sp=setpoint_spin: sp.setValue(max(POWER_UI_MIN, sp.value() - POWER_UI_STEP))
         )
 
         show_power_button = laser_name not in LASERS_WITHOUT_POWER_BUTTON
@@ -355,29 +370,43 @@ class LaserWidget(QWidget):
         laser_layout.addWidget(setpoint_slider, 0, 3, 1, 2)
         laser_layout.addWidget(plus_button, 0, 5)
 
-        if power_button is not None:
-            laser_layout.addWidget(power_button, 0, 6)
+        def _on_spin_changed(val, slider=setpoint_slider, label=current_value_label):
+            slider_value = self._power_to_slider_value(val)
+            if slider.value() != slider_value:
+                slider.blockSignals(True)
+                slider.setValue(slider_value)
+                slider.blockSignals(False)
+            label.setText(f"{float(val):.1f}%")
 
-        setpoint_spin.valueChanged.connect(setpoint_slider.setValue)
-        setpoint_slider.valueChanged.connect(setpoint_spin.setValue)
-        setpoint_slider.valueChanged.connect(lambda val: current_value_label.setText(f"{val}%"))
+        def _on_slider_changed(slider_val, spin=setpoint_spin, label=current_value_label):
+            power_val = self._slider_to_power_value(slider_val)
+            if abs(spin.value() - power_val) > 1e-9:
+                spin.blockSignals(True)
+                spin.setValue(power_val)
+                spin.blockSignals(False)
+            label.setText(f"{power_val:.1f}%")
+
+        setpoint_spin.valueChanged.connect(_on_spin_changed)
+        setpoint_slider.valueChanged.connect(_on_slider_changed)
 
         if power_button is not None:
             power_button.toggled.connect(lambda state: self._update_power_button_style(power_button, state))
             power_button.toggled.connect(lambda state, name=laser_name: self.laser_power_toggled.emit(name, state))
 
         setpoint_spin.editingFinished.connect(
-            lambda name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, sp.value())
+            lambda name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, float(sp.value()))
         )
         setpoint_slider.sliderReleased.connect(
-            lambda name=laser_name, sl=setpoint_slider: self.laser_power_changed.emit(name, sl.value())
+            lambda name=laser_name, sl=setpoint_slider: self.laser_power_changed.emit(
+                name, self._slider_to_power_value(sl.value())
+            )
         )
         plus_button.clicked.connect(
-            lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, sp.value())
+            lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, float(sp.value()))
         )
 
         minus_button.clicked.connect(
-            lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, sp.value())
+            lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, float(sp.value()))
         )
 
         laser_group.setLayout(laser_layout)
@@ -392,12 +421,23 @@ class LaserWidget(QWidget):
             'minus_button': minus_button
         }
 
-    def set_laser_power_value(self, laser_name: str, value: int):
+    @staticmethod
+    def _power_to_slider_value(value: float) -> int:
+        value = max(POWER_UI_MIN, min(POWER_UI_MAX, float(value)))
+        return int(round(value * POWER_SLIDER_SCALE))
+
+    @staticmethod
+    def _slider_to_power_value(value: int) -> float:
+        power = float(value) / POWER_SLIDER_SCALE
+        return max(POWER_UI_MIN, min(POWER_UI_MAX, power))
+    
+    def set_laser_power_value(self, laser_name: str, value: float):
         controls = self.laser_controls.get(laser_name)
         if not controls:
             return
 
-        value = max(0, min(100, int(value)))
+        value = max(POWER_UI_MIN, min(POWER_UI_MAX, float(value)))
+        slider_value = self._power_to_slider_value(value)
 
         spin = controls.get("spin")
         slider = controls.get("slider")
@@ -410,11 +450,11 @@ class LaserWidget(QWidget):
 
         if slider is not None:
             slider.blockSignals(True)
-            slider.setValue(value)
+            slider.setValue(slider_value)
             slider.blockSignals(False)
 
         if label is not None:
-            label.setText(f"{value}%")
+            label.setText(f"{value:.1f}%")
 
     def set_laser_enabled(self, laser_name: str, enabled: bool):
         controls = self.laser_controls.get(laser_name)

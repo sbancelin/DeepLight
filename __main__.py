@@ -9,7 +9,7 @@ if __name__ == "__main__":
     from .gui.managers.Microscopes import create_microscope_backend
 
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QLocale
 
     parser = argparse.ArgumentParser(description="Launch DeepLight")
     parser.add_argument(
@@ -37,6 +37,7 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         qt_argv += ["-platform", "windows:darkmode=2"]
 
+    QLocale.setDefault(QLocale.c())
     app = QApplication(qt_argv)
     app.setStyle("Fusion")
     app.styleHints().setColorScheme(Qt.ColorScheme.Dark)

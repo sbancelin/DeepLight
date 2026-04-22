@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QPushButton, QDoubleSpinBox, QComboBox, QSizePolicy, QCheckBox,
     QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QFrame
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QLocale
 from PySide6.QtGui import QTransform, QPalette, QColor
 
 import numpy as np
@@ -111,7 +111,7 @@ def _apply_spinbox_palette(spinbox):
     spinbox.setPalette(spin_palette)
     spinbox.setAutoFillBackground(True)
     spinbox.setMinimumHeight(22)
-
+    spinbox.setLocale(QLocale.c())
 
 def ask_levels_min_max(parent=None, title="LUT Levels", lo0=0.0, hi0=255.0):
     dlg = QDialog(parent)

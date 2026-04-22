@@ -4,8 +4,8 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt, QTimer
 
 
 class _LaserCommandWorker(QObject):
-    command_finished = Signal(str, int)
-    command_failed = Signal(str, int, str)
+    command_finished = Signal(str, float)
+    command_failed = Signal(str, float, str)
 
     def __init__(self, hardware_manager, laser_manager, settings_manager):
         super().__init__()
@@ -17,9 +17,9 @@ class _LaserCommandWorker(QObject):
         self._running = False
         self._stopping = False
 
-    @Slot(str, int)
-    def enqueue(self, laser_name: str, value: int):
-        self._pending_values[str(laser_name)] = int(value)
+    @Slot(str, float)
+    def enqueue(self, laser_name: str, value: float):
+        self._pending_values[str(laser_name)] = float(value)
 
         if self._running or self._stopping:
             return
@@ -48,9 +48,9 @@ class _LaserCommandWorker(QObject):
         try:
             self._apply_power_change(laser_name, value)
         except Exception as e:
-            self.command_failed.emit(str(laser_name), int(value), str(e))
+            self.command_failed.emit(str(laser_name), float(value), str(e))
         else:
-            self.command_finished.emit(str(laser_name), int(value))
+            self.command_finished.emit(str(laser_name), float(value))
         finally:
             self._running = False
 
@@ -63,9 +63,9 @@ class _LaserCommandWorker(QObject):
 
         laser_name = next(iter(self._pending_values.keys()))
         value = self._pending_values.pop(laser_name)
-        return str(laser_name), int(value)
+        return str(laser_name), float(value)
 
-    def _apply_power_change(self, laser_name: str, value: int):
+    def _apply_power_change(self, laser_name: str, value: float):
         laser_name = str(laser_name)
 
         if laser_name in ("Mira 900", "Tumecs"):
@@ -87,10 +87,10 @@ class _LaserCommandWorker(QObject):
 
 
 class LaserManager(QObject):
-    command_finished = Signal(str, int)
-    command_failed = Signal(str, int, str)
+    command_finished = Signal(str, float)
+    command_failed = Signal(str, float, str)
 
-    _enqueue_requested = Signal(str, int)
+    _enqueue_requested = Signal(str, float)
     _stop_requested = Signal()
 
     def __init__(self, hardware_manager, laser_manager, settings_manager, parent=None):
@@ -116,8 +116,8 @@ class LaserManager(QObject):
         self._thread.start()
 
     @Slot(str, int)
-    def enqueue_power(self, laser_name: str, value: int):
-        self._enqueue_requested.emit(str(laser_name), int(value))
+    def enqueue_power(self, laser_name: str, value: float):
+        self._enqueue_requested.emit(str(laser_name), float(value))
 
     def close(self):
         try:

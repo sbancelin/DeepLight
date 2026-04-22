@@ -1,6 +1,6 @@
 from PySide6.QtCore import (QCoreApplication, QSize, Qt)
-from PySide6.QtGui import (QIcon, QTransform)
-from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGridLayout, QGroupBox, QSplitter, QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox,
+from PySide6.QtGui import (QIcon, QTransform, QShortcut, QKeySequence)
+from PySide6.QtWidgets import (QApplication, QLineEdit, QCheckBox, QDockWidget, QGridLayout, QGroupBox, QSplitter, QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy, QSpacerItem, QTabWidget, QWidget, QMessageBox)
 from .widgets.Scan_Widget import ScanWidget
 from .widgets.Laser_Widget import LaserWidget
@@ -417,6 +417,23 @@ class Ui_MainWindowDesign:
         self.pushButton_stop.clicked.connect(MainWindowDesign.stopButtonClicked)
         self.pushButton_shutter.toggled.connect(MainWindowDesign.shutterButtonClicked)
 
+        # ---------------- Global shortcuts ----------------
+        self.shortcut_preview_single = QShortcut(QKeySequence(Qt.Key_Space), MainWindowDesign)
+        self.shortcut_preview_single.setContext(Qt.ApplicationShortcut)
+        self.shortcut_preview_single.activated.connect(self._shortcut_preview_single)
+
+        self.shortcut_preview_continuous = QShortcut(QKeySequence("Ctrl+Space"), MainWindowDesign)
+        self.shortcut_preview_continuous.setContext(Qt.ApplicationShortcut)
+        self.shortcut_preview_continuous.activated.connect(self._shortcut_preview_continuous)
+
+        self.shortcut_stop = QShortcut(QKeySequence(Qt.Key_Escape), MainWindowDesign)
+        self.shortcut_stop.setContext(Qt.ApplicationShortcut)
+        self.shortcut_stop.activated.connect(self._shortcut_stop)
+
+        self.shortcut_shutter = QShortcut(QKeySequence("Ctrl+Q"), MainWindowDesign)
+        self.shortcut_shutter.setContext(Qt.ApplicationShortcut)
+        self.shortcut_shutter.activated.connect(self._shortcut_toggle_shutter)
+
         self.detector_widget.detectors_changed.connect(self.update_scan_layout)
         active_channels = self.detector_widget.detectors
         self.update_scan_layout(active_channels)
@@ -586,6 +603,47 @@ class Ui_MainWindowDesign:
             lo, hi = levels
 
         self._update_lut_axis(hist_lut, lo, hi, n_ticks=5)
+    
+    def _focused_widget_blocks_shortcuts(self):
+        fw = QApplication.focusWidget()
+        return isinstance(fw, QLineEdit)
+
+    def _shortcut_preview_single(self):
+        if self._focused_widget_blocks_shortcuts():
+            return
+
+        try:
+            self.pushButton_previewSingle.click()
+        except Exception:
+            pass
+
+    def _shortcut_preview_continuous(self):
+        if self._focused_widget_blocks_shortcuts():
+            return
+
+        try:
+            if not self.pushButton_previewcontinuous.isChecked():
+                self.pushButton_previewcontinuous.click()
+        except Exception:
+            pass
+
+    def _shortcut_stop(self):
+        if self._focused_widget_blocks_shortcuts():
+            return
+
+        try:
+            self.pushButton_stop.click()
+        except Exception:
+            pass
+
+    def _shortcut_toggle_shutter(self):
+        if self._focused_widget_blocks_shortcuts():
+            return
+
+        try:
+            self.pushButton_shutter.toggle()
+        except Exception:
+            pass
     
     def retranslateUi(self, MainWindowDesign):
         MainWindowDesign.setWindowTitle(QCoreApplication.translate("MainWindowDesign", u"MainWindow", None))
