@@ -174,8 +174,8 @@ class PositionerWidget(QWidget):
         }
         # Limites par défaut des axes
         self.axis_limits = {
-            "x": {"min": -25000, "max": 25000},
-            "y": {"min": -25000, "max": 25000},
+            "x": {"min": -20000, "max": 20000},
+            "y": {"min": -20000, "max": 20000},
             "z": {"min": 0, "max": 7000},
             "p": {"min": 0, "max": 180}
         }
@@ -350,7 +350,7 @@ class PositionerWidget(QWidget):
 
             # Colonne 7: Speed
             if pos in ("X - stage", "Y - stage"):
-                default_speed = "4.0"
+                default_speed = "3.8"
             elif pos == "Z-VCoil":
                 default_speed = "200"
             else:
@@ -498,9 +498,19 @@ class PositionerWidget(QWidget):
         for axis_key, shared_name in axis_map.items():
             s = self.axis_settings_manager.get_axis_settings(shared_name)
 
-            self.axis_limits[axis_key]["min"] = float(s.get("min_um", self.axis_limits[axis_key]["min"]))
-            self.axis_limits[axis_key]["max"] = float(s.get("max_um", self.axis_limits[axis_key]["max"]))
-            self.axis_velocity_limits[axis_key]["max"] = float(s.get("vel_max", self.axis_velocity_limits[axis_key]["max"]))
+            if axis_key in ("x", "y"):
+                self.axis_limits[axis_key]["min"] = -20000.0
+                self.axis_limits[axis_key]["max"] = 20000.0
+                self.axis_velocity_limits[axis_key]["min"] = 0.01
+                self.axis_velocity_limits[axis_key]["max"] = 3.8
+
+                ui = self.axis_ui.get(axis_key)
+                if ui is not None:
+                    ui["speed"].setText("3.8")
+            else:
+                self.axis_limits[axis_key]["min"] = float(s.get("min_um", self.axis_limits[axis_key]["min"]))
+                self.axis_limits[axis_key]["max"] = float(s.get("max_um", self.axis_limits[axis_key]["max"]))
+                self.axis_velocity_limits[axis_key]["max"] = float(s.get("vel_max", self.axis_velocity_limits[axis_key]["max"]))
 
             tol = float(s.get("tolerance", 0.1))
 
@@ -652,11 +662,11 @@ class PositionerWidget(QWidget):
 
             # Z : Page Up / Page Down
             if key == Qt.Key_PageUp:
-                self._move_axis_step("z", -1)
+                self._move_axis_step("z", +1)
                 return True
 
             if key == Qt.Key_PageDown:
-                self._move_axis_step("z", +1)
+                self._move_axis_step("z", -1)
                 return True
 
         return super().eventFilter(obj, event)

@@ -628,8 +628,9 @@ class ScanWidget(QWidget):
         temporal_layout.addWidget(spp_label, 0, 1)
 
         self.samples_per_pixel_edit = QLineEdit("1")
-        self._set_editable_lineedit_style(self.samples_per_pixel_edit)
-        self.samples_per_pixel_edit.returnPressed.connect(self._on_samples_per_pixel_return_pressed)
+        self.samples_per_pixel_edit.setEnabled(False)
+        self.samples_per_pixel_edit.setReadOnly(True)
+        self._set_disabled_lineedit_style(self.samples_per_pixel_edit)
         self.samples_per_pixel_edit.setProperty("last_valid_text", self.samples_per_pixel_edit.text())
         self.samples_per_pixel_edit.setMinimumWidth(0)
         self.samples_per_pixel_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)

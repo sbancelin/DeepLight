@@ -1421,27 +1421,45 @@ class MainWindow(QMainWindow):
         if img_item is None:
             return
 
-        # IMPORTANT:
-        # pos est en coordonnées de scene.
-        # Comme l'image est transformée en unités physiques (µm),
-        # il faut revenir dans le repère propre de l'ImageItem
-        # pour retrouver les indices pixel réels.
-        mouse_point_img = img_item.mapFromScene(pos)
+        view = im_widget.getView()
+        vb = view.vb
 
-        x = int(mouse_point_img.x())
-        y = int(mouse_point_img.y())
+        if not vb.sceneBoundingRect().contains(pos):
+            lbl = self.ui.im_status_labels.get(channel)
+            if lbl is not None:
+                unit = self._channel_unit_label(channel)
+                if unit == "V":
+                    lbl.setText("x: -  y: -  V: -")
+                elif unit == "counts":
+                    lbl.setText("x: -  y: -  counts: -")
+                else:
+                    lbl.setText("x: -  y: -  value: -")
+            return
+
+        # Coordonnées dans le repère affiché de l'image (donc en µm, comme le line profile)
+        p_view = vb.mapSceneToView(pos)
+        x_um = float(p_view.x())
+        y_um = float(p_view.y())
+
+        # Conversion vers indices pixel pour lire la valeur dans le tableau numpy
+        tr = img_item.transform()
+        scale_x = tr.m11() if tr.m11() != 0 else 1.0
+        scale_y = tr.m22() if tr.m22() != 0 else 1.0
+
+        x_px = int(np.floor(x_um / scale_x))
+        y_px = int(np.floor(y_um / scale_y))
 
         unit = self._channel_unit_label(channel)
 
-        if 0 <= x < img.shape[1] and 0 <= y < img.shape[0]:
-            value = float(img[y, x])
+        if 0 <= x_px < img.shape[1] and 0 <= y_px < img.shape[0]:
+            value = float(img[y_px, x_px])
 
             if unit == "V":
-                text = f"x: {x:4d}  y: {y:4d}  V: {value:.4f}"
+                text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  V: {value:.4f}"
             elif unit == "counts":
-                text = f"x: {x:4d}  y: {y:4d}  counts: {value:.0f}"
+                text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  counts: {value:.0f}"
             else:
-                text = f"x: {x:4d}  y: {y:4d}  value: {value:.4f}"
+                text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  value: {value:.4f}"
         else:
             if unit == "V":
                 text = "x: -  y: -  V: -"

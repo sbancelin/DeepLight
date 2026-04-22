@@ -53,11 +53,13 @@ PI_V308_SERIAL = "123041734"
 # Kinesis path
 THORLABS_KINESIS_PATH = r"C:\Program Files\Thorlabs\Kinesis"
 
-# Mira900 power mapping (requested for now: 0° = 0%, 180° = 100%)
+# Half-wave plate power mapping:
+# 0%   -> offset_deg
+# 100% -> offset_deg + 45°
 MIRA_POWER_MIN_PERCENT = 0.0
 MIRA_POWER_MAX_PERCENT = 100.0
-MIRA_ROTATOR_MIN_DEG = 0.0
-MIRA_ROTATOR_MAX_DEG = 180.0
+MIRA_ROTATOR_REL_MIN_DEG = 0.0
+MIRA_ROTATOR_REL_MAX_DEG = 45.0
 
 # PI Z defaults
 PI_Z_AXIS_ID = 1
@@ -703,24 +705,22 @@ class _ThorlabsRotationController:
 
     def _absolute_angle_deg_to_power_percent(self, angle_deg: float, offset_deg: float) -> float:
         """
-        Inverse mapping for display/readback.
+        Absolute angle -> signed user power (%), relative to offset.
 
-        Behaviour:
-        - relative angle in [0°, 45°] -> physical Malus mapping
-        - below 0° and above 45° -> linear angular extrapolation
-          back to the virtual test range (%)
+        angle > offset -> positive %
+        angle < offset -> negative %
         """
         theta_rel_deg = float(angle_deg) - float(offset_deg)
+        sign = -1.0 if theta_rel_deg < 0.0 else 1.0
+        mag_deg = abs(theta_rel_deg)
 
-        if 0.0 <= theta_rel_deg <= MIRA_ROTATOR_REL_MAX_DEG:
-            theta_rel_rad = math.radians(theta_rel_deg)
+        if mag_deg <= MIRA_ROTATOR_REL_MAX_DEG:
+            theta_rel_rad = math.radians(mag_deg)
             p = math.sin(2.0 * theta_rel_rad) ** 2
-            return 100.0 * p
+            return sign * (100.0 * p)
 
-        if theta_rel_deg < 0.0:
-            return 100.0 * theta_rel_deg / MIRA_ROTATOR_REL_MAX_DEG
-
-        return 100.0 + 100.0 * (theta_rel_deg - MIRA_ROTATOR_REL_MAX_DEG) / MIRA_ROTATOR_REL_MAX_DEG
+        extra = 100.0 + 100.0 * (mag_deg - MIRA_ROTATOR_REL_MAX_DEG) / MIRA_ROTATOR_REL_MAX_DEG
+        return sign * extra
     
     def move_to_angle_deg(self, angle_deg: float, speed: int, steps_per_degree: float, blocking: bool = True):
         if not self.connected:
@@ -1231,12 +1231,9 @@ class _ScientificaMotion8XYController:
         self._transceive(payload)
 
     def set_xy_velocity(self, speed_x_mm_s: float, speed_y_mm_s: float):
-        speed_mm_s = max(float(speed_x_mm_s), float(speed_y_mm_s))
-        self.configure_xy_profile(
-            speed_mm_s=speed_mm_s,
-            accel_mm_s2=SCIENTIFICA_STAGE_DEFAULT_ACCEL_MM_S2,
-            profile_index=SCIENTIFICA_STAGE_PROFILE_INDEX,
-        )
+        # Intentionnellement no-op:
+        # la vitesse/accélération XY restent pilotées par la config du contrôleur.
+        return
 
     def stop(self, abrupt: bool = False):
         cmd = 0x08 if abrupt else 0x07
@@ -1507,13 +1504,11 @@ class RealHardwarePositionerManager(PositionerManager):
                 self.movingChanged.emit(ax_name, True)
 
             try:
-                self._xy.configure_xy_profile(
-                    speed_mm_s=speed,
-                    accel_mm_s2=SCIENTIFICA_STAGE_DEFAULT_ACCEL_MM_S2,
-                    profile_index=SCIENTIFICA_STAGE_PROFILE_INDEX,
-                )
-
+                # IMPORTANT:
+                # On n'écrit plus les paramètres de vitesse/accélération dans la UMS.
+                # La platine garde les réglages définis côté contrôleur / LinLab.
                 self._xy.move_xy_abs_um(x_target, y_target)
+
             except Exception:
                 for ax_name in ("x", "y"):
                     st_ax = self._state[ax_name]
@@ -1566,12 +1561,11 @@ class RealHardwarePositionerManager(PositionerManager):
             self.movingChanged.emit(ax_name, True)
 
         try:
-            self._xy.configure_xy_profile(
-                speed_mm_s=speed,
-                accel_mm_s2=SCIENTIFICA_STAGE_DEFAULT_ACCEL_MM_S2,
-                profile_index=SCIENTIFICA_STAGE_PROFILE_INDEX,
-            )
+            # IMPORTANT:
+            # On n'écrit plus les paramètres de vitesse/accélération dans la UMS.
+            # La platine garde les réglages définis côté contrôleur / LinLab.
             self._xy.move_xy_abs_um(x_target_abs, y_target_abs)
+
         except Exception:
             for ax_name in ("x", "y"):
                 st_ax = self._state[ax_name]

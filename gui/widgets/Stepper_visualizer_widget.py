@@ -483,7 +483,15 @@ class StepperVisualizerWidget(QWidget):
         x_data = np.asarray(x_data, dtype=np.float64) / 1000.0
         y_data = np.asarray(y_data, dtype=np.float64)
 
-        self._curve.setData(x_data, y_data)
+        y_display, unit = self._scale_y_for_display(y_data)
+
+        self._curve.setData(x_data, y_display)
+
+        styles = {"color": "white", "font-size": "10pt"}
+        if unit == "°":
+            self.stepper_plot.setLabel('left', 'Angle', units='°', **styles)
+        else:
+            self.stepper_plot.setLabel('left', 'Pos', units=unit, **styles)
 
         if self.autoscale_checkbox.isChecked():
             self.stepper_plot.enableAutoRange()
@@ -526,12 +534,13 @@ class StepperVisualizerWidget(QWidget):
 
     def update_plot_labels(self, text):
         styles = {"color": "white", "font-size": "10pt"}
-        self.stepper_plot.setLabel('bottom', 'Time (s)', **styles)
+        self.stepper_plot.setLabel('bottom', 'Time', units='s', **styles)
 
-        if text in ("Z-Vcoil", "X-Stage", "Y-Stage", "None"):
-            self.stepper_plot.setLabel('left', 'Pos (µm)', **styles)
-        elif text == "Polarization":
-            self.stepper_plot.setLabel('left', 'Angle (°)', **styles)
+        if text == "Polarization":
+            self.stepper_plot.setLabel('left', 'Angle', units='°', **styles)
+        else:
+            # valeur provisoire ; update_plot() mettra la bonne unité ensuite
+            self.stepper_plot.setLabel('left', 'Pos', units='µm', **styles)
 
     def toggle_autoscale(self, state):
         if state == Qt.CheckState.Checked.value:
@@ -549,6 +558,27 @@ class StepperVisualizerWidget(QWidget):
         # des commandes déjà émises.
         self._refresh_full_curve(axis_name)
 
+    def _scale_y_for_display(self, y_data):
+        axis_name = self.stepper_selector.currentText()
+
+        y_data = np.asarray(y_data, dtype=np.float64)
+
+        # Polarization : pas de conversion
+        if axis_name == "Polarization":
+            return y_data, "°"
+
+        if y_data.size == 0:
+            return y_data, "µm"
+
+        max_abs = float(np.max(np.abs(y_data)))
+
+        if max_abs >= 1_000_000.0:
+            return y_data / 1_000_000.0, "m"
+        elif max_abs >= 1000.0:
+            return y_data / 1000.0, "mm"
+        else:
+            return y_data, "µm"
+    
     def reset_buffer(self):
         self._stream_points.clear()
         self._full_points.clear()

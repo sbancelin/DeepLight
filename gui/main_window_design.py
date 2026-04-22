@@ -316,8 +316,8 @@ class Ui_MainWindowDesign:
             collapsed=False,
             parent=self.right_panel_dock.container
         )
-        self.analog_panel = CollapsiblePanel("Visualizer Analog", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
-        self.stepper_panel = CollapsiblePanel("Visualizer Stepper", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
+        self.analog_panel = CollapsiblePanel("Analog Visualizer", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
+        self.stepper_panel = CollapsiblePanel("Stepper Visualizer", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
         self.line_profile_panel = CollapsiblePanel("Line Profile", self.line_profile_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.histogram_panel = CollapsiblePanel("Histogram", self.histogram_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)

@@ -161,7 +161,7 @@ class ExecutionPlan:
 # ---------------------------------------------------------
 SCAN_AXIS_DEFAULTS = {
     "X-Galvo": {
-        "conv_um_per_v": 100.0,
+        "conv_um_per_v": 72.0,
         "vmin": -10.0,
         "vmax": 10.0,
         "overscan_fraction": 0.10,
@@ -169,7 +169,7 @@ SCAN_AXIS_DEFAULTS = {
         "vel_max": 1000.0,
     },
     "Y-Galvo": {
-        "conv_um_per_v": 100.0,
+        "conv_um_per_v": 70.0,
         "vmin": -10.0,
         "vmax": 10.0,
         "overscan_fraction": 0.0,
@@ -180,15 +180,15 @@ SCAN_AXIS_DEFAULTS = {
 
 STEPPER_AXIS_DEFAULTS = {
     "X-Stage": {
-        "min_um": -10000,
-        "max_um": 10000.0,
-        "vel_max": 1.0,
+        "min_um": -20000,
+        "max_um": 20000.0,
+        "vel_max": 4.0,
         "tolerance": 0.1,
     },
     "Y-Stage": {
-        "min_um": -10000.0,
-        "max_um": 10000.0,
-        "vel_max": 1.0,
+        "min_um": -20000.0,
+        "max_um": 20000.0,
+        "vel_max": 4.0,
         "tolerance": 0.1,
     },
     "Z-Vcoil": {

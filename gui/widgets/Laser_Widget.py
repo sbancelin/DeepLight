@@ -72,12 +72,12 @@ LASER_DEFAULTS = {
     "Mira 900": {
         "speed": 429410,
         "steps_per_degree": 1919.14,
-        "offset_deg": 0.0,
+        "offset_deg": 10,
     },
     "Tumecs": {
         "speed": 429410,
         "steps_per_degree": 1919.14,
-        "offset_deg": 0.0,
+        "offset_deg": 8.0,
     },
 }
 
@@ -86,6 +86,7 @@ POWER_UI_MIN = -10.0
 POWER_UI_MAX = 110.0
 POWER_UI_DECIMALS = 1
 POWER_UI_STEP = 0.1
+POWER_BUTTON_STEP = 1.0
 POWER_SLIDER_SCALE = 10   # 0.1% resolution -> 0..1000
 
 def _force_dot_locale_on_spinbox(spinbox):
@@ -347,11 +348,11 @@ class LaserWidget(QWidget):
         minus_button.setStyleSheet(SMALL_BUTTON_STYLE)
 
         plus_button.clicked.connect(
-            lambda _, sp=setpoint_spin: sp.setValue(min(POWER_UI_MAX, sp.value() + POWER_UI_STEP))
+            lambda _, sp=setpoint_spin: sp.setValue(min(POWER_UI_MAX, sp.value() + POWER_BUTTON_STEP))
         )
 
         minus_button.clicked.connect(
-            lambda _, sp=setpoint_spin: sp.setValue(max(POWER_UI_MIN, sp.value() - POWER_UI_STEP))
+            lambda _, sp=setpoint_spin: sp.setValue(max(POWER_UI_MIN, sp.value() - POWER_BUTTON_STEP))
         )
 
         show_power_button = laser_name not in LASERS_WITHOUT_POWER_BUTTON
