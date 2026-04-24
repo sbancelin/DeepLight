@@ -225,10 +225,8 @@ class _SparkAlcorSerialController:
     CMD_CLEAR_ERRORS = 0x80000003
     CMD_LASER_STATUS = 0x00000004
     CMD_SET_LASER_STATUS = 0x80000004
-    CMD_OUTPUT_LEVEL_PERCENT = 0x0000001E
-    CMD_SET_OUTPUT_LEVEL_PERCENT = 0x8000001E
-    CMD_MODULATION = 0x0000001F
-    CMD_SET_MODULATION = 0x8000001F
+    CMD_OUTPUT_LEVEL_PERCENT = 0x0000000E
+    CMD_SET_OUTPUT_LEVEL_PERCENT = 0x8000000E
 
     def __init__(self, port: str, baudrate: int = 115200, timeout_s: float = 0.7):
         self.port = str(port)
@@ -413,21 +411,8 @@ class _SparkAlcorSerialController:
             return False
         return bool(int(data[0]))
 
-    def set_modulation_internal(self):
-        # 0 = external, 1 = internal
-        self._transceive(self.CMD_SET_MODULATION, bytes([1]))
-
-    def get_modulation_internal(self) -> bool:
-        data = self._transceive(self.CMD_MODULATION)
-        if not data:
-            return False
-        return bool(int(data[0]))
-
     def set_power_percent(self, percent: float):
         percent = max(0.0, min(100.0, float(percent)))
-
-        # Pour piloter la puissance depuis DeepLight, on force la modulation interne.
-        self.set_modulation_internal()
 
         payload = struct.pack("<f", float(percent))
         self._transceive(self.CMD_SET_OUTPUT_LEVEL_PERCENT, payload)
@@ -482,9 +467,9 @@ class LaserManager(QObject):
 
             try:
                 self._alcor.connect()
-                p = self._alcor.get_power_percent()
+                self._alcor.set_power_percent(0.0)
                 enabled = self._alcor.get_enabled()
-                print(f"[SparkAlcor] Power={p:.1f}% enabled={enabled}")
+                print(f"[SparkAlcor] Initialized power=0.0% enabled={enabled}")
             except Exception as e:
                 print(f"[SparkAlcor] Connection failed: {e}")
 

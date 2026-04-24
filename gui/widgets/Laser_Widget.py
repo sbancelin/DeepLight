@@ -371,6 +371,9 @@ class LaserWidget(QWidget):
         laser_layout.addWidget(setpoint_slider, 0, 3, 1, 2)
         laser_layout.addWidget(plus_button, 0, 5)
 
+        if power_button is not None:
+            laser_layout.addWidget(power_button, 0, 6)
+
         def _on_spin_changed(val, slider=setpoint_slider, label=current_value_label):
             slider_value = self._power_to_slider_value(val)
             if slider.value() != slider_value:
@@ -457,6 +460,17 @@ class LaserWidget(QWidget):
         if label is not None:
             label.setText(f"{value:.1f}%")
 
+    def get_laser_power_value(self, laser_name: str) -> float:
+        controls = self.laser_controls.get(laser_name)
+        if not controls:
+            return 0.0
+
+        spin = controls.get("spin")
+        if spin is None:
+            return 0.0
+
+        return float(spin.value())
+    
     def set_laser_enabled(self, laser_name: str, enabled: bool):
         controls = self.laser_controls.get(laser_name)
         if not controls:
