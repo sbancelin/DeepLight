@@ -76,6 +76,11 @@ COBOLT_FLAMENCO_PORT = "COM12"
 COBOLT_FLAMENCO_BAUDRATE = 115200
 COBOLT_FLAMENCO_MAX_POWER_MW = 300.0   # <-- à ajuster selon ton modèle réel
 
+# Spark Lasers ALCOR / XSight
+SPARK_ALCOR_PORT = "COM14"
+SPARK_ALCOR_BAUDRATE = 115200
+SPARK_ALCOR_TIMEOUT_S = 0.7
+
 # Scientifica Motion 8 XY stage (virtual serial port)
 SCIENTIFICA_STAGE_PORT = "COM11"
 SCIENTIFICA_STAGE_BAUDRATE = 9600
@@ -200,6 +205,242 @@ class _CoboltLaserController:
 
 
 # =============================================================================
+# SPARK ALCOR LASER CONTROLLER
+# =============================================================================
+
+class _SparkAlcorSerialController:
+    """
+    Spark Lasers ALCOR serial controller.
+
+    Protocol:
+    - 115200 bauds, 8N1
+    - binary packets
+    - MODBUS CRC16, polynomial 0xA001, init 0xFFFF
+    """
+
+    MAGIC = 0x53
+
+    CMD_PING = 0x00000000
+    CMD_ERRORS = 0x00000001
+    CMD_CLEAR_ERRORS = 0x80000003
+    CMD_LASER_STATUS = 0x00000004
+    CMD_SET_LASER_STATUS = 0x80000004
+    CMD_OUTPUT_LEVEL_PERCENT = 0x0000001E
+    CMD_SET_OUTPUT_LEVEL_PERCENT = 0x8000001E
+    CMD_MODULATION = 0x0000001F
+    CMD_SET_MODULATION = 0x8000001F
+
+    def __init__(self, port: str, baudrate: int = 115200, timeout_s: float = 0.7):
+        self.port = str(port)
+        self.baudrate = int(baudrate)
+        self.timeout_s = float(timeout_s)
+
+        self.serial = None
+        self.connected = False
+        self._request_id = 0
+        self._io_lock = Lock()
+
+    def connect(self):
+        if self.connected and self.serial is not None:
+            return
+
+        self.serial = serial.Serial(
+            self.port,
+            self.baudrate,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=self.timeout_s,
+            write_timeout=self.timeout_s,
+        )
+
+        self.connected = True
+
+        try:
+            self.ping()
+            print(f"[SparkAlcor] Connected on {self.port} @ {self.baudrate}")
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        try:
+            if self.serial is not None:
+                self.serial.close()
+        finally:
+            self.serial = None
+            self.connected = False
+
+    def _ensure_connected(self):
+        if not self.connected or self.serial is None:
+            self.connect()
+
+    @staticmethod
+    def _crc16_modbus(data: bytes, crc: int = 0xFFFF) -> int:
+        crc = int(crc) & 0xFFFF
+
+        for byte in bytes(data):
+            crc ^= int(byte)
+
+            for _ in range(8):
+                if crc & 0x0001:
+                    crc = (crc >> 1) ^ 0xA001
+                else:
+                    crc >>= 1
+
+                crc &= 0xFFFF
+
+        return crc & 0xFFFF
+
+    def _next_request_id(self) -> int:
+        self._request_id = (int(self._request_id) + 1) & 0xFF
+        return int(self._request_id)
+
+    def _build_packet(self, command_id: int, data: bytes = b"") -> bytes:
+        data = bytes(data or b"")
+
+        request_id = self._next_request_id()
+
+        header = bytearray(10)
+        header[0] = self.MAGIC
+        header[1] = request_id
+        header[2:6] = struct.pack("<I", int(command_id) & 0xFFFFFFFF)
+        header[6:8] = struct.pack("<H", len(data))
+        header_crc = self._crc16_modbus(header[:8])
+        header[8:10] = struct.pack("<H", header_crc)
+
+        packet = bytes(header)
+
+        if data:
+            data_crc = self._crc16_modbus(data)
+            packet += data + struct.pack("<H", data_crc)
+
+        return packet
+
+    def _transceive(self, command_id: int, data: bytes = b"") -> bytes:
+        self._ensure_connected()
+
+        packet = self._build_packet(command_id, data=data)
+        request_id = packet[1]
+
+        with self._io_lock:
+            try:
+                self.serial.reset_input_buffer()
+            except Exception:
+                pass
+
+            self.serial.write(packet)
+            self.serial.flush()
+
+            response_header = self.serial.read(7)
+
+        if len(response_header) != 7:
+            raise TimeoutError(
+                f"Spark ALCOR timeout: expected 7 response header bytes, "
+                f"got {len(response_header)}"
+            )
+
+        if response_header[0] != self.MAGIC:
+            raise RuntimeError(
+                f"Spark ALCOR invalid response magic: 0x{response_header[0]:02X}"
+            )
+
+        if response_header[1] != request_id:
+            raise RuntimeError(
+                f"Spark ALCOR response request_id mismatch: "
+                f"sent={request_id}, got={response_header[1]}"
+            )
+
+        protocol_error = int(response_header[2])
+        data_len = struct.unpack("<H", response_header[3:5])[0]
+        received_header_crc = struct.unpack("<H", response_header[5:7])[0]
+        expected_header_crc = self._crc16_modbus(response_header[:5])
+
+        if received_header_crc != expected_header_crc:
+            raise RuntimeError(
+                f"Spark ALCOR header CRC mismatch: "
+                f"got=0x{received_header_crc:04X}, expected=0x{expected_header_crc:04X}"
+            )
+
+        if protocol_error != 0:
+            raise RuntimeError(f"Spark ALCOR protocol error: 0x{protocol_error:02X}")
+
+        if data_len <= 0:
+            return b""
+
+        with self._io_lock:
+            body = self.serial.read(int(data_len) + 2)
+
+        if len(body) != int(data_len) + 2:
+            raise TimeoutError(
+                f"Spark ALCOR timeout while reading response data: "
+                f"expected {int(data_len) + 2}, got {len(body)}"
+            )
+
+        response_data = body[:data_len]
+        received_data_crc = struct.unpack("<H", body[data_len:data_len + 2])[0]
+        expected_data_crc = self._crc16_modbus(response_data)
+
+        if received_data_crc != expected_data_crc:
+            raise RuntimeError(
+                f"Spark ALCOR data CRC mismatch: "
+                f"got=0x{received_data_crc:04X}, expected=0x{expected_data_crc:04X}"
+            )
+
+        return response_data
+
+    def ping(self):
+        self._transceive(self.CMD_PING)
+
+    def clear_errors(self):
+        self._transceive(self.CMD_CLEAR_ERRORS)
+
+    def get_errors(self) -> int:
+        data = self._transceive(self.CMD_ERRORS)
+        if len(data) < 8:
+            return 0
+        lo, hi = struct.unpack("<II", data[:8])
+        return int(lo) | (int(hi) << 32)
+
+    def set_enabled(self, enabled: bool):
+        payload = bytes([1 if bool(enabled) else 0])
+        self._transceive(self.CMD_SET_LASER_STATUS, payload)
+        print(f"[SparkAlcor] set_enabled={bool(enabled)}")
+
+    def get_enabled(self) -> bool:
+        data = self._transceive(self.CMD_LASER_STATUS)
+        if not data:
+            return False
+        return bool(int(data[0]))
+
+    def set_modulation_internal(self):
+        # 0 = external, 1 = internal
+        self._transceive(self.CMD_SET_MODULATION, bytes([1]))
+
+    def get_modulation_internal(self) -> bool:
+        data = self._transceive(self.CMD_MODULATION)
+        if not data:
+            return False
+        return bool(int(data[0]))
+
+    def set_power_percent(self, percent: float):
+        percent = max(0.0, min(100.0, float(percent)))
+
+        # Pour piloter la puissance depuis DeepLight, on force la modulation interne.
+        self.set_modulation_internal()
+
+        payload = struct.pack("<f", float(percent))
+        self._transceive(self.CMD_SET_OUTPUT_LEVEL_PERCENT, payload)
+
+        print(f"[SparkAlcor] set_power_percent={percent:.2f}%")
+
+    def get_power_percent(self) -> float:
+        data = self._transceive(self.CMD_OUTPUT_LEVEL_PERCENT)
+        if len(data) < 4:
+            return 0.0
+        return float(struct.unpack("<f", data[:4])[0])
+
+# =============================================================================
 # LASER MANAGER
 # =============================================================================
 
@@ -218,6 +459,7 @@ class LaserManager(QObject):
         self.backend_name = (backend_name or "mock").lower()
 
         self._cobolt = None
+        self._alcor = None
 
         if self.backend_name == "nidaq":
             self._cobolt = _CoboltLaserController(
@@ -232,6 +474,20 @@ class LaserManager(QObject):
             except Exception as e:
                 print(f"[Cobolt] Connection failed: {e}")
 
+            self._alcor = _SparkAlcorSerialController(
+                port=SPARK_ALCOR_PORT,
+                baudrate=SPARK_ALCOR_BAUDRATE,
+                timeout_s=SPARK_ALCOR_TIMEOUT_S,
+            )
+
+            try:
+                self._alcor.connect()
+                p = self._alcor.get_power_percent()
+                enabled = self._alcor.get_enabled()
+                print(f"[SparkAlcor] Power={p:.1f}% enabled={enabled}")
+            except Exception as e:
+                print(f"[SparkAlcor] Connection failed: {e}")
+
     def get_power_percent(self, laser_name: str) -> float:
         if self.backend_name != "nidaq":
             return 0.0
@@ -241,6 +497,11 @@ class LaserManager(QObject):
                 return 0.0
             p_w = self._cobolt.get_power_setpoint_w()
             return 100.0 * p_w * 1000.0 / float(COBOLT_FLAMENCO_MAX_POWER_MW)
+
+        if laser_name == "Alcor 920":
+            if self._alcor is None:
+                return 0.0
+            return self._alcor.get_power_percent()
 
         return 0.0
 
@@ -272,6 +533,15 @@ class LaserManager(QObject):
             except Exception as e:
                 print(f"[LaserManager] Cobolt get_enabled failed: {e}")
                 return False
+            
+        if laser_name == "Alcor 920":
+            if self._alcor is None:
+                return False
+            try:
+                return bool(self._alcor.get_enabled())
+            except Exception as e:
+                print(f"[LaserManager] SparkAlcor get_enabled failed: {e}")
+                return False
 
         return False
     
@@ -292,7 +562,10 @@ class LaserManager(QObject):
             return
 
         if laser_name == "Alcor 920":
-            print(f"[LaserManager] Alcor set_power_percent not implemented yet: percent={percent}")
+            if self._alcor is None:
+                raise RuntimeError("Spark ALCOR controller is not initialized.")
+
+            self._alcor.set_power_percent(percent)
             return
 
     def close(self):
@@ -308,6 +581,27 @@ class LaserManager(QObject):
         except Exception:
             pass
 
+        try:
+            if self._alcor is not None:
+                self._alcor.close()
+        except Exception:
+            pass
+
+    def set_enabled(self, laser_name: str, enabled: bool):
+        if not self._is_real_backend():
+            print(f"[LaserManager] mock set_enabled laser={laser_name} enabled={enabled}")
+            return
+
+        laser_name = str(laser_name)
+
+        if laser_name == "Alcor 920":
+            if self._alcor is None:
+                raise RuntimeError("Spark ALCOR controller is not initialized.")
+
+            self._alcor.set_enabled(bool(enabled))
+            return
+
+        print(f"[LaserManager] set_enabled not implemented for {laser_name!r}")
 
 # =============================================================================
 # THORLABS KINESIS LOADER

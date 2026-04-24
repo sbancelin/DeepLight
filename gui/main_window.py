@@ -1567,6 +1567,7 @@ class MainWindow(QMainWindow):
     def _connect_laser_controls(self):
         lw = self.ui.laser_widget
         lw.laser_power_changed.connect(self.laser_command_manager.enqueue_power)
+        lw.laser_power_toggled.connect(self._on_laser_power_toggled)
         self.laser_command_manager.command_finished.connect(self._on_laser_command_finished)
         self.laser_command_manager.command_failed.connect(self._on_laser_command_failed)
 
@@ -1584,3 +1585,24 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Laser error ({laser_name}): {message}", 5000)
         except Exception:
             pass
+
+    def _on_laser_power_toggled(self, laser_name: str, enabled: bool):
+        laser_name = str(laser_name)
+
+        try:
+            # Si tu utilises le Laser_Manager.py asynchrone
+            if hasattr(self, "laser_command_manager"):
+                self.laser_command_manager.enqueue_enabled(laser_name, bool(enabled))
+                return
+
+            # Fallback si tu appelles directement le manager matériel
+            self.laser_manager.set_enabled(laser_name, bool(enabled))
+
+        except Exception as e:
+            print(f"[MainWindow] laser ON/OFF command failed for {laser_name}={enabled}: {e}")
+
+            try:
+                current = self.laser_manager.get_enabled(laser_name)
+                self.ui.laser_widget.set_laser_enabled(laser_name, bool(current))
+            except Exception:
+                self.ui.laser_widget.set_laser_enabled(laser_name, False)

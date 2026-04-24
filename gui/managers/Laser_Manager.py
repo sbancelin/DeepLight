@@ -6,6 +6,8 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt, QTimer
 class _LaserCommandWorker(QObject):
     command_finished = Signal(str, float)
     command_failed = Signal(str, float, str)
+    enabled_finished = Signal(str, bool)
+    enabled_failed = Signal(str, bool, str)
 
     def __init__(self, hardware_manager, laser_manager, settings_manager):
         super().__init__()
@@ -64,6 +66,15 @@ class _LaserCommandWorker(QObject):
         laser_name = next(iter(self._pending_values.keys()))
         value = self._pending_values.pop(laser_name)
         return str(laser_name), float(value)
+    
+    @Slot(str, bool)
+    def set_enabled(self, laser_name: str, enabled: bool):
+        try:
+            self.laser_manager.set_enabled(str(laser_name), bool(enabled))
+        except Exception as e:
+            self.enabled_failed.emit(str(laser_name), bool(enabled), str(e))
+        else:
+            self.enabled_finished.emit(str(laser_name), bool(enabled))
 
     def _apply_power_change(self, laser_name: str, value: float):
         laser_name = str(laser_name)
@@ -89,9 +100,12 @@ class _LaserCommandWorker(QObject):
 class LaserManager(QObject):
     command_finished = Signal(str, float)
     command_failed = Signal(str, float, str)
+    enabled_finished = Signal(str, bool)
+    enabled_failed = Signal(str, bool, str)
 
     _enqueue_requested = Signal(str, float)
     _stop_requested = Signal()
+    _enabled_requested = Signal(str, bool)
 
     def __init__(self, hardware_manager, laser_manager, settings_manager, parent=None):
         super().__init__(parent)
@@ -113,12 +127,21 @@ class LaserManager(QObject):
         self._worker.command_finished.connect(self.command_finished)
         self._worker.command_failed.connect(self.command_failed)
 
+        self._enabled_requested.connect(self._worker.set_enabled, Qt.QueuedConnection)
+
+        self._worker.enabled_finished.connect(self.enabled_finished)
+        self._worker.enabled_failed.connect(self.enabled_failed)
+
         self._thread.start()
 
     @Slot(str, int)
     def enqueue_power(self, laser_name: str, value: float):
         self._enqueue_requested.emit(str(laser_name), float(value))
 
+    @Slot(str, bool)
+    def enqueue_enabled(self, laser_name: str, enabled: bool):
+        self._enabled_requested.emit(str(laser_name), bool(enabled))
+    
     def close(self):
         try:
             self._stop_requested.emit()
