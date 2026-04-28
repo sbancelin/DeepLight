@@ -1204,16 +1204,12 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def on_acquisition_started(self):
-        """Gère le démarrage de l'acquisition."""
-        try:
-            self.ui.positioner_widget.set_keyboard_shortcuts_locked(True)
-        except Exception:
-            pass
-        
+        """Gère le démarrage d'un run acquisition/preview."""
         try:
             self.ui.visu_step_widget.set_running(True)
         except Exception:
             pass
+
         self.user_shutter_override = None
         self._update_controls_enabled(True)
 
@@ -1546,12 +1542,18 @@ class MainWindow(QMainWindow):
         self._mouse_move_proxies.clear()
         self.connect_image_mouse_tracking()
 
+        try:
+            self.ui.positioner_widget.set_keyboard_shortcuts_locked(True)
+        except Exception:
+            pass
+        
         self.start_scan_outputs(scan_parameters, mode="acquisition")
         self.acquisition_manager.start_acquisition(scan_parameters)
     
     @Slot()
     def stopButtonClicked(self):
         """Arrête l'acquisition en cours."""
+        
         self.acquisition_manager.stop_acquisition()
 
         try:

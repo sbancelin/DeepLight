@@ -1604,7 +1604,7 @@ class RealHardwarePositionerManager(PositionerManager):
             return changed
 
         except Exception as e:
-            self._log(f"refresh failed axis={axis}: {e}")
+            #self._log(f"refresh failed axis={axis}: {e}")
             return False
 
     @Slot()
