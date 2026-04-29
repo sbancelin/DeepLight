@@ -9,6 +9,11 @@ class _LaserCommandWorker(QObject):
     enabled_finished = Signal(str, bool)
     enabled_failed = Signal(str, bool, str)
 
+    gdd_finished = Signal(str, float)
+    gdd_failed = Signal(str, float, str)
+    pulse_picker_finished = Signal(str, int)
+    pulse_picker_failed = Signal(str, int, str)
+
     def __init__(self, hardware_manager, laser_manager, settings_manager):
         super().__init__()
         self.hardware_manager = hardware_manager
@@ -76,6 +81,24 @@ class _LaserCommandWorker(QObject):
         else:
             self.enabled_finished.emit(str(laser_name), bool(enabled))
 
+    @Slot(str, float)
+    def set_gdd(self, laser_name: str, gdd_fs2: float):
+        try:
+            self.laser_manager.set_gdd_fs2(str(laser_name), float(gdd_fs2))
+        except Exception as e:
+            self.gdd_failed.emit(str(laser_name), float(gdd_fs2), str(e))
+        else:
+            self.gdd_finished.emit(str(laser_name), float(gdd_fs2))
+
+    @Slot(str, int)
+    def set_pulse_picker(self, laser_name: str, n: int):
+        try:
+            self.laser_manager.set_pulse_picker_divider(str(laser_name), int(n))
+        except Exception as e:
+            self.pulse_picker_failed.emit(str(laser_name), int(n), str(e))
+        else:
+            self.pulse_picker_finished.emit(str(laser_name), int(n))
+    
     def _apply_power_change(self, laser_name: str, value: float):
         laser_name = str(laser_name)
 
@@ -103,9 +126,17 @@ class LaserManager(QObject):
     enabled_finished = Signal(str, bool)
     enabled_failed = Signal(str, bool, str)
 
+    gdd_finished = Signal(str, float)
+    gdd_failed = Signal(str, float, str)
+    pulse_picker_finished = Signal(str, int)
+    pulse_picker_failed = Signal(str, int, str)
+
     _enqueue_requested = Signal(str, float)
     _stop_requested = Signal()
     _enabled_requested = Signal(str, bool)
+
+    _gdd_requested = Signal(str, float)
+    _pulse_picker_requested = Signal(str, int)
 
     def __init__(self, hardware_manager, laser_manager, settings_manager, parent=None):
         super().__init__(parent)
@@ -129,8 +160,17 @@ class LaserManager(QObject):
 
         self._enabled_requested.connect(self._worker.set_enabled, Qt.QueuedConnection)
 
+        self._gdd_requested.connect(self._worker.set_gdd, Qt.QueuedConnection)
+        self._pulse_picker_requested.connect(self._worker.set_pulse_picker, Qt.QueuedConnection)
+
         self._worker.enabled_finished.connect(self.enabled_finished)
         self._worker.enabled_failed.connect(self.enabled_failed)
+
+        self._worker.gdd_finished.connect(self.gdd_finished)
+        self._worker.gdd_failed.connect(self.gdd_failed)
+
+        self._worker.pulse_picker_finished.connect(self.pulse_picker_finished)
+        self._worker.pulse_picker_failed.connect(self.pulse_picker_failed)
 
         self._thread.start()
 
@@ -141,6 +181,15 @@ class LaserManager(QObject):
     @Slot(str, bool)
     def enqueue_enabled(self, laser_name: str, enabled: bool):
         self._enabled_requested.emit(str(laser_name), bool(enabled))
+    
+    @Slot(str, float)
+    def enqueue_gdd(self, laser_name: str, gdd_fs2: float):
+        self._gdd_requested.emit(str(laser_name), float(gdd_fs2))
+
+
+    @Slot(str, int)
+    def enqueue_pulse_picker(self, laser_name: str, n: int):
+        self._pulse_picker_requested.emit(str(laser_name), int(n))
     
     def close(self):
         try:

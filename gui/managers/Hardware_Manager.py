@@ -228,6 +228,12 @@ class _SparkAlcorSerialController:
     CMD_OUTPUT_LEVEL_PERCENT = 0x0000000E
     CMD_SET_OUTPUT_LEVEL_PERCENT = 0x8000000E
 
+    # PLACEHOLDERS: à remplacer après sniff du port série Spark.
+    CMD_GDD_FS2 = 0x0000F001
+    CMD_SET_GDD_FS2 = 0x8000F001
+    CMD_PULSE_PICKER_DIVIDER = 0x0000F002
+    CMD_SET_PULSE_PICKER_DIVIDER = 0x8000F002
+
     def __init__(self, port: str, baudrate: int = 115200, timeout_s: float = 0.7):
         self.port = str(port)
         self.baudrate = int(baudrate)
@@ -425,6 +431,67 @@ class _SparkAlcorSerialController:
             return 0.0
         return float(struct.unpack("<f", data[:4])[0])
 
+    def set_gdd_fs2(self, gdd_fs2: float):
+        """
+        PLACEHOLDER Spark ALCOR.
+
+        Convention DeepLight:
+        - valeur UI en fs^2
+        - plage autorisée: [-60000, 0]
+
+        Hypothèse temporaire:
+        - payload float32 little-endian.
+        À remplacer après sniff série si Spark utilise int32, double, ou autre.
+        """
+        gdd_fs2 = max(-60000.0, min(0.0, float(gdd_fs2)))
+
+        payload = struct.pack("<f", float(gdd_fs2))
+        self._transceive(self.CMD_SET_GDD_FS2, payload)
+
+        print(f"[SparkAlcor] PLACEHOLDER set_gdd_fs2={gdd_fs2:.1f} fs^2")
+
+
+    def get_gdd_fs2(self) -> float:
+        """
+        PLACEHOLDER Spark ALCOR.
+        À corriger après sniff série.
+        """
+        data = self._transceive(self.CMD_GDD_FS2)
+        if len(data) < 4:
+            return 0.0
+        return float(struct.unpack("<f", data[:4])[0])
+
+
+    def set_pulse_picker_divider(self, n: int):
+        """
+        PLACEHOLDER Spark ALCOR.
+
+        Convention DeepLight:
+        - fréquence = 80 MHz / N
+        - N entier >= 1
+
+        Hypothèse temporaire:
+        - payload uint32 little-endian.
+        À remplacer après sniff série si Spark utilise uint16, float, enum, etc.
+        """
+        n = max(1, int(n))
+
+        payload = struct.pack("<I", int(n))
+        self._transceive(self.CMD_SET_PULSE_PICKER_DIVIDER, payload)
+
+        print(f"[SparkAlcor] PLACEHOLDER set_pulse_picker_divider N={n} freq={80.0 / n:.6g} MHz")
+
+
+    def get_pulse_picker_divider(self) -> int:
+        """
+        PLACEHOLDER Spark ALCOR.
+        À corriger après sniff série.
+        """
+        data = self._transceive(self.CMD_PULSE_PICKER_DIVIDER)
+        if len(data) < 4:
+            return 1
+        return max(1, int(struct.unpack("<I", data[:4])[0]))
+
 # =============================================================================
 # LASER MANAGER
 # =============================================================================
@@ -553,6 +620,67 @@ class LaserManager(QObject):
             self._alcor.set_power_percent(percent)
             return
 
+    def set_gdd_fs2(self, laser_name: str, gdd_fs2: float):
+        laser_name = str(laser_name)
+
+        if not self._is_real_backend():
+            print(f"[LaserManager] mock set_gdd_fs2 laser={laser_name} gdd_fs2={gdd_fs2}")
+            return
+
+        if laser_name != "Alcor 920":
+            raise RuntimeError(f"GDD control is only implemented for Alcor 920, got {laser_name!r}")
+
+        if self._alcor is None:
+            raise RuntimeError("Spark ALCOR controller is not initialized.")
+
+        self._alcor.set_gdd_fs2(float(gdd_fs2))
+
+
+    def set_pulse_picker_divider(self, laser_name: str, n: int):
+        laser_name = str(laser_name)
+
+        if not self._is_real_backend():
+            print(f"[LaserManager] mock set_pulse_picker_divider laser={laser_name} N={n}")
+            return
+
+        if laser_name != "Alcor 920":
+            raise RuntimeError(f"Pulse picker control is only implemented for Alcor 920, got {laser_name!r}")
+
+        if self._alcor is None:
+            raise RuntimeError("Spark ALCOR controller is not initialized.")
+
+        self._alcor.set_pulse_picker_divider(int(n))
+
+
+    def get_gdd_fs2(self, laser_name: str) -> float:
+        laser_name = str(laser_name)
+
+        if not self._is_real_backend():
+            return 0.0
+
+        if laser_name != "Alcor 920":
+            return 0.0
+
+        if self._alcor is None:
+            return 0.0
+
+        return float(self._alcor.get_gdd_fs2())
+
+
+    def get_pulse_picker_divider(self, laser_name: str) -> int:
+        laser_name = str(laser_name)
+
+        if not self._is_real_backend():
+            return 1
+
+        if laser_name != "Alcor 920":
+            return 1
+
+        if self._alcor is None:
+            return 1
+
+        return int(self._alcor.get_pulse_picker_divider())
+    
     def close(self):
         try:
             if self._cobolt is not None:

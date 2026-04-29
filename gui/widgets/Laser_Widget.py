@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QPushButton, QGridLayout, QLabel, QDoubleSpinBox, 
-                               QSlider, QSizePolicy, QDialog, QHBoxLayout, QLineEdit, QMessageBox)
+                               QSpinbox, QSlider, QSizePolicy, QDialog, QHBoxLayout, QLineEdit, QMessageBox)
 from PySide6.QtCore import Signal, Qt, QLocale
 from PySide6.QtGui import QPalette, QColor
 
@@ -88,6 +88,13 @@ POWER_UI_DECIMALS = 1
 POWER_UI_STEP = 0.1
 POWER_BUTTON_STEP = 1.0
 POWER_SLIDER_SCALE = 10   # 0.1% resolution -> 0..1000
+ALCOR_GDD_MIN_FS2 = -60000.0 #fs^2
+ALCOR_GDD_MAX_FS2 = 0.0
+ALCOR_GDD_STEP_FS2 = 100.0
+
+ALCOR_PICKER_MIN_N = 1
+ALCOR_PICKER_MAX_N = 100
+ALCOR_BASE_REP_RATE_MHZ = 80.0
 
 def _force_dot_locale_on_spinbox(spinbox):
     spinbox.setLocale(QLocale.c())
@@ -206,6 +213,10 @@ class LaserWidget(QWidget):
     laser_power_changed = Signal(str, float)
     laser_power_toggled = Signal(str, bool)
 
+    # Alcor-specific controls
+    laser_gdd_changed = Signal(str, float)          # fs^2
+    laser_pulse_picker_changed = Signal(str, int)   # N, repetition rate = 80 MHz / N
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -243,7 +254,7 @@ class LaserWidget(QWidget):
                 self.settings_manager.update_laser_settings(laser_name, **defaults)
     
     def _add_laser_control(self, laser_name):
-        """Ajoute un groupe de contrôle pour un laser spécifique."""
+        """Ajoute un groupe de contrôle repliable pour un laser spécifique."""
         laser_group = QGroupBox()
         laser_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         laser_group.setStyleSheet("""
@@ -255,37 +266,56 @@ class LaserWidget(QWidget):
                 margin-bottom: 2px;
                 padding: 0px;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                color: white;
-                font-weight: bold;
-                font-size: 14px;
-                padding: 0 5px;
-            }
         """)
 
-        laser_layout = QGridLayout()
-        laser_layout.setHorizontalSpacing(2)
-        laser_layout.setVerticalSpacing(2)
-        laser_layout.setContentsMargins(6, 8, 6, 8)
+        group_layout = QVBoxLayout(laser_group)
+        group_layout.setContentsMargins(4, 4, 4, 4)
+        group_layout.setSpacing(2)
 
-        laser_layout.setColumnStretch(0, 0)  # nom laser
+        header_button = QPushButton(f"▼  {laser_name}")
+        header_button.setCheckable(True)
+        header_button.setChecked(True)
+        header_button.setStyleSheet("""
+            QPushButton {
+                background-color: #333;
+                color: white;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px 6px;
+                text-align: left;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #444;
+            }
+        """)
+        group_layout.addWidget(header_button)
+
+        content_widget = QWidget()
+        content_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        laser_layout = QGridLayout(content_widget)
+        laser_layout.setHorizontalSpacing(2)
+        laser_layout.setVerticalSpacing(4)
+        laser_layout.setContentsMargins(2, 4, 2, 4)
+
+        laser_layout.setColumnStretch(0, 0)  # label
         laser_layout.setColumnStretch(1, 0)  # spinbox
         laser_layout.setColumnStretch(2, 0)  # bouton -
-        laser_layout.setColumnStretch(3, 1)  # slider
+        laser_layout.setColumnStretch(3, 1)  # slider / label
         laser_layout.setColumnStretch(4, 0)
         laser_layout.setColumnStretch(5, 0)  # bouton +
         laser_layout.setColumnStretch(6, 0)  # ON/OFF éventuel
 
         laser_layout.setColumnMinimumWidth(0, 85)
 
-        laser_name_label = QLabel(laser_name)
+        laser_name_label = QLabel("Power")
         laser_name_label.setStyleSheet("""
             QLabel {
                 color: white;
                 font-weight: bold;
-                font-size: 14px;
+                font-size: 13px;
             }
         """)
         laser_name_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -338,6 +368,7 @@ class LaserWidget(QWidget):
         """)
 
         current_value_label = QLabel("0.0%")
+        current_value_label.setStyleSheet("color: white;")
 
         plus_button = QPushButton("+")
         plus_button.setFixedSize(20, 20)
@@ -369,10 +400,66 @@ class LaserWidget(QWidget):
         laser_layout.addWidget(setpoint_spin, 0, 1)
         laser_layout.addWidget(minus_button, 0, 2)
         laser_layout.addWidget(setpoint_slider, 0, 3, 1, 2)
-        laser_layout.addWidget(plus_button, 0, 5)
+        laser_layout.addWidget(current_value_label, 0, 5)
+
+        # On garde les boutons +/- à droite du slider, mais on pousse le label valeur dans la colonne 5.
+        # Le bouton + passe donc en colonne 6 si pas de ON/OFF, ou colonne 5 si ON/OFF absent serait trop serré.
+        laser_layout.addWidget(plus_button, 0, 6 if power_button is None else 5)
 
         if power_button is not None:
             laser_layout.addWidget(power_button, 0, 6)
+
+        gdd_spin = None
+        pulse_picker_spin = None
+        pulse_picker_freq_label = None
+
+        if laser_name == "Alcor 920":
+            gdd_label = QLabel("GDD")
+            gdd_label.setStyleSheet("color: white; font-weight: bold;")
+
+            gdd_spin = QDoubleSpinBox()
+            gdd_spin.setMinimumWidth(110)
+            gdd_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            gdd_spin.setDecimals(0)
+            gdd_spin.setSingleStep(ALCOR_GDD_STEP_FS2)
+            gdd_spin.setRange(ALCOR_GDD_MIN_FS2, ALCOR_GDD_MAX_FS2)
+            gdd_spin.setValue(0.0)
+            gdd_spin.setSuffix(" fs²")
+            gdd_spin.setKeyboardTracking(False)
+            _force_dot_locale_on_spinbox(gdd_spin)
+            gdd_spin.setPalette(spin_palette)
+            gdd_spin.setAutoFillBackground(True)
+
+            pulse_picker_label = QLabel("Picker N")
+            pulse_picker_label.setStyleSheet("color: white; font-weight: bold;")
+
+            pulse_picker_spin = QSpinBox()
+            pulse_picker_spin.setMinimumWidth(80)
+            pulse_picker_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            pulse_picker_spin.setRange(ALCOR_PICKER_MIN_N, ALCOR_PICKER_MAX_N)
+            pulse_picker_spin.setValue(1)
+            pulse_picker_spin.setPrefix("N = ")
+            pulse_picker_spin.setKeyboardTracking(False)
+            pulse_picker_spin.setPalette(spin_palette)
+            pulse_picker_spin.setAutoFillBackground(True)
+
+            pulse_picker_freq_label = QLabel(f"{ALCOR_BASE_REP_RATE_MHZ:.3f} MHz")
+            pulse_picker_freq_label.setStyleSheet("color: white;")
+
+            laser_layout.addWidget(gdd_label, 1, 0)
+            laser_layout.addWidget(gdd_spin, 1, 1, 1, 2)
+
+            laser_layout.addWidget(pulse_picker_label, 2, 0)
+            laser_layout.addWidget(pulse_picker_spin, 2, 1, 1, 2)
+            laser_layout.addWidget(pulse_picker_freq_label, 2, 3, 1, 2)
+
+        group_layout.addWidget(content_widget)
+
+        def _set_expanded(expanded, button=header_button, content=content_widget, name=laser_name):
+            content.setVisible(bool(expanded))
+            button.setText(("▼  " if expanded else "▶  ") + name)
+
+        header_button.toggled.connect(_set_expanded)
 
         def _on_spin_changed(val, slider=setpoint_slider, label=current_value_label):
             slider_value = self._power_to_slider_value(val)
@@ -408,21 +495,39 @@ class LaserWidget(QWidget):
         plus_button.clicked.connect(
             lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, float(sp.value()))
         )
-
         minus_button.clicked.connect(
             lambda _=False, name=laser_name, sp=setpoint_spin: self.laser_power_changed.emit(name, float(sp.value()))
         )
 
-        laser_group.setLayout(laser_layout)
+        if gdd_spin is not None:
+            gdd_spin.valueChanged.connect(
+                lambda value, name=laser_name: self.laser_gdd_changed.emit(name, float(value))
+            )
+
+        if pulse_picker_spin is not None and pulse_picker_freq_label is not None:
+            def _on_pulse_picker_changed(n, label=pulse_picker_freq_label, name=laser_name):
+                n = max(1, int(n))
+                freq_mhz = ALCOR_BASE_REP_RATE_MHZ / n
+                label.setText(f"{freq_mhz:.6g} MHz")
+                self.laser_pulse_picker_changed.emit(name, n)
+
+            pulse_picker_spin.valueChanged.connect(_on_pulse_picker_changed)
+
         self.laser_layout.addWidget(laser_group)
 
         self.laser_controls[laser_name] = {
-            'spin': setpoint_spin,
-            'slider': setpoint_slider,
-            'label': current_value_label,
-            'button': power_button,
-            'plus_button': plus_button,
-            'minus_button': minus_button
+            "group": laser_group,
+            "header_button": header_button,
+            "content_widget": content_widget,
+            "spin": setpoint_spin,
+            "slider": setpoint_slider,
+            "label": current_value_label,
+            "button": power_button,
+            "plus_button": plus_button,
+            "minus_button": minus_button,
+            "gdd_spin": gdd_spin,
+            "pulse_picker_spin": pulse_picker_spin,
+            "pulse_picker_freq_label": pulse_picker_freq_label,
         }
 
     @staticmethod
@@ -470,6 +575,64 @@ class LaserWidget(QWidget):
             return 0.0
 
         return float(spin.value())
+    
+    def set_laser_gdd_value(self, laser_name: str, value_fs2: float):
+        controls = self.laser_controls.get(laser_name)
+        if not controls:
+            return
+
+        spin = controls.get("gdd_spin")
+        if spin is None:
+            return
+
+        value_fs2 = max(ALCOR_GDD_MIN_FS2, min(ALCOR_GDD_MAX_FS2, float(value_fs2)))
+
+        spin.blockSignals(True)
+        spin.setValue(value_fs2)
+        spin.blockSignals(False)
+
+    def get_laser_gdd_value(self, laser_name: str) -> float:
+        controls = self.laser_controls.get(laser_name)
+        if not controls:
+            return 0.0
+
+        spin = controls.get("gdd_spin")
+        if spin is None:
+            return 0.0
+
+        return float(spin.value())
+
+    def set_laser_pulse_picker_value(self, laser_name: str, n: int):
+        controls = self.laser_controls.get(laser_name)
+        if not controls:
+            return
+
+        spin = controls.get("pulse_picker_spin")
+        label = controls.get("pulse_picker_freq_label")
+
+        if spin is None:
+            return
+
+        n = max(ALCOR_PICKER_MIN_N, min(ALCOR_PICKER_MAX_N, int(n)))
+
+        spin.blockSignals(True)
+        spin.setValue(n)
+        spin.blockSignals(False)
+
+        if label is not None:
+            freq_mhz = ALCOR_BASE_REP_RATE_MHZ / n
+            label.setText(f"{freq_mhz:.6g} MHz")
+
+    def get_laser_pulse_picker_value(self, laser_name: str) -> int:
+        controls = self.laser_controls.get(laser_name)
+        if not controls:
+            return 1
+
+        spin = controls.get("pulse_picker_spin")
+        if spin is None:
+            return 1
+
+        return int(spin.value())
     
     def set_laser_enabled(self, laser_name: str, enabled: bool):
         controls = self.laser_controls.get(laser_name)
