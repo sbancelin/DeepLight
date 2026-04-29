@@ -1,11 +1,15 @@
 # DeepLight/gui/managers/Scan_Manager.py
 
 from __future__ import annotations
+import math
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
 from .Scan_Types import ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan, DetectorChannelSpec
 
+DAQ_SAMPLE_RATE_HZ = 500_000.0
+DAQ_SAMPLE_PERIOD_S = 1.0 / DAQ_SAMPLE_RATE_HZ
+DAQ_SAMPLE_PERIOD_US = DAQ_SAMPLE_PERIOD_S * 1e6
 
 class ScanManager(QObject):
     """
@@ -248,10 +252,21 @@ class ScanManager(QObject):
         pix_image_x = max(int(sp.pixel_values[row_img_x]), 1)
         pix_image_y = max(int(sp.pixel_values[row_img_y]), 1)
 
-        samples_per_pixel = max(int(sp.samples_per_pixel), 1)
-        dwell_time_s = float(sp.dwell_time_s)
+        requested_dwell_time_s = float(sp.dwell_time_s)
+
+        if requested_dwell_time_s < DAQ_SAMPLE_PERIOD_S - 1e-15:
+            raise ValueError(
+                f"Dwell time too short for fixed DAQ sampling.\n"
+                f"Requested dwell = {requested_dwell_time_s * 1e6:.3f} µs\n"
+                f"DAQ sampling = {DAQ_SAMPLE_RATE_HZ / 1e6:.3f} MHz "
+                f"({DAQ_SAMPLE_PERIOD_US:.3f} µs/sample)\n"
+                f"Minimum dwell time is {DAQ_SAMPLE_PERIOD_US:.3f} µs."
+            )
+
+        samples_per_pixel = max(1, int(math.ceil(requested_dwell_time_s * DAQ_SAMPLE_RATE_HZ - 1e-12)))
+        dwell_time_s = float(samples_per_pixel) / DAQ_SAMPLE_RATE_HZ
         pixel_rate_hz = 1.0 / dwell_time_s
-        sample_rate_hz = pixel_rate_hz * samples_per_pixel
+        sample_rate_hz = DAQ_SAMPLE_RATE_HZ
 
         size_x_um = float(sp.sizes.get(fast_axis, 100.0))
         size_y_um = float(sp.sizes.get(slow_axis, 100.0))
@@ -535,6 +550,9 @@ class ScanManager(QObject):
             "frame_useful_samples": int(pix_fast_total * pix_slow * samples_per_pixel),
             "frame_flyback_samples": int(frame_len - (pix_fast_total * pix_slow * samples_per_pixel)),
             "frame_flyback_time_s": float(sp.frame_flyback_time_s),
+            "requested_dwell_time_s": float(requested_dwell_time_s),
+            "effective_dwell_time_s": float(dwell_time_s),
+            "daq_sample_rate_hz": float(sample_rate_hz),
             "delay_samples": delay_samples,
             "axis3_name": axis3_name,
             "axis3_positions": axis3_positions,
@@ -909,8 +927,19 @@ class ScanManager(QObject):
 
         pix_fast = int(pix_vals[row_fast]) if len(pix_vals) == 4 else 256
         pix_slow = int(pix_vals[row_slow]) if len(pix_vals) == 4 else 256
-        dwell_time_s = float(scan_params.get("dwell_time", 10e-6))
-        samples_per_pixel = max(int(scan_params.get("samples_per_pixel", 1) or 1), 1)
+        requested_dwell_time_s = float(scan_params.get("dwell_time", 10e-6))
+
+        if requested_dwell_time_s < DAQ_SAMPLE_PERIOD_S - 1e-15:
+            raise ValueError(
+                f"Dwell time too short for fixed DAQ sampling.\n"
+                f"Requested dwell = {requested_dwell_time_s * 1e6:.3f} µs\n"
+                f"DAQ sampling = {DAQ_SAMPLE_RATE_HZ / 1e6:.3f} MHz "
+                f"({DAQ_SAMPLE_PERIOD_US:.3f} µs/sample)\n"
+                f"Minimum dwell time is {DAQ_SAMPLE_PERIOD_US:.3f} µs."
+            )
+
+        samples_per_pixel = max(1, int(math.ceil(requested_dwell_time_s * DAQ_SAMPLE_RATE_HZ - 1e-12)))
+        dwell_time_s = float(samples_per_pixel) / DAQ_SAMPLE_RATE_HZ
 
         sizes = scan_params.get("sizes", {})
         offsets = scan_params.get("offsets", {})
@@ -1124,8 +1153,19 @@ class ScanManager(QObject):
         pix_x = int(pix_vals[0]) if len(pix_vals) > 0 else 256
         pix_y = int(pix_vals[1]) if len(pix_vals) > 1 else 256
 
-        dwell_time_s = float(scan_params.get("dwell_time", 10e-6))
-        samples_per_pixel = max(int(scan_params.get("samples_per_pixel", 1) or 1), 1)
+        requested_dwell_time_s = float(scan_params.get("dwell_time", 10e-6))
+
+        if requested_dwell_time_s < DAQ_SAMPLE_PERIOD_S - 1e-15:
+            raise ValueError(
+                f"Dwell time too short for fixed DAQ sampling.\n"
+                f"Requested dwell = {requested_dwell_time_s * 1e6:.3f} µs\n"
+                f"DAQ sampling = {DAQ_SAMPLE_RATE_HZ / 1e6:.3f} MHz "
+                f"({DAQ_SAMPLE_PERIOD_US:.3f} µs/sample)\n"
+                f"Minimum dwell time is {DAQ_SAMPLE_PERIOD_US:.3f} µs."
+            )
+
+        samples_per_pixel = max(1, int(math.ceil(requested_dwell_time_s * DAQ_SAMPLE_RATE_HZ - 1e-12)))
+        dwell_time_s = float(samples_per_pixel) / DAQ_SAMPLE_RATE_HZ
 
         sizes = scan_params.get("sizes", {})
         offsets = scan_params.get("offsets", {})

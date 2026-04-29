@@ -24,6 +24,9 @@ from ..Sample_Scan_Manager import SampleScanManager
 from ..PMT_Digital_Manager import PMTDigitalManager
 import warnings
 
+DAQ_SAMPLE_RATE_HZ = 500_000.0
+DAQ_SAMPLE_PERIOD_S = 1.0 / DAQ_SAMPLE_RATE_HZ
+DAQ_SAMPLE_PERIOD_US = DAQ_SAMPLE_PERIOD_S * 1e6
 
 try:
     import nidaqmx
@@ -484,6 +487,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             channels=self.channels,
             reconstruction_plan=reconstruction_plan,
             channel_kinds=self.channel_kind_map,
+            dwell_time_s=float(plan.dwell_time_s),
         )
         builder.reset(clear_arrays=clear_arrays)
 
@@ -835,16 +839,17 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
         dwell_s = max(1e-6, float(dwell_s))
 
-        # spp = valeur logique demandée par DeepLight
-        spp = max(1, int(samples_per_pixel))
+        if dwell_s < DAQ_SAMPLE_PERIOD_S - 1e-15:
+            raise RuntimeError(
+                f"Dwell time too short for fixed DAQ sampling.\n"
+                f"Requested dwell = {dwell_s * 1e6:.3f} µs\n"
+                f"DAQ sampling = {DAQ_SAMPLE_RATE_HZ / 1e6:.3f} MHz "
+                f"({DAQ_SAMPLE_PERIOD_US:.3f} µs/sample)\n"
+                f"Minimum dwell time is {DAQ_SAMPLE_PERIOD_US:.3f} µs."
+            )
 
-        # IMPORTANT:
-        # en finite AI, la config NI utilisée ici n'accepte pas samps_per_chan=1.
-        # On garde donc spp côté logique applicative, mais on force au moins 2
-        # échantillons côté acquisition matérielle.
-        hw_spp = max(2, spp)
-
-        rate = max(1000.0, float(hw_spp) / dwell_s)
+        rate = DAQ_SAMPLE_RATE_HZ
+        hw_spp = max(2, int(np.ceil(dwell_s * rate - 1e-12)))
         ai_count = self._active_ai_count()
 
         values = {}
@@ -888,7 +893,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
             for ch in self.analog_channels:
                 arr = analog_mapped.get(ch)
                 if arr is not None and arr.size > 0:
-                    values[ch] = float(np.mean(arr))
+                    values[ch] = float(np.mean(arr) * dwell_s * 1e6)
                 else:
                     values[ch] = 0.0
         else:

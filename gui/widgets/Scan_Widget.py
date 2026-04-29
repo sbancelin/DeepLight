@@ -3,6 +3,10 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGroupBox, QPushButton,
 from PySide6.QtCore import Signal, Qt
 from ..managers.Scan_Types import SCAN_AXIS_DEFAULTS, STEPPER_AXIS_DEFAULTS
 
+DAQ_SAMPLE_RATE_HZ = 500_000.0
+DAQ_SAMPLE_PERIOD_S = 1.0 / DAQ_SAMPLE_RATE_HZ
+DAQ_SAMPLE_PERIOD_US = DAQ_SAMPLE_PERIOD_S * 1e6
+
 GROUPBOX_STYLE = """
     QGroupBox {
         border: 1px solid #444;
@@ -621,7 +625,7 @@ class ScanWidget(QWidget):
         self.dwell_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         temporal_layout.addWidget(self.dwell_edit, 1, 0)
 
-        spp_label = QLabel("Sampling")
+        spp_label = QLabel("DAQ samples/px")
         spp_label.setStyleSheet("color: white;")
         spp_label.setMinimumWidth(0)
         spp_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -630,6 +634,11 @@ class ScanWidget(QWidget):
         self.samples_per_pixel_edit = QLineEdit("1")
         self.samples_per_pixel_edit.setEnabled(False)
         self.samples_per_pixel_edit.setReadOnly(True)
+        self.samples_per_pixel_edit.setToolTip(
+            "Calculated from fixed DAQ sampling:\n"
+            "DAQ sampling = 0.5 MHz\n"
+            "DAQ samples/px = ceil(dwell time × 0.5 MHz)."
+        )
         self._set_disabled_lineedit_style(self.samples_per_pixel_edit)
         self.samples_per_pixel_edit.setProperty("last_valid_text", self.samples_per_pixel_edit.text())
         self.samples_per_pixel_edit.setMinimumWidth(0)
@@ -728,6 +737,7 @@ class ScanWidget(QWidget):
         self.rep_checkbox.toggled.connect(self._on_rep_checkbox_toggled)
         self.rep_checkbox.toggled.connect(self._update_scan_duration)
 
+        self.dwell_edit.textChanged.connect(self._update_daq_samples_per_pixel_display)
         self.dwell_edit.textChanged.connect(self._update_scan_duration)
         self.samples_per_pixel_edit.textChanged.connect(self._update_scan_duration)
         self.rep_edit.textChanged.connect(self._update_scan_duration)
@@ -1186,13 +1196,38 @@ class ScanWidget(QWidget):
         self.view_update_requested.emit(params)
         self._reset_button_style()
 
+    def _compute_daq_samples_per_pixel_from_dwell(self) -> int:
+        dwell_us = self._read_float_edit(self.dwell_edit, 0.0)
+
+        if dwell_us <= 0:
+            return 1
+
+        dwell_s = dwell_us * 1e-6
+        return max(1, int(__import__("math").ceil(dwell_s * DAQ_SAMPLE_RATE_HZ - 1e-12)))
+
+
+    def _update_daq_samples_per_pixel_display(self):
+        if not hasattr(self, "samples_per_pixel_edit"):
+            return
+
+        spp = self._compute_daq_samples_per_pixel_from_dwell()
+        new = str(int(spp))
+
+        if self.samples_per_pixel_edit.text() == new:
+            return
+
+        self.samples_per_pixel_edit.blockSignals(True)
+        self.samples_per_pixel_edit.setText(new)
+        self.samples_per_pixel_edit.setProperty("last_valid_text", new)
+        self.samples_per_pixel_edit.blockSignals(False)    
+    
     def _update_scan_duration(self):
         """Met à jour la durée de scan."""
         try:
             dwell_us = float(self.dwell_edit.text() or "0")
-            samples_per_pixel = int(float(self.samples_per_pixel_edit.text() or "1"))
+            self._update_daq_samples_per_pixel_display()
 
-            if dwell_us <= 0 or samples_per_pixel <= 0:
+            if dwell_us <= 0:
                 self.duration_edit.setText("0")
                 return
 
@@ -1233,7 +1268,7 @@ class ScanWidget(QWidget):
             scanned_pixels_total *= extra_factor
 
             base_duration = (
-                dwell_us * scanned_pixels_total * samples_per_pixel / 1_000_000
+                dwell_us * scanned_pixels_total / 1_000_000
             ) + (frame_flyback_time_s * extra_factor)
 
             if self.rep_checkbox.isChecked():
@@ -1551,6 +1586,23 @@ class ScanWidget(QWidget):
             self._update_scan_duration()
             return
 
+        if dwell_us < DAQ_SAMPLE_PERIOD_US - 1e-12:
+            QMessageBox.warning(
+                self,
+                "Invalid dwell time",
+                f"Dwell Time is too short for fixed DAQ sampling.\n\n"
+                f"DAQ sampling = {DAQ_SAMPLE_RATE_HZ / 1e6:.3f} MHz\n"
+                f"DAQ period = {DAQ_SAMPLE_PERIOD_US:.3f} µs\n"
+                f"Minimum dwell time = {DAQ_SAMPLE_PERIOD_US:.3f} µs."
+            )
+            old = self.dwell_edit.property("last_valid_text")
+            if old is not None:
+                self.dwell_edit.blockSignals(True)
+                self.dwell_edit.setText(str(old))
+                self.dwell_edit.blockSignals(False)
+            self._update_scan_duration()
+            return
+        
         # Vérifie toutes les lignes actives avec ce nouveau dwell
         for i, combo in enumerate(self.scan_dim_combos):
             if combo.currentText() == "None":
@@ -1595,7 +1647,8 @@ class ScanWidget(QWidget):
             pixel_values.append(int(float(pixel_edit.text() or "1")))
 
         dwell_time = float(self.dwell_edit.text() or "0") / 1_000_000  # Convertir le dwell_time de microsecondes en secondes
-        samples_per_pixel = int(float(self.samples_per_pixel_edit.text() or "1"))
+        self._update_daq_samples_per_pixel_display()
+        samples_per_pixel = self._compute_daq_samples_per_pixel_from_dwell()
 
         # Récupérer tous les axes actifs
         active_axes = []

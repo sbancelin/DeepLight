@@ -26,11 +26,15 @@ class FrameBuilder:
         channels: list[str],
         reconstruction_plan: FrameReconstructionPlan,
         channel_kinds: dict[str, str] | None = None,
+        dwell_time_s: float | None = None,
     ):
         self.arrays = arrays
         self.channels = list(channels)
         self.plan = reconstruction_plan
         self.channel_kinds = dict(channel_kinds or {})
+
+        self.dwell_time_s = float(dwell_time_s) if dwell_time_s is not None else None
+        self.dwell_time_us = self.dwell_time_s * 1e6 if self.dwell_time_s is not None else None
 
         self.dim_image_x = int(self.plan.dim_x)
         self.dim_image_y = int(self.plan.dim_y)
@@ -131,11 +135,22 @@ class FrameBuilder:
             kind = str(self.channel_kinds.get(ch, "analog"))
 
             if kind == "digital":
-                # photon counting: somme des sous-samples du pixel
+                # Photon counting:
+                # counts/pixel = somme des gates/sous-samples.
                 reduced[ci] = block[ci].sum(axis=1)
             else:
-                # analogique: moyenne / intégration analogique actuelle
-                reduced[ci] = block[ci].mean(axis=1)
+                # PMT analogique:
+                # intégrale temporelle du signal pendant le dwell.
+                # Formulation robuste au nombre de samples DAQ :
+                # integral ≈ mean(V) * dwell_time.
+                #
+                # Unité affichée : V·µs.
+                mean_v = block[ci].mean(axis=1)
+
+                if self.dwell_time_us is None:
+                    reduced[ci] = mean_v
+                else:
+                    reduced[ci] = mean_v * float(self.dwell_time_us)
 
         block = reduced
 

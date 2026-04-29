@@ -776,7 +776,7 @@ class MainWindow(QMainWindow):
             if str(spec.get("name")) != str(channel):
                 continue
             kind = str(spec.get("kind", "analog"))
-            return "V" if kind == "analog" else "counts"
+            return "V·µs" if kind == "analog" else "counts"
 
         return "value"
     
@@ -1424,7 +1424,7 @@ class MainWindow(QMainWindow):
             lbl = self.ui.im_status_labels.get(channel)
             if lbl is not None:
                 unit = self._channel_unit_label(channel)
-                if unit == "V":
+                if unit in ("V", "V·µs"):
                     lbl.setText("x: -  y: -  V: -")
                 elif unit == "counts":
                     lbl.setText("x: -  y: -  counts: -")
@@ -1451,7 +1451,7 @@ class MainWindow(QMainWindow):
             value = float(img[y_px, x_px])
 
             if unit == "V":
-                text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  V: {value:.4f}"
+                text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  {unit}: {value:.4f}"
             elif unit == "counts":
                 text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  counts: {value:.0f}"
             else:
