@@ -11,8 +11,8 @@ class _LaserCommandWorker(QObject):
 
     gdd_finished = Signal(str, float)
     gdd_failed = Signal(str, float, str)
-    pulse_picker_finished = Signal(str, int)
-    pulse_picker_failed = Signal(str, int, str)
+    rep_rate_finished = Signal(str, float)
+    rep_rate_failed = Signal(str, float, str)
 
     def __init__(self, hardware_manager, laser_manager, settings_manager):
         super().__init__()
