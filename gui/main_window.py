@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _sync_laser_widget_from_hardware(self):
         try:
-            percent = self.laser_manager.get_power_percent("Cobolt 660")
+            percent = self.hardware.get_laser_power_percent("Cobolt 660")
             self.ui.laser_widget.set_laser_power_value("Cobolt 660", int(round(percent)))
 
             output_mw = self.laser_manager.get_output_power_mw("Cobolt 660")

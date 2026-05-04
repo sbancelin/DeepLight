@@ -79,6 +79,14 @@ LASER_DEFAULTS = {
         "steps_per_degree": 1919.14,
         "offset_deg": 8.0,
     },
+    "Cobolt 660": {
+        # ELL14 via ELLC.
+        # speed / steps_per_degree sont gardés pour compatibilité avec le dialogue existant,
+        # mais ne sont pas utilisés par l'ELL14.
+        "speed": 1,
+        "steps_per_degree": 398.222222,
+        "offset_deg": 0.0,
+    },
 }
 
 LASERS_WITHOUT_POWER_BUTTON = {"Mira 900", "Tumecs", "Cobolt 660"}
@@ -101,7 +109,7 @@ def _force_dot_locale_on_spinbox(spinbox):
 
 def setup_laser_settings_dialog(dialog):
     laser_widget = dialog.parent()
-    laser_names = ["Mira 900", "Tumecs"]
+    laser_names = ["Mira 900", "Tumecs", "Cobolt 660"]
 
     for index, laser_name in enumerate(laser_names):
         title = QLabel(f"<b>{laser_name}</b>")
