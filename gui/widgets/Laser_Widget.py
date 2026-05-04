@@ -92,9 +92,9 @@ ALCOR_GDD_MIN_FS2 = -60020.0 #fs^2
 ALCOR_GDD_MAX_FS2 = 0.0
 ALCOR_GDD_STEP_FS2 = 100.0
 
-ALCOR_PICKER_MIN_N = 2.9
-ALCOR_PICKER_MAX_N = 81
-ALCOR_BASE_REP_RATE_MHZ = 80.0
+ALCOR_REP_RATE_MIN_MHZ = 2.9
+ALCOR_REP_RATE_MAX_MHZ = 81.0
+ALCOR_REP_RATE_BASE_MHZ = 80.0
 
 def _force_dot_locale_on_spinbox(spinbox):
     spinbox.setLocale(QLocale.c())
@@ -355,10 +355,6 @@ class LaserWidget(QWidget):
             }
         """)
 
-        current_value_label = QLabel("0.0%")
-        current_value_label.setStyleSheet("color: white;")
-        current_value_label.setMinimumWidth(45)
-
         plus_button = QPushButton("+")
         plus_button.setFixedSize(20, 20)
         plus_button.setStyleSheet(SMALL_BUTTON_STYLE)
@@ -389,18 +385,17 @@ class LaserWidget(QWidget):
         laser_layout.addWidget(setpoint_spin, 0, 1)
         laser_layout.addWidget(minus_button, 0, 2)
         laser_layout.addWidget(setpoint_slider, 0, 3)
-        laser_layout.addWidget(current_value_label, 0, 4)
-        laser_layout.addWidget(plus_button, 0, 5)
+        laser_layout.addWidget(plus_button, 0, 4)
 
         if power_button is not None:
-            laser_layout.addWidget(power_button, 0, 6)
+            laser_layout.addWidget(power_button, 0, 5)
 
         gdd_spin = None
         rep_rate_spin = None
         rep_rate_valid_label = None
 
         if laser_name == "Alcor 920":
-            gdd_label = QLabel("GDD")
+            gdd_label = QLabel("GDD (fs²)")
             gdd_label.setStyleSheet("color: white; font-weight: bold;")
 
             gdd_spin = QDoubleSpinBox()
@@ -410,13 +405,12 @@ class LaserWidget(QWidget):
             gdd_spin.setSingleStep(ALCOR_GDD_STEP_FS2)
             gdd_spin.setRange(ALCOR_GDD_MIN_FS2, ALCOR_GDD_MAX_FS2)
             gdd_spin.setValue(0.0)
-            gdd_spin.setSuffix(" fs²")
             gdd_spin.setKeyboardTracking(False)
             gdd_spin.setPalette(spin_palette)
             gdd_spin.setAutoFillBackground(True)
             _force_dot_locale_on_spinbox(gdd_spin)
 
-            rep_rate_label = QLabel("Rep rate")
+            rep_rate_label = QLabel(" Rep rate (MHz)")
             rep_rate_label.setStyleSheet("color: white; font-weight: bold;")
 
             rep_rate_spin = QDoubleSpinBox()
@@ -426,7 +420,6 @@ class LaserWidget(QWidget):
             rep_rate_spin.setSingleStep(0.1)
             rep_rate_spin.setRange(ALCOR_REP_RATE_MIN_MHZ, ALCOR_REP_RATE_MAX_MHZ)
             rep_rate_spin.setValue(ALCOR_REP_RATE_BASE_MHZ)
-            rep_rate_spin.setSuffix(" MHz")
             rep_rate_spin.setKeyboardTracking(False)
             rep_rate_spin.setPalette(spin_palette)
             rep_rate_spin.setAutoFillBackground(True)
@@ -443,21 +436,19 @@ class LaserWidget(QWidget):
             laser_layout.addWidget(rep_rate_spin, 1, 4)
             laser_layout.addWidget(rep_rate_valid_label, 1, 5, 1, 2)
 
-        def _on_spin_changed(val, slider=setpoint_slider, label=current_value_label):
+        def _on_spin_changed(val, slider=setpoint_slider):
             slider_value = self._power_to_slider_value(val)
             if slider.value() != slider_value:
                 slider.blockSignals(True)
                 slider.setValue(slider_value)
                 slider.blockSignals(False)
-            label.setText(f"{float(val):.1f}%")
 
-        def _on_slider_changed(slider_val, spin=setpoint_spin, label=current_value_label):
+        def _on_slider_changed(slider_val, spin=setpoint_spin):
             power_val = self._slider_to_power_value(slider_val)
             if abs(spin.value() - power_val) > 1e-9:
                 spin.blockSignals(True)
                 spin.setValue(power_val)
                 spin.blockSignals(False)
-            label.setText(f"{power_val:.1f}%")
 
         setpoint_spin.valueChanged.connect(_on_spin_changed)
         setpoint_slider.valueChanged.connect(_on_slider_changed)
@@ -508,7 +499,6 @@ class LaserWidget(QWidget):
             'tab': tab,
             'spin': setpoint_spin,
             'slider': setpoint_slider,
-            'label': current_value_label,
             'button': power_button,
             'plus_button': plus_button,
             'minus_button': minus_button,
@@ -537,7 +527,6 @@ class LaserWidget(QWidget):
         max_n = int(ALCOR_REP_RATE_BASE_MHZ / ALCOR_REP_RATE_MIN_MHZ)
         return max(1, min(max_n, n))
 
-
     @classmethod
     def _snap_alcor_rep_rate_mhz(cls, freq_mhz: float) -> float:
         n = cls._alcor_rep_rate_divider_from_mhz(freq_mhz)
@@ -553,7 +542,6 @@ class LaserWidget(QWidget):
 
         spin = controls.get("spin")
         slider = controls.get("slider")
-        label = controls.get("label")
 
         if spin is not None:
             spin.blockSignals(True)
@@ -564,9 +552,6 @@ class LaserWidget(QWidget):
             slider.blockSignals(True)
             slider.setValue(slider_value)
             slider.blockSignals(False)
-
-        if label is not None:
-            label.setText(f"{value:.1f}%")
 
     def get_laser_power_value(self, laser_name: str) -> float:
         controls = self.laser_controls.get(laser_name)

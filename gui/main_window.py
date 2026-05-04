@@ -1568,13 +1568,10 @@ class MainWindow(QMainWindow):
 
     def _connect_laser_controls(self):
         lw = self.ui.laser_widget
-
         lw.laser_power_changed.connect(self.laser_command_manager.enqueue_power)
         lw.laser_power_toggled.connect(self._on_laser_power_toggled)
-
-        # Alcor-specific controls
         lw.laser_gdd_changed.connect(self.laser_command_manager.enqueue_gdd)
-        lw.laser_pulse_picker_changed.connect(self.laser_command_manager.enqueue_pulse_picker)
+        lw.laser_rep_rate_changed.connect(self.laser_command_manager.enqueue_rep_rate)
 
         self.laser_command_manager.command_finished.connect(self._on_laser_command_finished)
         self.laser_command_manager.command_failed.connect(self._on_laser_command_failed)
@@ -1582,8 +1579,8 @@ class MainWindow(QMainWindow):
         self.laser_command_manager.gdd_finished.connect(self._on_laser_gdd_finished)
         self.laser_command_manager.gdd_failed.connect(self._on_laser_gdd_failed)
 
-        self.laser_command_manager.pulse_picker_finished.connect(self._on_laser_pulse_picker_finished)
-        self.laser_command_manager.pulse_picker_failed.connect(self._on_laser_pulse_picker_failed)
+        self.laser_command_manager.rep_rate_finished.connect(self._on_laser_rep_rate_finished)
+        self.laser_command_manager.rep_rate_failed.connect(self._on_laser_rep_rate_failed)
 
     @Slot(str, int)
     def _on_laser_command_finished(self, laser_name: str, value: int):
@@ -1617,26 +1614,25 @@ class MainWindow(QMainWindow):
             pass
 
 
-    @Slot(str, int)
-    def _on_laser_pulse_picker_finished(self, laser_name: str, n: int):
+    @Slot(str, float)
+    def _on_laser_rep_rate_finished(self, laser_name: str, rep_rate_khz: float):
         try:
-            freq_mhz = 80.0 / max(1, int(n))
             self.statusBar().showMessage(
-                f"{laser_name} pulse picker set to N={int(n)} ({freq_mhz:.6g} MHz)",
-                1500
+                f"{laser_name} rep rate set to {rep_rate_khz:.3f} kHz",
+                1500,
             )
         except Exception:
             pass
 
 
-    @Slot(str, int, str)
-    def _on_laser_pulse_picker_failed(self, laser_name: str, n: int, message: str):
-        print(f"[MainWindow] laser pulse picker command failed for {laser_name} N={n}: {message}")
+    @Slot(str, float, str)
+    def _on_laser_rep_rate_failed(self, laser_name: str, rep_rate_khz: float, message: str):
+        print(f"[MainWindow] laser rep-rate command failed for {laser_name}={rep_rate_khz} kHz: {message}")
         try:
-            self.statusBar().showMessage(f"Laser pulse picker error ({laser_name}): {message}", 5000)
+            self.statusBar().showMessage(f"Laser rep-rate error ({laser_name}): {message}", 5000)
         except Exception:
             pass
-    
+
     def _on_laser_power_toggled(self, laser_name: str, enabled: bool):
         laser_name = str(laser_name)
 
