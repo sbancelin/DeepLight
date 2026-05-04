@@ -74,7 +74,13 @@ THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
 # Cobolt Flamenco
 COBOLT_FLAMENCO_PORT = "COM12"
 COBOLT_FLAMENCO_BAUDRATE = 115200
-COBOLT_FLAMENCO_MAX_POWER_MW = 300.0   # <-- à ajuster selon ton modèle réel
+COBOLT_FLAMENCO_MAX_POWER_MW = 300.0
+
+COBOLT_ELL14_PORT = "COM7"
+COBOLT_ELL14_BAUDRATE = 9600
+COBOLT_ELL14_ADDRESS = "0"
+COBOLT_ELL14_COUNTS_PER_REV = 143360
+COBOLT_ELL14_TIMEOUT_S = 1.0
 
 # Spark Lasers ALCOR / XSight
 SPARK_ALCOR_PORT = "COM14"
@@ -207,6 +213,231 @@ class _CoboltLaserController:
         ans = self._query("l?")
         return bool(int(ans))
 
+class _ElliptecELL14Controller:
+    """
+    Minimal Thorlabs ELL14 / ELLC serial controller.
+
+    Used here as a half-wave plate rotator for Cobolt power control.
+
+    Protocol used:
+    - ASCII serial
+    - address usually "0"
+    - gp          : get position
+    - maXXXXXXXX  : move absolute, signed 32-bit hex counts
+    """
+
+    COUNTS_PER_REV = COBOLT_ELL14_COUNTS_PER_REV
+    COUNTS_PER_DEGREE = COUNTS_PER_REV / 360.0
+
+    def __init__(
+        self,
+        port: str,
+        address: str = "0",
+        baudrate: int = 9600,
+        timeout_s: float = 1.0,
+    ):
+        self.port = str(port)
+        self.address = str(address)
+        self.baudrate = int(baudrate)
+        self.timeout_s = float(timeout_s)
+
+        self.serial = None
+        self.connected = False
+        self._io_lock = Lock()
+        self._last_angle_deg = 0.0
+
+    def connect(self):
+        if self.connected and self.serial is not None:
+            return
+
+        self.serial = serial.Serial(
+            self.port,
+            baudrate=self.baudrate,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=self.timeout_s,
+            write_timeout=self.timeout_s,
+        )
+
+        try:
+            self.serial.reset_input_buffer()
+            self.serial.reset_output_buffer()
+        except Exception:
+            pass
+
+        self.connected = True
+
+        try:
+            pos = self.get_angle_deg()
+            print(f"[ELL14] Connected on {self.port} addr={self.address} angle={pos:.3f} deg")
+        except Exception as e:
+            print(f"[ELL14] Connected on {self.port}, but initial position read failed: {e}")
+
+    def close(self):
+        try:
+            if self.serial is not None:
+                self.serial.close()
+        finally:
+            self.serial = None
+            self.connected = False
+
+    def _ensure_connected(self):
+        if not self.connected or self.serial is None:
+            self.connect()
+
+    def _write(self, payload: str):
+        self._ensure_connected()
+        msg = f"{self.address}{payload}\r".encode("ascii")
+
+        with self._io_lock:
+            try:
+                self.serial.reset_input_buffer()
+            except Exception:
+                pass
+
+            self.serial.write(msg)
+            self.serial.flush()
+
+    def _read_available(self, timeout_s: float = 2.0) -> str:
+        self._ensure_connected()
+
+        chunks = []
+        t0 = time.time()
+
+        with self._io_lock:
+            while time.time() - t0 < float(timeout_s):
+                n = self.serial.in_waiting
+                if n:
+                    chunks.append(self.serial.read(n))
+                    time.sleep(0.02)
+                    continue
+
+                # petit délai pour laisser arriver la réponse
+                time.sleep(0.02)
+
+                if chunks and self.serial.in_waiting <= 0:
+                    break
+
+        raw = b"".join(chunks)
+        return raw.decode("ascii", errors="replace").strip()
+
+    def command(self, payload: str, timeout_s: float = 2.0) -> str:
+        self._write(payload)
+        return self._read_available(timeout_s=timeout_s)
+
+    @classmethod
+    def deg_to_counts(cls, deg: float) -> int:
+        return int(round(float(deg) * cls.COUNTS_PER_DEGREE))
+
+    @classmethod
+    def counts_to_deg(cls, counts: int) -> float:
+        return float(counts) / cls.COUNTS_PER_DEGREE
+
+    @staticmethod
+    def counts_to_hex32(counts: int) -> str:
+        return f"{int(counts) & 0xFFFFFFFF:08X}"
+
+    @staticmethod
+    def hex32_to_counts(hex_value: str) -> int:
+        value = int(str(hex_value), 16)
+        if value & 0x80000000:
+            value -= 0x100000000
+        return int(value)
+
+    @staticmethod
+    def _power_percent_to_absolute_angle_deg(percent: float, offset_deg: float) -> float:
+        """
+        Same convention as Mira/Tumecs HWP mapping:
+        - 0%   -> offset_deg
+        - 100% -> offset_deg + 45 deg
+
+        0..100% uses inverse Malus law:
+            P = sin²(2 theta)
+            theta = 0.5 asin(sqrt(P))
+        """
+        percent = float(percent)
+        offset_deg = float(offset_deg)
+
+        if 0.0 <= percent <= 100.0:
+            p = percent / 100.0
+            theta_rel_rad = 0.5 * math.asin(math.sqrt(p))
+            theta_rel_deg = math.degrees(theta_rel_rad)
+        elif percent < 0.0:
+            theta_rel_deg = (percent / 100.0) * MIRA_ROTATOR_REL_MAX_DEG
+        else:
+            theta_rel_deg = MIRA_ROTATOR_REL_MAX_DEG + (
+                (percent - 100.0) / 100.0
+            ) * MIRA_ROTATOR_REL_MAX_DEG
+
+        return offset_deg + theta_rel_deg
+
+    @staticmethod
+    def _absolute_angle_deg_to_power_percent(angle_deg: float, offset_deg: float) -> float:
+        theta_rel_deg = float(angle_deg) - float(offset_deg)
+        sign = -1.0 if theta_rel_deg < 0.0 else 1.0
+        mag_deg = abs(theta_rel_deg)
+
+        if mag_deg <= MIRA_ROTATOR_REL_MAX_DEG:
+            theta_rel_rad = math.radians(mag_deg)
+            p = math.sin(2.0 * theta_rel_rad) ** 2
+            return sign * (100.0 * p)
+
+        extra = 100.0 + 100.0 * (mag_deg - MIRA_ROTATOR_REL_MAX_DEG) / MIRA_ROTATOR_REL_MAX_DEG
+        return sign * extra
+
+    def get_angle_deg(self) -> float:
+        response = self.command("gp", timeout_s=1.0)
+
+        idx = response.find("PO")
+        if idx < 0 or len(response) < idx + 10:
+            raise RuntimeError(f"Unable to parse ELL14 position from response: {response!r}")
+
+        hex_pos = response[idx + 2: idx + 10]
+        counts = self.hex32_to_counts(hex_pos)
+        self._last_angle_deg = self.counts_to_deg(counts)
+        return float(self._last_angle_deg)
+
+    def move_to_angle_deg(self, angle_deg: float, blocking: bool = True):
+        self._ensure_connected()
+
+        angle_deg = float(angle_deg)
+        counts = self.deg_to_counts(angle_deg)
+        hex_counts = self.counts_to_hex32(counts)
+
+        response = self.command(f"ma{hex_counts}", timeout_s=1.0)
+        self._last_angle_deg = angle_deg
+
+        if blocking:
+            # Best effort: l'ELL14 répond parfois avant stabilisation mécanique.
+            time.sleep(0.2)
+            try:
+                self.get_angle_deg()
+            except Exception:
+                pass
+
+        print(
+            f"[ELL14] move_to_angle_deg angle={angle_deg:.3f} "
+            f"counts={counts} hex={hex_counts} response={response!r}"
+        )
+
+    def set_power_percent(self, percent: float, offset_deg: float):
+        angle = self._power_percent_to_absolute_angle_deg(
+            percent=float(percent),
+            offset_deg=float(offset_deg),
+        )
+        self.move_to_angle_deg(angle, blocking=True)
+
+    def get_power_percent(self, offset_deg: float = 0.0) -> float:
+        try:
+            angle = self.get_angle_deg()
+        except Exception:
+            angle = self._last_angle_deg
+
+        return self._absolute_angle_deg_to_power_percent(
+            angle_deg=float(angle),
+            offset_deg=float(offset_deg),
+        )
 
 # =============================================================================
 # SPARK ALCOR LASER CONTROLLER
@@ -495,6 +726,7 @@ class LaserManager(QObject):
 
         self._cobolt = None
         self._alcor = None
+        self._cobolt_hwp = None
 
         if self.backend_name == "nidaq":
             self._cobolt = _CoboltLaserController(
@@ -509,6 +741,18 @@ class LaserManager(QObject):
             except Exception as e:
                 print(f"[Cobolt] Connection failed: {e}")
 
+            self._cobolt_hwp = _ElliptecELL14Controller(
+                port=COBOLT_ELL14_PORT,
+                address=COBOLT_ELL14_ADDRESS,
+                baudrate=COBOLT_ELL14_BAUDRATE,
+                timeout_s=COBOLT_ELL14_TIMEOUT_S,
+            )
+
+            try:
+                self._cobolt_hwp.connect()
+            except Exception as e:
+                print(f"[ELL14] Cobolt HWP connection failed: {e}")
+            
             self._alcor = _SparkAlcorSerialController(
                 port=SPARK_ALCOR_PORT,
                 baudrate=SPARK_ALCOR_BAUDRATE,
@@ -528,10 +772,14 @@ class LaserManager(QObject):
             return 0.0
 
         if laser_name == "Cobolt 660":
-            if self._cobolt is None:
+            if self._cobolt_hwp is None:
                 return 0.0
-            p_w = self._cobolt.get_power_setpoint_w()
-            return 100.0 * p_w * 1000.0 / float(COBOLT_FLAMENCO_MAX_POWER_MW)
+
+            try:
+                return self._cobolt_hwp.get_power_percent(offset_deg=0.0)
+            except Exception as e:
+                print(f"[LaserManager] Cobolt HWP get_power_percent failed: {e}")
+                return 0.0
 
         if laser_name == "Alcor 920":
             if self._alcor is None:
@@ -589,12 +837,10 @@ class LaserManager(QObject):
         percent = max(0.0, min(100.0, float(percent)))
 
         if laser_name == "Cobolt 660":
-            if self._cobolt is None:
-                raise RuntimeError("Cobolt controller is not initialized.")
-
-            power_mw = (percent / 100.0) * float(COBOLT_FLAMENCO_MAX_POWER_MW)
-            self._cobolt.set_power_mw(power_mw)
-            return
+            raise RuntimeError(
+                "Direct Cobolt power setpoint is disabled. "
+                "Use HardwareManager.set_laser_power_percent() to drive the ELL14 HWP."
+            )
 
         if laser_name == "Alcor 920":
             if self._alcor is None:
@@ -658,6 +904,9 @@ class LaserManager(QObject):
                 self._cobolt.close()
         except Exception:
             pass
+
+        if self._cobolt_hwp is not None:
+            self._cobolt_hwp.close()
 
         try:
             if self._cobolt_tec is not None:
@@ -2469,6 +2718,19 @@ class HardwareManager(QObject):
         if self.backend_name != "nidaq":
             return
 
+        if str(laser_name) == "Cobolt 660":
+            if self._laser_manager is None:
+                self.create_laser_manager(parent=self)
+
+            if self._laser_manager is None or self._laser_manager._cobolt_hwp is None:
+                raise RuntimeError("Cobolt ELL14 HWP controller is not initialized.")
+
+            self._laser_manager._cobolt_hwp.set_power_percent(
+                float(percent),
+                offset_deg=float(offset_deg),
+            )
+            return
+        
         rot = self._rotators.get(str(laser_name))
         if rot is None:
             raise KeyError(f"No rotator configured for laser {laser_name!r}")
@@ -2485,6 +2747,18 @@ class HardwareManager(QObject):
             return 0.0
 
         self._ensure_real_devices()
+
+        if str(laser_name) == "Cobolt 660":
+            if self._laser_manager is None:
+                self.create_laser_manager(parent=self)
+
+            if self._laser_manager is None or self._laser_manager._cobolt_hwp is None:
+                return 0.0
+
+            cfg = self._get_laser_runtime_settings(laser_name)
+            return self._laser_manager._cobolt_hwp.get_power_percent(
+                offset_deg=float(cfg["offset_deg"])
+            )
 
         rot = self._rotators.get(str(laser_name))
         if rot is None:

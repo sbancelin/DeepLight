@@ -103,7 +103,7 @@ class _LaserCommandWorker(QObject):
     def _apply_power_change(self, laser_name: str, value: float):
         laser_name = str(laser_name)
 
-        if laser_name in ("Mira 900", "Tumecs"):
+        if laser_name in ("Mira 900", "Tumecs", "Cobolt 660"):
             cfg = self.settings_manager.get_laser_settings(laser_name)
 
             if "speed" not in cfg or "steps_per_degree" not in cfg or "offset_deg" not in cfg:
