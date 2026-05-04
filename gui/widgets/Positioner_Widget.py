@@ -526,14 +526,6 @@ class PositionerWidget(QWidget):
                 except Exception:
                     pass
     
-            print(
-                f"[PositionerWidget] push limits axis={axis_key} "
-                f"min={self.axis_limits[axis_key]['min']} "
-                f"max={self.axis_limits[axis_key]['max']} "
-                f"vmax={self.axis_velocity_limits[axis_key]['max']} "
-                f"tol={tol}"
-            )
-    
     def set_manager(self, manager):
         """Permet d’injecter (ou remplacer) le manager après construction."""
         self.manager = manager

@@ -76,7 +76,7 @@ COBOLT_FLAMENCO_PORT = "COM12"
 COBOLT_FLAMENCO_BAUDRATE = 115200
 COBOLT_FLAMENCO_MAX_POWER_MW = 300.0
 
-COBOLT_ELL14_PORT = "COM7"
+COBOLT_ELL14_PORT = "COM15"
 COBOLT_ELL14_BAUDRATE = 9600
 COBOLT_ELL14_ADDRESS = "0"
 COBOLT_ELL14_COUNTS_PER_REV = 143360
@@ -199,7 +199,6 @@ class _CoboltLaserController:
         power_mw = max(0.0, float(power_mw))
         power_w = power_mw / 1000.0
         self._write(f"p {power_w:.5f}")
-        print(f"[Cobolt] set_power_mw={power_mw:.3f} ({power_w:.5f} W)")
 
     def get_power_setpoint_w(self) -> float:
         ans = self._query("p?")
@@ -405,21 +404,14 @@ class _ElliptecELL14Controller:
         counts = self.deg_to_counts(angle_deg)
         hex_counts = self.counts_to_hex32(counts)
 
-        response = self.command(f"ma{hex_counts}", timeout_s=1.0)
         self._last_angle_deg = angle_deg
 
         if blocking:
-            # Best effort: l'ELL14 répond parfois avant stabilisation mécanique.
             time.sleep(0.2)
             try:
                 self.get_angle_deg()
             except Exception:
                 pass
-
-        print(
-            f"[ELL14] move_to_angle_deg angle={angle_deg:.3f} "
-            f"counts={counts} hex={hex_counts} response={response!r}"
-        )
 
     def set_power_percent(self, percent: float, offset_deg: float):
         angle = self._power_percent_to_absolute_angle_deg(
@@ -644,7 +636,6 @@ class _SparkAlcorSerialController:
     def set_enabled(self, enabled: bool):
         payload = bytes([1 if bool(enabled) else 0])
         self._transceive(self.CMD_SET_LASER_STATUS, payload)
-        print(f"[SparkAlcor] set_enabled={bool(enabled)}")
 
     def get_enabled(self) -> bool:
         data = self._transceive(self.CMD_LASER_STATUS)
@@ -658,8 +649,6 @@ class _SparkAlcorSerialController:
         payload = struct.pack("<f", float(percent))
         self._transceive(self.CMD_SET_OUTPUT_LEVEL_PERCENT, payload)
 
-        print(f"[SparkAlcor] set_power_percent={percent:.2f}%")
-
     def get_power_percent(self) -> float:
         data = self._transceive(self.CMD_OUTPUT_LEVEL_PERCENT)
         if len(data) < 4:
@@ -672,15 +661,11 @@ class _SparkAlcorSerialController:
         payload = struct.pack("<f", float(gdd_fs2))
         self._transceive(self.CMD_SET_GDD_FS2, payload)
 
-        print(f"[SparkAlcor] set_gdd_fs2={gdd_fs2:.1f} fs^2")
-
-
     def get_gdd_fs2(self) -> float:
         data = self._transceive(self.CMD_GDD_FS2)
         if len(data) < 4:
             return 0.0
         return float(struct.unpack("<f", data[:4])[0])
-
 
     def set_rep_rate_khz(self, rep_rate_khz: float):
         rep_rate_khz = max(
@@ -694,9 +679,6 @@ class _SparkAlcorSerialController:
 
         payload = struct.pack("<f", float(rep_rate_hz))
         self._transceive(self.CMD_SET_REP_RATE_HZ, payload)
-
-        print(f"[SparkAlcor] set_rep_rate_khz={rep_rate_khz:.3f} kHz")
-
 
     def get_rep_rate_khz(self) -> float:
         data = self._transceive(self.CMD_REP_RATE_HZ)
@@ -1840,12 +1822,6 @@ class _ScientificaMotion8XYController:
     def move_xy_abs_um(self, x_um: float, y_um: float):
         x_hw, y_hw = self._logical_to_hw_xy(x_um, y_um)
 
-        print(
-            f"[ScientificaXY] move_xy_abs_um "
-            f"logical=({x_um:.3f}, {y_um:.3f}) "
-            f"hw=({x_hw:.3f}, {y_hw:.3f})"
-        )
-
         payload = struct.pack(
             "<BBBBii",
             0xAA,
@@ -2118,10 +2094,6 @@ class RealHardwarePositionerManager(PositionerManager):
             y_target = float(target_abs) if axis == "y" else float(self._state["y"].abs_pos)
 
             speed = max(0.001, float(speed))
-            self._log(
-                f"[XY MOVE] axis={axis} x_target={x_target:.3f} y_target={y_target:.3f} "
-                f"speed_mm_s={speed:.3f}"
-            )
 
             for ax_name, ax_target in (("x", x_target), ("y", y_target)):
                 st_ax = self._state[ax_name]

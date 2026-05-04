@@ -122,9 +122,6 @@ class NidaqMicroscope(MicroscopeBackendBase):
     def _clear_active_tasks(self):
         self._active_ao_task = None
         self._active_ai_task = None
-    
-    def _log(self, msg: str):
-        print(f"[NidaqMicroscope] {msg}")
 
     def _require_nidaq(self):
         if not _HAS_NIDAQ:
@@ -270,11 +267,6 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
         self._recreate_shared_image()
         self.acquired = {}
-        self._log(
-            f"Configured scan_kind={self.scan_kind} "
-            f"image={self.dim_image_x}x{self.dim_image_y} "
-            f"fast={self.dim_fast} slow={self.dim_slow}"
-        )
 
     def configure_execution_plan(self, plan: ExecutionPlan | None):
         self.execution_plan = plan
