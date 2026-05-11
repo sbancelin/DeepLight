@@ -376,9 +376,11 @@ class NidaqMicroscope(MicroscopeBackendBase):
         ao_max = max(x_max, y_max)
         return ao_min, ao_max
 
-    def _write_ao_idle_zero(self):
+    def _write_ao_idle_offset(self):
         """
-        Force immédiatement les sorties AO X/Y à 0 V.
+        Force immédiatement les sorties AO X/Y au voltage correspondant
+        aux offsets définis dans le ScanWidget.
+        Si offset = 0 µm, les galvos reçoivent 0 V.
         Utilisé en fin de run pour éviter de laisser les galvos
         sur la dernière valeur du waveform fini.
         """
@@ -386,12 +388,25 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
         ao_min, ao_max = self._ao_voltage_limits()
 
-        with nidaqmx.Task("DL_AO_IdleZero") as ao_task:
+        offsets = self.scan_parameters.get("offsets", {})
+        convs   = self.scan_parameters.get("conversion_factors", {})
+
+        conv_x = max(float(convs.get("X-Galvo", 100.0)), 1e-9)
+        conv_y = max(float(convs.get("Y-Galvo", 100.0)), 1e-9)
+
+        x_v = float(offsets.get("X-Galvo", 0.0)) / conv_x
+        y_v = float(offsets.get("Y-Galvo", 0.0)) / conv_y
+
+        # Clamp dans les limites AO configurées
+        x_v = max(ao_min, min(ao_max, x_v))
+        y_v = max(ao_min, min(ao_max, y_v))
+
+        with nidaqmx.Task("DL_AO_IdleOffset") as ao_task:
             ao_task.ao_channels.add_ao_voltage_chan(NI_AO_X, min_val=ao_min, max_val=ao_max)
             ao_task.ao_channels.add_ao_voltage_chan(NI_AO_Y, min_val=ao_min, max_val=ao_max)
 
             # écriture software-timed d'un sample par canal
-            ao_task.write([0.0, 0.0], auto_start=True)
+            ao_task.write([x_v, y_v], auto_start=True)
     
     def _active_ai_count(self) -> int:
         return min(2, len(self.analog_channels))
@@ -1139,9 +1154,9 @@ class NidaqMicroscope(MicroscopeBackendBase):
         finally:
             if self.scan_kind == "laser":
                 try:
-                    self._write_ao_idle_zero()
+                    self._write_ao_idle_offset()
                 except Exception as e:
-                    self._log(f"AO idle zero failed after single: {e}")
+                    self._log(f"AO idle offset failed after single: {e}")
 
             self.acquisition_finished.emit()
 
