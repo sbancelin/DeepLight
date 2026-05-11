@@ -15,6 +15,7 @@ from .managers.Settings_Manager import SettingsManager
 from .managers.Stitching_Manager import StitchingManager
 from .managers.Spectro_Manager import SpectroManager
 from .managers.Laser_Manager import LaserManager
+from .widgets.Log_Widget import logger
 
 
 class MainWindow(QMainWindow):
@@ -130,7 +131,7 @@ class MainWindow(QMainWindow):
         try:
             self.acquisition_manager.microscope.positioner_manager = self.positioner_manager
         except Exception as e:
-            print(f"[MainWindow] positioner_manager injection into microscope failed: {e}")
+            logger.error(f"[MainWindow] positioner_manager injection into microscope failed: {e}")
 
         self.acquisition_manager.acquisition_started.connect(self.on_acquisition_started)
         self.acquisition_manager.acquisition_stopped.connect(self.on_acquisition_stopped)
@@ -201,12 +202,12 @@ class MainWindow(QMainWindow):
             output_mw = self.laser_manager.get_output_power_mw("Cobolt 660")
             enabled = self.laser_manager.get_enabled("Cobolt 660")
 
-            print(
+            logger.info(
                 f"[MainWindow] Cobolt synced: "
                 f"setpoint={percent:.1f}% output={output_mw:.1f} mW enabled={enabled}"
             )
         except Exception as e:
-            print(f"[MainWindow] Cobolt sync failed: {e}")
+            logger.warning(f"[MainWindow] Cobolt sync failed: {e}")
 
     def _setup_laser_worker(self):
         self.laser_command_manager = LaserManager(
@@ -330,7 +331,7 @@ class MainWindow(QMainWindow):
             params = self.ui.spectro_widget.get_brillouin_parameters()
             self.spectro_manager.snap_brillouin(params)
         except Exception as e:
-            print(f"[Spectro] ERROR: Brillouin snap failed: {e}")
+            logger.error(f"[Spectro] Brillouin snap failed: {e}")
             self._on_spectro_status_changed("Error")
 
 
@@ -343,7 +344,7 @@ class MainWindow(QMainWindow):
                 params = self.ui.spectro_widget.get_brillouin_parameters()
                 self.spectro_manager.start_live_brillouin(params)
         except Exception as e:
-            print(f"[Spectro] ERROR: Brillouin live failed: {e}")
+            logger.error(f"[Spectro] Brillouin live failed: {e}")
             self._on_spectro_status_changed("Error")
 
 
@@ -353,7 +354,7 @@ class MainWindow(QMainWindow):
             params = self.ui.spectro_widget.get_raman_parameters()
             self.spectro_manager.snap_raman(params)
         except Exception as e:
-            print(f"[Spectro] ERROR: Raman snap failed: {e}")
+            logger.error(f"[Spectro] Raman snap failed: {e}")
             self._on_spectro_status_changed("Error")
 
 
@@ -366,7 +367,7 @@ class MainWindow(QMainWindow):
                 params = self.ui.spectro_widget.get_raman_parameters()
                 self.spectro_manager.start_live_raman(params)
         except Exception as e:
-            print(f"[Spectro] ERROR: Raman live failed: {e}")
+            logger.error(f"[Spectro] Raman live failed: {e}")
             self._on_spectro_status_changed("Error")
 
     @Slot(str)
@@ -481,7 +482,7 @@ class MainWindow(QMainWindow):
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
 
-        print(f"[Spectro] ERROR: {message}")
+        logger.error(f"[Spectro] {message}")
         self._on_spectro_status_changed("Error")
     
     def _connect_camera_controller_signals(self):
@@ -811,7 +812,7 @@ class MainWindow(QMainWindow):
             channels = list(scan_parameters.get("active_channels", []))
             self.ui.frc_widget.set_active_channels(channels)
         except Exception as e:
-            print("[MainWindow] FRC set_active_channels error:", e)
+            logger.warning(f"[MainWindow] FRC set_active_channels error: {e}")
 
         try:
             step_sizes = scan_parameters.get("step_sizes", {})
@@ -831,7 +832,7 @@ class MainWindow(QMainWindow):
             elif pix_y > 0:
                 self.ui.frc_widget.set_pixel_size_um(pix_y)
         except Exception as e:
-            print("[MainWindow] FRC set_pixel_size_um error:", e)
+            logger.warning(f"[MainWindow] FRC set_pixel_size_um error: {e}")
 
         scan_kind = str(scan_parameters.get("scan_kind", "laser") or "laser")
 
@@ -905,7 +906,7 @@ class MainWindow(QMainWindow):
             try:
                 self.acquisition_manager.set_execution_plan(self.scan_manager.get_last_execution_plan())
             except Exception as e:
-                print("[MainWindow] set_execution_plan error:", e)
+                logger.warning(f"[MainWindow] set_execution_plan error: {e}")
 
             self._visualizer_flush_timer.start()
     
@@ -925,7 +926,7 @@ class MainWindow(QMainWindow):
         try:
             self.scan_manager.consume_samples(int(delta_samples))
         except Exception as e:
-            print("[MainWindow] consume_samples error:", e)
+            logger.warning(f"[MainWindow] consume_samples error: {e}")
     
     @Slot(dict)
     def on_sample_status_updated(self, info: dict):
@@ -969,14 +970,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(msg)
 
         except Exception as e:
-            print("[MainWindow] on_sample_status_updated error:", e)
+            logger.warning(f"[MainWindow] on_sample_status_updated error: {e}")
     
     @Slot()
     def _flush_visualizers(self):
         try:
             self.scan_manager.flush_pending_buffers()
         except Exception as e:
-            print("[MainWindow] flush_visualizers error:", e)
+            logger.warning(f"[MainWindow] flush_visualizers error: {e}")
     
     @Slot(str, str, str, str)
     def on_save_clicked(self, folder: str, filename: str, file_format: str, comment: str):
@@ -990,7 +991,7 @@ class MainWindow(QMainWindow):
                 images[ch] = np.asarray(img)
 
         if not images:
-            print("[Save] No image to save (empty last_images).")
+            logger.warning("[Save] No image to save (empty last_images).")
             return
 
         scan_params = self.ui.scan_widget.get_scan_parameters()
@@ -1005,9 +1006,9 @@ class MainWindow(QMainWindow):
                 images_by_channel=images,
                 scan_params=scan_params
             )
-            print("[Save] Saved view to:", path)
+            logger.info(f"[Save] Saved view to: {path}")
         except Exception as e:
-            print("[Save] ERROR:", e)
+            logger.error(f"[Save] ERROR: {e}")
     
     def _get_display_axes_from_scan_params(self, scan_parameters: dict):
         """
@@ -1157,11 +1158,11 @@ class MainWindow(QMainWindow):
         try:
             self.save_manager.append_rec_frame(rep, idx_tuple, images_by_channel)
         except Exception as e:
-            print("[REC] append frame error:", e)
+            logger.error(f"[REC] append frame error: {e}")
     
     @Slot(object)
     def on_acquisition_done(self, data):
-        print("ACQ DONE. Stored reps:", len(data))
+        logger.info(f"ACQ DONE. Stored reps: {len(data)}")
         
     @Slot(bool)
     def on_shutter_requested(self, open_: bool):
@@ -1219,7 +1220,7 @@ class MainWindow(QMainWindow):
         try:
             self.scan_manager.flush_pending_buffers()
         except Exception as e:
-            print("[MainWindow] final flush error:", e)
+            logger.warning(f"[MainWindow] final flush error: {e}")
 
         try:
             self._visualizer_flush_timer.stop()
@@ -1300,7 +1301,7 @@ class MainWindow(QMainWindow):
             ):
                 hw.update_histogram()
         except Exception as e:
-            print("[MainWindow] histogram refresh error:", e)
+            logger.warning(f"[MainWindow] histogram refresh error: {e}")
 
         # Line profile refresh (si activé sur ce canal)
         try:
@@ -1313,7 +1314,7 @@ class MainWindow(QMainWindow):
             ):
                 lpw.update_profile()
         except Exception as e:
-            print("[MainWindow] line profile refresh error:", e)
+            logger.warning(f"[MainWindow] line profile refresh error: {e}")
 
         lock_checked = bool(getattr(self.ui, "channel_lock", {}).get(channel, True))
         im_widget.getView().setAspectLocked(lock_checked)
@@ -1331,7 +1332,7 @@ class MainWindow(QMainWindow):
             shown = np.asarray(image_data, dtype=np.float32)
             self.ui.frc_widget.on_new_image(channel, shown)
         except Exception as e:
-            print("[MainWindow] FRC forward error:", e)
+            logger.warning(f"[MainWindow] FRC forward error: {e}")
     
     def _update_frc_channels(self):
         """
@@ -1342,7 +1343,7 @@ class MainWindow(QMainWindow):
             channels = list(self.ui.detector_widget.detectors) or []
             self.ui.frc_widget.set_active_channels(channels)
         except Exception as e:
-            print("[MainWindow] _update_frc_channels error:", e)
+            logger.warning(f"[MainWindow] _update_frc_channels error: {e}")
 
     @Slot(str)
     def on_frc_request_single_frame(self, channel: str):
@@ -1511,12 +1512,12 @@ class MainWindow(QMainWindow):
 
         # sécurité: interdit P + rep>1
         if "Polarization" in scan_parameters.get("active_axes", []) and int(scan_parameters.get("repetitions", 1)) != 1:
-            print("ERROR: Polarization requires Repetitions = 1.")
+            logger.error("ERROR: Polarization requires Repetitions = 1.")
             return
 
         # check 2 axes minimum
         if len(scan_parameters.get("active_axes", [])) < 2:
-            print("ERROR: Need at least 2 active axes for acquisition.")
+            logger.error("ERROR: Need at least 2 active axes for acquisition.")
             return
 
         self._capture_stepper_return_targets()
@@ -1591,7 +1592,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, int, str)
     def _on_laser_command_failed(self, laser_name: str, value: int, message: str):
-        print(f"[MainWindow] laser command failed for {laser_name}={value}%: {message}")
+        logger.error(f"[MainWindow] laser command failed for {laser_name}={value}%: {message}")
         try:
             self.statusBar().showMessage(f"Laser error ({laser_name}): {message}", 5000)
         except Exception:
@@ -1607,7 +1608,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, float, str)
     def _on_laser_gdd_failed(self, laser_name: str, gdd_fs2: float, message: str):
-        print(f"[MainWindow] laser GDD command failed for {laser_name}={gdd_fs2} fs^2: {message}")
+        logger.error(f"[MainWindow] laser GDD command failed for {laser_name}={gdd_fs2} fs^2: {message}")
         try:
             self.statusBar().showMessage(f"Laser GDD error ({laser_name}): {message}", 5000)
         except Exception:
@@ -1627,7 +1628,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, float, str)
     def _on_laser_rep_rate_failed(self, laser_name: str, rep_rate_khz: float, message: str):
-        print(f"[MainWindow] laser rep-rate command failed for {laser_name}={rep_rate_khz} kHz: {message}")
+        logger.error(f"[MainWindow] laser rep-rate command failed for {laser_name}={rep_rate_khz} kHz: {message}")
         try:
             self.statusBar().showMessage(f"Laser rep-rate error ({laser_name}): {message}", 5000)
         except Exception:
@@ -1646,7 +1647,7 @@ class MainWindow(QMainWindow):
             self.laser_manager.set_enabled(laser_name, bool(enabled))
 
         except Exception as e:
-            print(f"[MainWindow] laser ON/OFF command failed for {laser_name}={enabled}: {e}")
+            logger.error(f"[MainWindow] laser ON/OFF command failed for {laser_name}={enabled}: {e}")
 
             try:
                 current = self.laser_manager.get_enabled(laser_name)

@@ -6,6 +6,7 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
 from .Scan_Types import ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan, DetectorChannelSpec
+from ..widgets.Log_Widget import logger
 
 DAQ_SAMPLE_RATE_HZ = 500_000.0
 DAQ_SAMPLE_PERIOD_S = 1.0 / DAQ_SAMPLE_RATE_HZ
@@ -870,7 +871,7 @@ class ScanManager(QObject):
             self._last_execution_plan = self.build_execution_plan(self._last_scan_params_obj)
         except Exception as e:
             self._last_execution_plan = None
-            print("[ScanManager] build_execution_plan failed:", e)
+            logger.error(f"[ScanManager] build_execution_plan failed: {e}")
 
         # En acquisition, les AO viennent directement du plan maître
         if self._mode == "acquisition" and self._last_execution_plan is not None:

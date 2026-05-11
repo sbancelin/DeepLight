@@ -6,6 +6,7 @@ import math
 import time
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
+from ..widgets.Log_Widget import logger
 
 
 @dataclass
@@ -118,22 +119,22 @@ class PositionerManager(QObject):
         st = self._state[axis]
 
         if not math.isfinite(float(target_abs)):
-            print(f"Target position invalide pour l'axe {axis}: {target_abs}")
+            logger.warning(f"Target position invalide pour l'axe {axis}: {target_abs}")
             return False
 
         if float(target_abs) < float(st.min_pos) or float(target_abs) > float(st.max_pos):
-            print(
+            logger.warning(
                 f"Position absolue {target_abs} hors limites pour l'axe {axis} "
                 f"(range device: {st.min_pos} .. {st.max_pos})."
             )
             return False
 
         if float(speed) < 0:
-            print(f"Vitesse négative invalide pour l'axe {axis}: {speed}")
+            logger.warning(f"Vitesse négative invalide pour l'axe {axis}: {speed}")
             return False
 
         if float(speed) > float(st.max_speed):
-            print(f"Vitesse {speed} trop élevée pour l'axe {axis}.")
+            logger.warning(f"Vitesse {speed} trop élevée pour l'axe {axis}.")
             return False
 
         return True
@@ -310,7 +311,7 @@ class HardwarePositionerManager(PositionerManager):
         super().__init__(axes, parent=parent)
 
     def _log(self, msg: str):
-        print(f"[HardwarePositioner] {msg}")
+        logger.debug(f"[HardwarePositioner] {msg}")
 
     @Slot(str, float, float)
     def move_to_rel(self, axis: str, rel_target: float, speed: float):

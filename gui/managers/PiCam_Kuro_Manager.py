@@ -5,6 +5,7 @@ import ctypes
 from pathlib import Path
 from ctypes import POINTER, byref
 import numpy as np
+from ..widgets.Log_Widget import logger
 
 # ----------------------------------------------------------------------
 # PICam basic C types (from pil_platform.h / picam.h)
@@ -138,7 +139,7 @@ class PiCamKuroManager:
             self.lib.PicamAdvanced_IsDiscoveringCameras(byref(discovering)),
             "PicamAdvanced_IsDiscoveringCameras(pre)",
         )
-        print(f"[PICam] discovering(pre)={int(discovering.value)}")
+        logger.debug(f"[PICam] discovering(pre)={int(discovering.value)}")
 
         self._check(
             self.lib.PicamAdvanced_DiscoverCameras(),
@@ -149,7 +150,7 @@ class PiCamKuroManager:
             self.lib.PicamAdvanced_IsDiscoveringCameras(byref(discovering)),
             "PicamAdvanced_IsDiscoveringCameras(post-start)",
         )
-        print(f"[PICam] discovering(post-start)={int(discovering.value)}")
+        logger.debug(f"[PICam] discovering(post-start)={int(discovering.value)}")
 
         try:
             self._check(
@@ -157,13 +158,13 @@ class PiCamKuroManager:
                 "PicamAdvanced_StopDiscoveringCameras",
             )
         except Exception as e:
-            print(f"[PICam] stop discovery warning: {e}")
+            logger.warning(f"[PICam] stop discovery warning: {e}")
 
         self._check(
             self.lib.PicamAdvanced_IsDiscoveringCameras(byref(discovering)),
             "PicamAdvanced_IsDiscoveringCameras(post-stop)",
         )
-        print(f"[PICam] discovering(post-stop)={int(discovering.value)}")
+        logger.debug(f"[PICam] discovering(post-stop)={int(discovering.value)}")
     
     def _load_library(self):
         if not os.path.isfile(self.dll_path):
@@ -239,7 +240,7 @@ class PiCamKuroManager:
         if self.connected:
             return
 
-        print(f"[PICam] dll_path={self.dll_path}")
+        logger.info(f"[PICam] dll_path={self.dll_path}")
         
         self._load_library()
         self._check(self.lib.Picam_InitializeLibrary(), "Picam_InitializeLibrary")
@@ -259,7 +260,7 @@ class PiCamKuroManager:
             )
 
             count = int(id_count.value)
-            print(f"[PICam] available cameras: {count}")
+            logger.info(f"[PICam] available cameras: {count}")
 
             if count <= 0:
                 raise RuntimeError(
@@ -276,7 +277,7 @@ class PiCamKuroManager:
                 sensor = self._decode_c_string(cam_id.sensor_name)
                 serial = self._decode_c_string(cam_id.serial_number)
 
-                print(
+                logger.debug(
                     f"[PICam] cam[{i}] model={model} interface={iface} "
                     f"sensor='{sensor}' serial='{serial}'"
                 )
@@ -298,7 +299,7 @@ class PiCamKuroManager:
             )
 
             self.connected = True
-            print(f"[PICam] Connected using {self.dll_path}")
+            logger.info(f"[PICam] Connected using {self.dll_path}")
 
         finally:
             try:
@@ -500,7 +501,7 @@ class PiCamKuroManager:
 
         image = arr[:expected].reshape((h, w)).astype(np.float32, copy=False)
 
-        print(
+        logger.debug(
             f"[PICam] snap ok shape={image.shape} dtype={image.dtype} "
             f"min={float(image.min())} max={float(image.max())}"
         )

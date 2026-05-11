@@ -4,6 +4,7 @@ from PySide6.QtGui import QIcon
 from functools import partial
 
 from ..managers.Scan_Types import STEPPER_AXIS_DEFAULTS
+from .Log_Widget import logger
 
 CHECKBOX_STYLE = """
     QCheckBox::indicator {
@@ -187,7 +188,7 @@ def setup_positioner_settings_dialog(dialog):
                 )
                 positioner_widget.manager.set_ums_scaling_factors(sx, sy)
             except Exception as e:
-                print(f"[PositionerWidget] set_ums_scaling_factors failed: {e}")
+                logger.error(f"[PositionerWidget] set_ums_scaling_factors failed: {e}")
 
     dialog.accepted.connect(on_dialog_accepted)
 

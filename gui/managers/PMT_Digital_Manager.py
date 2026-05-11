@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from PySide6.QtCore import QObject
+from ..widgets.Log_Widget import logger
 
 from .Hardware_Manager import (
     NI_DEVICE_NAME,
@@ -92,7 +93,7 @@ class PMTDigitalManager(QObject):
         self._channel_runtime: dict[str, _DigitalChannelRuntime] = {}
 
     def _log(self, msg: str):
-        print(f"[PMTDigitalManager] {msg}")
+        logger.debug(f"[PMTDigitalManager] {msg}")
 
     def _require_nidaq(self):
         if not _HAS_NIDAQ:

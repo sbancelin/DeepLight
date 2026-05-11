@@ -9,6 +9,8 @@ from threading import Lock
 import tifffile
 import zarr
 
+from ..widgets.Log_Widget import logger
+
 NGFF_AXES_TCZYX = [
     {"name": "t", "type": "time"},
     {"name": "c", "type": "channel"},
@@ -306,7 +308,7 @@ class SaveManager:
                 self._rec_mode = "ome-tiff"
                 return True
             except Exception as e:
-                print("[REC] Could not allocate OME-TIFF buffer:", e)
+                logger.error(f"[REC] Could not allocate OME-TIFF buffer: {e}")
                 self.finish_rec_session()
                 return False
 
@@ -348,11 +350,11 @@ class SaveManager:
                 return True
 
             except Exception as e:
-                print("[REC] Could not start OME-Zarr session:", e)
+                logger.error(f"[REC] Could not start OME-Zarr session: {e}")
                 self.finish_rec_session()
                 return False
 
-        print("[REC] Unsupported REC format:", fmt)
+        logger.error(f"[REC] Unsupported REC format: {fmt}")
         self.finish_rec_session()
         return False
 

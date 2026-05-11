@@ -3,6 +3,7 @@ from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer, QMetaObject, 
 from threading import Lock
 
 from .Microscopes.Mock_Microscope import MockMicroscope
+from ..widgets.Log_Widget import logger
 from .Microscopes.Microscope_Backend_Base import validate_backend_contract
 
 
@@ -125,7 +126,7 @@ class AcquisitionManager(QObject):
             if hasattr(self.microscope, "_write_ao_idle_zero") and getattr(self.microscope, "scan_kind", None) == "laser":
                 self.microscope._write_ao_idle_zero()
         except Exception as e:
-            print(f"[AcquisitionManager] AO idle zero failed after thread stop: {e}")
+            logger.error(f"[AcquisitionManager] AO idle zero failed after thread stop: {e}")
         self.update_timer.stop()  # Arrête le timer de mise à jour
         self.shutter_requested.emit(False) # Shutter OFF
         self.is_running = False

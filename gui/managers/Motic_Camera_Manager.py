@@ -9,6 +9,7 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from .Camera_Manager import CameraBackendBase, CameraParameters
+from ..widgets.Log_Widget import logger
 
 
 # =============================================================================
@@ -25,12 +26,12 @@ class MockCameraBackend(CameraBackendBase):
 
     def connect(self) -> None:
         self.connected = True
-        print("[MockCamera] connected")
+        logger.info("[MockCamera] connected")
 
     def disconnect(self) -> None:
         self.stop_live()
         self.connected = False
-        print("[MockCamera] disconnected")
+        logger.info("[MockCamera] disconnected")
 
     def list_binning(self):
         return ["1x1", "2x2", "4x4"]
@@ -103,11 +104,11 @@ class MockCameraBackend(CameraBackendBase):
         if not self.connected:
             self.connect()
         self.live_running = True
-        print("[MockCamera] live started")
+        logger.info("[MockCamera] live started")
 
     def stop_live(self) -> None:
         self.live_running = False
-        print("[MockCamera] live stopped")
+        logger.info("[MockCamera] live stopped")
 
 
 # =============================================================================
@@ -125,7 +126,7 @@ class OpenCVCameraBackend(CameraBackendBase):
         if self.connected:
             return
 
-        print(f"[OpenCVCamera] opening camera index={self.camera_index}")
+        logger.info(f"[OpenCVCamera] opening camera index={self.camera_index}")
         cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
 
         if not cap or not cap.isOpened():
@@ -133,7 +134,7 @@ class OpenCVCameraBackend(CameraBackendBase):
 
         self.cap = cap
         self.connected = True
-        print("[OpenCVCamera] connected")
+        logger.info("[OpenCVCamera] connected")
 
         try:
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -148,7 +149,7 @@ class OpenCVCameraBackend(CameraBackendBase):
             self.cap.release()
             self.cap = None
         self.connected = False
-        print("[OpenCVCamera] disconnected")
+        logger.info("[OpenCVCamera] disconnected")
 
     def list_binning(self):
         return ["1x1"]
@@ -220,11 +221,11 @@ class OpenCVCameraBackend(CameraBackendBase):
         if not self.connected:
             self.connect()
         self.live_running = True
-        print("[OpenCVCamera] live started")
+        logger.info("[OpenCVCamera] live started")
 
     def stop_live(self) -> None:
         self.live_running = False
-        print("[OpenCVCamera] live stopped")
+        logger.info("[OpenCVCamera] live stopped")
 
     def get_frame(self) -> np.ndarray:
         return self.snap()

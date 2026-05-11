@@ -11,6 +11,7 @@ from typing import Optional
 from PySide6.QtCore import QObject, Slot, QTimer
 
 from .Positioner_Manager import MockPositionerManager, PositionerManager
+from ..widgets.Log_Widget import logger
 from .Motic_Camera_Manager import CameraController, OpenCVCameraBackend, MockCameraBackend
 from .PiCam_Kuro_Manager import PiCamKuroManager
 
@@ -169,7 +170,7 @@ class _CoboltLaserController:
             write_timeout=1,
         )
         self.connected = True
-        print(f"[Cobolt] Connected on {self.port} @ {self.baudrate}")
+        logger.info(f"[Cobolt] Connected on {self.port} @ {self.baudrate}")
 
     def close(self):
         try:
@@ -271,9 +272,9 @@ class _ElliptecELL14Controller:
 
         try:
             pos = self.get_angle_deg()
-            print(f"[ELL14] Connected on {self.port} addr={self.address} angle={pos:.3f} deg")
+            logger.info(f"[ELL14] Connected on {self.port} addr={self.address} angle={pos:.3f} deg")
         except Exception as e:
-            print(f"[ELL14] Connected on {self.port}, but initial position read failed: {e}")
+            logger.warning(f"[ELL14] Connected on {self.port}, but initial position read failed: {e}")
 
     def close(self):
         try:
@@ -491,7 +492,7 @@ class _SparkAlcorSerialController:
 
         try:
             self.ping()
-            print(f"[SparkAlcor] Connected on {self.port} @ {self.baudrate}")
+            logger.info(f"[SparkAlcor] Connected on {self.port} @ {self.baudrate}")
         except Exception:
             self.close()
             raise
@@ -721,9 +722,9 @@ class LaserManager(QObject):
             try:
                 self._cobolt.connect()
                 sn = self._cobolt.get_serial_number()
-                print(f"[Cobolt] Serial number: {sn}")
+                logger.info(f"[Cobolt] Serial number: {sn}")
             except Exception as e:
-                print(f"[Cobolt] Connection failed: {e}")
+                logger.error(f"[Cobolt] Connection failed: {e}")
 
             self._cobolt_hwp = _ElliptecELL14Controller(
                 port=COBOLT_ELL14_PORT,
@@ -735,7 +736,7 @@ class LaserManager(QObject):
             try:
                 self._cobolt_hwp.connect()
             except Exception as e:
-                print(f"[ELL14] Cobolt HWP connection failed: {e}")
+                logger.error(f"[ELL14] Cobolt HWP connection failed: {e}")
             
             self._alcor = _SparkAlcorSerialController(
                 port=SPARK_ALCOR_PORT,
@@ -747,9 +748,9 @@ class LaserManager(QObject):
                 self._alcor.connect()
                 self._alcor.set_power_percent(0.0)
                 enabled = self._alcor.get_enabled()
-                print(f"[SparkAlcor] Initialized power=0.0% enabled={enabled}")
+                logger.info(f"[SparkAlcor] Initialized power=0.0% enabled={enabled}")
             except Exception as e:
-                print(f"[SparkAlcor] Connection failed: {e}")
+                logger.error(f"[SparkAlcor] Connection failed: {e}")
 
     def get_power_percent(self, laser_name: str) -> float:
         if self.backend_name != "nidaq":
@@ -762,7 +763,7 @@ class LaserManager(QObject):
             try:
                 return self._cobolt_hwp.get_power_percent(offset_deg=0.0)
             except Exception as e:
-                print(f"[LaserManager] Cobolt HWP get_power_percent failed: {e}")
+                logger.warning(f"[LaserManager] Cobolt HWP get_power_percent failed: {e}")
                 return 0.0
 
         if laser_name == "Alcor 920":
@@ -798,7 +799,7 @@ class LaserManager(QObject):
             try:
                 return bool(self._cobolt.get_laser_on_state())
             except Exception as e:
-                print(f"[LaserManager] Cobolt get_enabled failed: {e}")
+                logger.warning(f"[LaserManager] Cobolt get_enabled failed: {e}")
                 return False
             
         if laser_name == "Alcor 920":
@@ -807,14 +808,14 @@ class LaserManager(QObject):
             try:
                 return bool(self._alcor.get_enabled())
             except Exception as e:
-                print(f"[LaserManager] SparkAlcor get_enabled failed: {e}")
+                logger.warning(f"[LaserManager] SparkAlcor get_enabled failed: {e}")
                 return False
 
         return False
     
     def set_power_percent(self, laser_name: str, percent: float):
         if not self._is_real_backend():
-            print(f"[LaserManager] mock set_power_percent laser={laser_name} percent={percent}")
+            logger.debug(f"[LaserManager] mock set_power_percent laser={laser_name} percent={percent}")
             return
 
         laser_name = str(laser_name)
@@ -835,7 +836,7 @@ class LaserManager(QObject):
 
     def set_gdd_fs2(self, laser_name: str, gdd_fs2: float):
         if not self._is_real_backend():
-            print(f"[LaserManager] mock set_gdd_fs2 laser={laser_name} gdd_fs2={gdd_fs2}")
+            logger.debug(f"[LaserManager] mock set_gdd_fs2 laser={laser_name} gdd_fs2={gdd_fs2}")
             return
 
         laser_name = str(laser_name)
@@ -860,7 +861,7 @@ class LaserManager(QObject):
 
     def set_rep_rate_khz(self, laser_name: str, rep_rate_khz: float):
         if not self._is_real_backend():
-            print(f"[LaserManager] mock set_rep_rate_khz laser={laser_name} rep_rate_khz={rep_rate_khz}")
+            logger.debug(f"[LaserManager] mock set_rep_rate_khz laser={laser_name} rep_rate_khz={rep_rate_khz}")
             return
 
         laser_name = str(laser_name)
@@ -906,7 +907,7 @@ class LaserManager(QObject):
 
     def set_enabled(self, laser_name: str, enabled: bool):
         if not self._is_real_backend():
-            print(f"[LaserManager] mock set_enabled laser={laser_name} enabled={enabled}")
+            logger.debug(f"[LaserManager] mock set_enabled laser={laser_name} enabled={enabled}")
             return
 
         laser_name = str(laser_name)
@@ -918,7 +919,7 @@ class LaserManager(QObject):
             self._alcor.set_enabled(bool(enabled))
             return
 
-        print(f"[LaserManager] set_enabled not implemented for {laser_name!r}")
+        logger.warning(f"[LaserManager] set_enabled not implemented for {laser_name!r}")
 
 # =============================================================================
 # THORLABS KINESIS LOADER
@@ -1119,7 +1120,7 @@ class _PIVoiceCoilController:
             try:
                 self.device.VEL(self.axis, float(speed_mm_s))
             except Exception as e:
-                print(f"[PIVoiceCoil] VEL failed axis={self.axis} speed={speed_mm_s}: {e}")
+                logger.warning(f"[PIVoiceCoil] VEL failed axis={self.axis} speed={speed_mm_s}: {e}")
 
         target_mm = float(target_um) / 1000.0
 
@@ -1129,7 +1130,7 @@ class _PIVoiceCoilController:
         except Exception:
             cur_mm = None
 
-        print(
+        logger.debug(
             f"[PIVoiceCoil] MOV axis={self.axis} "
             f"cur_mm={cur_mm} target_mm={target_mm} speed_mm_s={speed_mm_s} "
             f"blocking={blocking}"
@@ -1459,14 +1460,14 @@ class _ScientificaMotion8XYController:
         sx = float(scaling_x)
         sy = float(scaling_y)
         if sx <= 0.0 or sy <= 0.0:
-            print(
+            logger.warning(
                 f"[ScientificaXY] Ignoring invalid scaling factors "
                 f"(x={sx}, y={sy})"
             )
             return
         self._scaling_x = sx
         self._scaling_y = sy
-        print(f"[ScientificaXY] scaling factors set: x={sx}, y={sy}")
+        logger.info(f"[ScientificaXY] scaling factors set: x={sx}, y={sy}")
     
     @staticmethod
     def _cobs_encode(data: bytes) -> bytes:
@@ -1546,7 +1547,7 @@ class _ScientificaMotion8XYController:
 
         time.sleep(0.1)
         self.connected = True
-        print(f"[ScientificaXY] Connected on {self.port} @ {self.baudrate}")
+        logger.info(f"[ScientificaXY] Connected on {self.port} @ {self.baudrate}")
 
     def _logical_to_hw_xy(self, x_um: float, y_um: float) -> tuple[float, float]:
         if SCIENTIFICA_STAGE_SWAP_XY:
@@ -1767,34 +1768,34 @@ class _ScientificaMotion8XYController:
         try:
             current_assign = self.get_profile_axis_assignment(profile_index)
             if current_assign != wanted_assign:
-                print(
+                logger.debug(
                     f"[ScientificaXY] profile {profile_index} axis assignment "
                     f"{current_assign:#04x} -> {wanted_assign:#04x}"
                 )
                 self.set_profile_axis_assignment(profile_index, wanted_assign)
         except Exception as e:
-            print(f"[ScientificaXY] set_profile_axis_assignment warning: {e}")
+            logger.warning(f"[ScientificaXY] set_profile_axis_assignment warning: {e}")
 
         try:
             self.set_profile_top_speed(profile_index, speed_mm_s)
         except Exception as e:
-            print(f"[ScientificaXY] set_profile_top_speed warning: {e}")
+            logger.warning(f"[ScientificaXY] set_profile_top_speed warning: {e}")
 
         try:
             self.set_profile_acceleration(profile_index, accel_mm_s2)
         except Exception as e:
-            print(f"[ScientificaXY] set_profile_acceleration warning: {e}")
+            logger.warning(f"[ScientificaXY] set_profile_acceleration warning: {e}")
 
         try:
             s = self.get_profile_settings(profile_index)
-            print(
+            logger.debug(
                 f"[ScientificaXY] profile {profile_index} configured: "
                 f"axis_assign={s['axis_assignments']:#04x} "
                 f"top_speed_units={s['top_speed_units']:.3f} "
                 f"accel_units={s['acceleration_units']:.3f}"
             )
         except Exception as e:
-            print(f"[ScientificaXY] get_profile_settings warning: {e}")
+            logger.warning(f"[ScientificaXY] get_profile_settings warning: {e}")
 
     def get_xy_abs_um(self) -> tuple[float, float]:
         reply = self._transceive(
@@ -1812,7 +1813,7 @@ class _ScientificaMotion8XYController:
 
         device = reply[4]
         if device != self.device_id:
-            print(
+            logger.warning(
                 f"[ScientificaXY] Warning: position reply device={device}, "
                 f"expected={self.device_id}"
             )
@@ -1961,7 +1962,7 @@ class RealHardwarePositionerManager(PositionerManager):
         self._poll_timer.start()
 
     def _log(self, msg: str):
-        print(f"[RealHardwarePositioner] {msg}")
+        logger.debug(f"[RealHardwarePositioner] {msg}")
 
     def _refresh_from_hardware(self, axis: str, force_emit: bool = False) -> bool:
         try:
@@ -2365,7 +2366,7 @@ class RealHardwarePositionerManager(PositionerManager):
     ):
         axis = self.axis_from_scan_name(axis_name)
         if axis is None or axis not in self._state:
-            print(
+            logger.warning(
                 f"[RealHardwarePositioner] move_from_scan ignored: "
                 f"unknown axis_name={axis_name!r}"
             )
@@ -2381,7 +2382,7 @@ class RealHardwarePositionerManager(PositionerManager):
             other_axis = "y" if axis == "x" else "x"
             other_rel = self._pending_sample_xy_rel.get(other_axis, None)
 
-            print(
+            logger.debug(
                 f"[RealHardwarePositioner] move_from_scan "
                 f"axis_name={axis_name} axis={axis} "
                 f"target_rel={target_rel} target_abs={float(self.rel_to_abs(axis, target_rel))} "
@@ -2402,7 +2403,7 @@ class RealHardwarePositionerManager(PositionerManager):
             speed_x = max(0.01, float(self.get_max_speed("x")))
             speed_y = max(0.01, float(self.get_max_speed("y")))
 
-            print(
+            logger.debug(
                 f"[RealHardwarePositioner] [SAMPLE XY ATOMIC] "
                 f"x_rel={x_rel:.3f} y_rel={y_rel:.3f} "
                 f"speed_x={speed_x:.3f} speed_y={speed_y:.3f}"
@@ -2443,7 +2444,7 @@ class RealHardwarePositionerManager(PositionerManager):
         else:
             speed = 0.1
 
-        print(
+        logger.debug(
             f"[RealHardwarePositioner] move_from_scan "
             f"axis_name={axis_name} axis={axis} "
             f"target_rel={target_rel} target_abs={target_abs} "
@@ -2646,7 +2647,7 @@ class HardwareManager(QObject):
                     scaling_x = float(sx_settings.get("ums_scaling", scaling_x))
                     scaling_y = float(sy_settings.get("ums_scaling", scaling_y))
             except Exception as e:
-                print(
+                logger.warning(
                     f"[HardwareManager] Could not read ums_scaling from settings, "
                     f"using defaults x={scaling_x}, y={scaling_y}: {e}"
                 )
@@ -2672,44 +2673,44 @@ class HardwareManager(QObject):
         try:
             if self._shutter is not None and not self._shutter.connected:
                 self._shutter.connect()
-                print(f"[HardwareManager] Connection to shutter serial={THORLABS_SHUTTER_SERIAL} successful")
+                logger.info(f"[HardwareManager] Connection to shutter serial={THORLABS_SHUTTER_SERIAL} successful")
             elif self._shutter is not None and self._shutter.connected:
-                print(f"[HardwareManager] Shutter serial={THORLABS_SHUTTER_SERIAL} already connected")
+                logger.info(f"[HardwareManager] Shutter serial={THORLABS_SHUTTER_SERIAL} already connected")
         except Exception as e:
             self._shutter_failed = True
-            print(f"[HardwareManager] ERROR connecting shutter serial={THORLABS_SHUTTER_SERIAL}: {e}")
+            logger.error(f"[HardwareManager] ERROR connecting shutter serial={THORLABS_SHUTTER_SERIAL}: {e}")
 
         try:
             if self._xy_controller is not None and not self._xy_controller.connected:
                 self._xy_controller.connect()
                 x_um, y_um = self._xy_controller.get_xy_abs_um()
-                print(
+                logger.info(
                     f"[HardwareManager] Connection to Scientifica XY "
                     f"port={SCIENTIFICA_STAGE_PORT} successful "
                     f"(X={x_um:.2f} µm, Y={y_um:.2f} µm)"
                 )
             elif self._xy_controller is not None and self._xy_controller.connected:
-                print(f"[HardwareManager] Scientifica XY port={SCIENTIFICA_STAGE_PORT} already connected")
+                logger.info(f"[HardwareManager] Scientifica XY port={SCIENTIFICA_STAGE_PORT} already connected")
         except Exception as e:
             self._xy_failed = True
-            print(f"[HardwareManager] ERROR connecting Scientifica XY port={SCIENTIFICA_STAGE_PORT}: {e}")
+            logger.error(f"[HardwareManager] ERROR connecting Scientifica XY port={SCIENTIFICA_STAGE_PORT}: {e}")
 
         try:
             if self._z_controller is not None and not self._z_controller.connected:
                 self._z_controller.connect()
-                print(f"[HardwareManager] Connection to PI V-308 serial={PI_V308_SERIAL} successful")
+                logger.info(f"[HardwareManager] Connection to PI V-308 serial={PI_V308_SERIAL} successful")
             elif self._z_controller is not None and self._z_controller.connected:
-                print(f"[HardwareManager] PI V-308 serial={PI_V308_SERIAL} already connected")
+                logger.info(f"[HardwareManager] PI V-308 serial={PI_V308_SERIAL} already connected")
         except Exception as e:
             self._z_failed = True
-            print(f"[HardwareManager] ERROR connecting PI V-308 serial={PI_V308_SERIAL}: {e}")
+            logger.error(f"[HardwareManager] ERROR connecting PI V-308 serial={PI_V308_SERIAL}: {e}")
 
         for laser_name, rot in self._rotators.items():
             try:
                 if rot is not None and not rot.connected:
                     serial = THORLABS_ROTATOR_SERIALS.get(laser_name, "unknown")
                     rot.connect()
-                    print(f"[HardwareManager] Connection to rotator {laser_name} serial={serial} successful")
+                    logger.info(f"[HardwareManager] Connection to rotator {laser_name} serial={serial} successful")
 
                     cfg = self._get_laser_runtime_settings(laser_name)
 
@@ -2719,14 +2720,14 @@ class HardwareManager(QObject):
                         steps_per_degree=float(cfg["steps_per_degree"]),
                         offset_deg=float(cfg["offset_deg"]),
                     )
-                    print(f"[HardwareManager] Rotator {laser_name} initialized to 0% successfully")
+                    logger.info(f"[HardwareManager] Rotator {laser_name} initialized to 0% successfully")
 
                 elif rot is not None and rot.connected:
                     serial = THORLABS_ROTATOR_SERIALS.get(laser_name, "unknown")
-                    print(f"[HardwareManager] Rotator {laser_name} serial={serial} already connected")
+                    logger.info(f"[HardwareManager] Rotator {laser_name} serial={serial} already connected")
             except Exception as e:
                 self._rotator_failed[laser_name] = True
-                print(f"[HardwareManager] ERROR connecting rotator for {laser_name}: {e}")
+                logger.error(f"[HardwareManager] ERROR connecting rotator for {laser_name}: {e}")
 
         self._devices_initialized = True
 
@@ -2766,7 +2767,7 @@ class HardwareManager(QObject):
         self._shutter.set_open(bool(open_))
 
     def set_laser_power_percent(self, laser_name: str, percent: float, speed: int, steps_per_degree: float, offset_deg: float):
-        print(
+        logger.debug(
             f"[HardwareManager] set_laser_power_percent "
             f"laser={laser_name} percent={percent} speed={speed} "
             f"steps_per_degree={steps_per_degree} offset_deg={offset_deg}"
@@ -2861,23 +2862,23 @@ class HardwareManager(QObject):
             mock  -> returns None (SpectroManager keeps using its mock)
             nidaq -> acquire real image from Kuro camera
         """
-        print(f"[HardwareManager] acquire_brillouin_image backend={self.backend_name}")
+        logger.debug(f"[HardwareManager] acquire_brillouin_image backend={self.backend_name}")
 
         if self.backend_name == "mock":
-            print("[HardwareManager] Brillouin source = mock fallback")
+            logger.debug("[HardwareManager] Brillouin source = mock fallback")
             return None
 
         if self.backend_name == "nidaq":
-            print("[HardwareManager] Brillouin source = PICam/Kuro")
+            logger.info("[HardwareManager] Brillouin source = PICam/Kuro")
             cam = self._get_brillouin_camera()
             img = cam.snap(params or {})
-            print(
+            logger.debug(
                 f"[HardwareManager] Kuro image shape={getattr(img, 'shape', None)} "
                 f"dtype={getattr(img, 'dtype', None)}"
             )
             return img
 
-        print("[HardwareManager] Brillouin source unavailable")
+        logger.warning("[HardwareManager] Brillouin source unavailable")
         return None
 
     def close(self):
@@ -2921,4 +2922,4 @@ class HardwareManager(QObject):
             try:
                 self._xy_controller.set_scaling_factor(float(factor))
             except Exception as e:
-                print(f"[HardwareManager] set_ums_scaling_factor failed: {e}")
+                logger.error(f"[HardwareManager] set_ums_scaling_factor failed: {e}")

@@ -1,5 +1,3 @@
-print("Launch Software MultiPhoton Microscope")
-
 if __name__ == "__main__":
     import sys
     import os
@@ -45,5 +43,8 @@ if __name__ == "__main__":
     microscope_backend = create_microscope_backend(args.backend)
     window = MainWindow(args, microscope_backend=microscope_backend)
     window.show()
+
+    from .gui.widgets.Log_Widget import logger
+    logger.info("DeepLight started")
 
     sys.exit(app.exec())

@@ -19,6 +19,7 @@ from .widgets.Spectro_Widget import SpectroWidget
 from .widgets.Spectro_Panel_Widget import SpectroPanelWidget
 from .widgets.Panel_Dock import PanelDock
 from .widgets.Collapsible_Panel import CollapsiblePanel
+from .widgets.Log_Widget import LogWidget
 
 import numpy as np
 import pyqtgraph as pg
@@ -309,6 +310,7 @@ class Ui_MainWindowDesign:
         self.line_profile_widget = LineProfileWidget()
         self.histogram_widget = HistogramWidget()
         self.frc_widget = FRCWidget()
+        self.log_widget = LogWidget()
 
         self.spectro_panel = CollapsiblePanel(
             "Spectro",
@@ -322,7 +324,8 @@ class Ui_MainWindowDesign:
         self.line_profile_panel = CollapsiblePanel("Line Profile", self.line_profile_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.histogram_panel = CollapsiblePanel("Histogram", self.histogram_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
-
+        self.log_panel = CollapsiblePanel("Logs", self.log_widget, collapsed=False, preferred_content_height=200, parent=self.right_panel_dock.container)
+        
         self.right_panel_dock.add_panel(self.spectro_panel)
         self.right_panel_dock.add_panel(self.analog_panel)
         self.right_panel_dock.add_panel(self.stepper_panel)
@@ -330,6 +333,7 @@ class Ui_MainWindowDesign:
         self.right_panel_dock.add_panel(self.line_profile_panel)
         self.right_panel_dock.add_panel(self.histogram_panel)
         self.right_panel_dock.add_panel(self.frc_panel)
+        self.right_panel_dock.add_panel(self.log_panel)
 
         MainWindowDesign.addDockWidget(Qt.RightDockWidgetArea, self.right_panel_dock)
 
