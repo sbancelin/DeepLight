@@ -180,16 +180,18 @@ SCAN_AXIS_DEFAULTS = {
 
 STEPPER_AXIS_DEFAULTS = {
     "X-Stage": {
-        "min_um": -20000,
-        "max_um": 20000.0,
+        "min_um": -25000.0,
+        "max_um": 25000.0,
         "vel_max": 4.0,
         "tolerance": 0.1,
+        "ums_scaling": 0.635,
     },
     "Y-Stage": {
-        "min_um": -20000.0,
-        "max_um": 20000.0,
+        "min_um": -25000.0,
+        "max_um": 25000.0,
         "vel_max": 4.0,
         "tolerance": 0.1,
+        "ums_scaling": 0.635,
     },
     "Z-Vcoil": {
         "min_um": 0.0,

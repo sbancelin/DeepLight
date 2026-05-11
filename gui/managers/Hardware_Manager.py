@@ -106,7 +106,9 @@ SCIENTIFICA_STAGE_HOME_USES_BOTH_AXES = True
 SCIENTIFICA_STAGE_HOME_BEHAVIOR = "zero_offset"   # "zero_offset" or "device_home"
 SCIENTIFICA_STAGE_PROFILE_ASSIGN_XY = 0x03
 
-SCIENTIFICA_STAGE_SWAP_XY = True
+SCIENTIFICA_STAGE_SWAP_XY = False
+SCIENTIFICA_STAGE_DEFAULT_SCALING_X = 0.635
+SCIENTIFICA_STAGE_DEFAULT_SCALING_Y = 0.635
 
 # =============================================================================
 # OPTIONAL IMPORTS
@@ -1422,6 +1424,8 @@ class _ScientificaMotion8XYController:
         device_id: int = 0,
         x_axis_id: int = 0,
         y_axis_id: int = 1,
+        scaling_x: float = SCIENTIFICA_STAGE_DEFAULT_SCALING_X,
+        scaling_y: float = SCIENTIFICA_STAGE_DEFAULT_SCALING_Y,
     ):
         self.port = str(port)
         self.baudrate = int(baudrate)
@@ -1430,10 +1434,40 @@ class _ScientificaMotion8XYController:
         self.x_axis_id = int(x_axis_id) & 0xFF
         self.y_axis_id = int(y_axis_id) & 0xFF
 
+        # UMS calibration factor. See SCIENTIFICA_STAGE_DEFAULT_SCALING.
+        # Stored as instance attribute so it can be updated at runtime.
+        self._scaling_x = float(scaling_x) if scaling_x and scaling_x > 0 else 1.0
+        self._scaling_y = float(scaling_y) if scaling_y and scaling_y > 0 else 1.0
+
         self.serial = None
         self.connected = False
         self._io_lock = Lock()
 
+    @property
+    def scaling_x(self) -> float:
+        return float(self._scaling_x)
+
+    @property
+    def scaling_y(self) -> float:
+        return float(self._scaling_y)
+
+    def set_scaling_factors(self, scaling_x: float, scaling_y: float):
+        """
+        Update the UMS scaling factors at runtime. Each must be > 0.
+        Pass 1.0 to disable the scaling on a given axis.
+        """
+        sx = float(scaling_x)
+        sy = float(scaling_y)
+        if sx <= 0.0 or sy <= 0.0:
+            print(
+                f"[ScientificaXY] Ignoring invalid scaling factors "
+                f"(x={sx}, y={sy})"
+            )
+            return
+        self._scaling_x = sx
+        self._scaling_y = sy
+        print(f"[ScientificaXY] scaling factors set: x={sx}, y={sy}")
+    
     @staticmethod
     def _cobs_encode(data: bytes) -> bytes:
         read_index = 0
@@ -1569,38 +1603,49 @@ class _ScientificaMotion8XYController:
 
             return decoded
 
-    @classmethod
-    def _um_to_units(cls, value_um: float) -> int:
-        return int(round(float(value_um) / cls._POS_SCALE_UM))
+    def _scaling_for_axis(self, axis_id: int) -> float:
+        if int(axis_id) == self.x_axis_id:
+            return self._scaling_x
+        if int(axis_id) == self.y_axis_id:
+            return self._scaling_y
+        # axe non géré -> pas de scaling
+        return 1.0
 
-    @classmethod
-    def _units_to_um(cls, value_units: int) -> float:
-        return float(value_units) * cls._POS_SCALE_UM
+    def _um_to_units(self, value_um: float, axis_id: int) -> int:
+        # logical_um (DeepLight, real physical) -> firmware command counts
+        # firmware_um = logical_um / scaling  (because real = firmware * scaling)
+        scaling = self._scaling_for_axis(axis_id)
+        firmware_um = float(value_um) * scaling
+        return int(round(firmware_um / self._POS_SCALE_UM))
 
-    @classmethod
-    def _mm_s_to_units(cls, value_mm_s: float) -> int:
-        um_s = max(0.0, float(value_mm_s) * 1000.0)
-        return int(round(um_s / cls._SPEED_SCALE_UM_S))
+    def _units_to_um(self, value_units: int, axis_id: int) -> float:
+        # firmware counts -> logical_um (DeepLight, real physical)
+        scaling = self._scaling_for_axis(axis_id)
+        firmware_um = float(value_units) * self._POS_SCALE_UM
+        return firmware_um / scaling
 
+    def _mm_s_to_units(self, value_mm_s: float, axis_id: int) -> int:
+        scaling = self._scaling_for_axis(axis_id)
+        um_s = max(0.0, float(value_mm_s) * 1000.0) * scaling
+        return int(round(um_s / self._SPEED_SCALE_UM_S))
+    
     @staticmethod
     def _pack_float64(value: float) -> bytes:
         return struct.pack("<d", float(value))
     
-    @classmethod
-    def _mm_s_to_profile_speed_units(cls, value_mm_s: float) -> float:
-        """
-        Motion 8 profile top speed is stored as a float64 in hundredths of µm/s.
-        """
-        um_s = max(0.0, float(value_mm_s) * 1000.0)
-        return um_s / cls._SPEED_SCALE_UM_S
+    def _mm_s_to_profile_speed_units(self, value_mm_s: float) -> float:
+        # Profil global (pas per-axis). On prend le scaling max pour ne pas
+        # sous-vitesser un axe : si scaling_x=0.639 et scaling_y=1.0, on
+        # divise par max=1.0 -> X aura une vitesse réelle plus faible que
+        # demandée, mais aucun axe ne dépasse la consigne logique.
+        scaling = max(self._scaling_x, self._scaling_y)
+        um_s = max(0.0, float(value_mm_s) * 1000.0) * scaling
+        return um_s / self._SPEED_SCALE_UM_S
 
-    @classmethod
-    def _mm_s2_to_profile_accel_units(cls, value_mm_s2: float) -> float:
-        """
-        Motion 8 profile acceleration is stored as a float64 in hundredths of µm/s².
-        """
-        um_s2 = max(0.0, float(value_mm_s2) * 1000.0)
-        return um_s2 / cls._SPEED_SCALE_UM_S
+    def _mm_s2_to_profile_accel_units(self, value_mm_s2: float) -> float:
+        scaling = max(self._scaling_x, self._scaling_y)
+        um_s2 = max(0.0, float(value_mm_s2) * 1000.0) * scaling
+        return um_s2 / self._SPEED_SCALE_UM_S
     
     def set_profile_top_speed(self, profile_index: int, speed_mm_s: float):
         """
@@ -1773,8 +1818,8 @@ class _ScientificaMotion8XYController:
             )
 
         x_units, y_units = struct.unpack_from("<ii", reply, 5)
-        x_hw = self._units_to_um(x_units)
-        y_hw = self._units_to_um(y_units)
+        x_hw = self._units_to_um(x_units, self.x_axis_id)
+        y_hw = self._units_to_um(y_units, self.y_axis_id)
         return self._hw_to_logical_xy(x_hw, y_hw)
 
     def is_moving(self) -> bool:
@@ -1802,25 +1847,37 @@ class _ScientificaMotion8XYController:
             0x02,
             self.device_id,
             int(axis_id) & 0xFF,
-            self._um_to_units(delta_um),
+            self._um_to_units(delta_um, axis_id),
         )
         self._transceive(payload)
 
     def move_xy_rel_um(self, dx_um: float, dy_um: float):
+        # Important: après _logical_to_hw_xy, dx_hw peut correspondre à l'axe Y
+        # physique (et inversement) si SCIENTIFICA_STAGE_SWAP_XY=True. On résout
+        # quel axis_id appliquer en regardant l'identité du swap.
         dx_hw, dy_hw = self._logical_to_hw_xy(dx_um, dy_um)
+        if SCIENTIFICA_STAGE_SWAP_XY:
+            ax_first, ax_second = self.y_axis_id, self.x_axis_id
+        else:
+            ax_first, ax_second = self.x_axis_id, self.y_axis_id
+
         payload = struct.pack(
             "<BBBBii",
             0xAA,
             0x02,
             0x02,
             self.device_id,
-            self._um_to_units(dx_hw),
-            self._um_to_units(dy_hw),
+            self._um_to_units(dx_hw, ax_first),
+            self._um_to_units(dy_hw, ax_second),
         )
         self._transceive(payload)
 
     def move_xy_abs_um(self, x_um: float, y_um: float):
         x_hw, y_hw = self._logical_to_hw_xy(x_um, y_um)
+        if SCIENTIFICA_STAGE_SWAP_XY:
+            ax_first, ax_second = self.y_axis_id, self.x_axis_id
+        else:
+            ax_first, ax_second = self.x_axis_id, self.y_axis_id
 
         payload = struct.pack(
             "<BBBBii",
@@ -1828,8 +1885,8 @@ class _ScientificaMotion8XYController:
             0x02,
             0x03,
             self.device_id,
-            self._um_to_units(x_hw),
-            self._um_to_units(y_hw),
+            self._um_to_units(x_hw, ax_first),
+            self._um_to_units(y_hw, ax_second),
         )
         self._transceive(payload)
 
@@ -2464,6 +2521,17 @@ class RealHardwarePositionerManager(PositionerManager):
         st.zero_offset = float(st.abs_pos)
         self._emit_positions(axis)
 
+    def set_ums_scaling_factors(self, scaling_x: float, scaling_y: float):
+        if self._xy is None:
+            return
+        try:
+            self._xy.set_scaling_factors(float(scaling_x), float(scaling_y))
+            # Re-sync displayed positions because the conversion changed.
+            self._refresh_from_hardware("x", force_emit=True)
+            self._refresh_from_hardware("y", force_emit=True)
+        except Exception as e:
+            self._log(f"set_ums_scaling_factors failed: {e}")
+
     def close(self):
         try:
             self._poll_timer.stop()
@@ -2568,13 +2636,30 @@ class HardwareManager(QObject):
             self._shutter = _ThorlabsShutterController(THORLABS_SHUTTER_SERIAL)
 
         if self._xy_controller is None:
+            # Read per-axis UMS scaling factors from settings_manager if available.
+            scaling_x = SCIENTIFICA_STAGE_DEFAULT_SCALING_X
+            scaling_y = SCIENTIFICA_STAGE_DEFAULT_SCALING_Y
+            try:
+                if self._settings_manager is not None:
+                    sx_settings = self._settings_manager.get_axis_settings("X-Stage") or {}
+                    sy_settings = self._settings_manager.get_axis_settings("Y-Stage") or {}
+                    scaling_x = float(sx_settings.get("ums_scaling", scaling_x))
+                    scaling_y = float(sy_settings.get("ums_scaling", scaling_y))
+            except Exception as e:
+                print(
+                    f"[HardwareManager] Could not read ums_scaling from settings, "
+                    f"using defaults x={scaling_x}, y={scaling_y}: {e}"
+                )
+
             self._xy_controller = _ScientificaMotion8XYController(
-                SCIENTIFICA_STAGE_PORT,
+                port=SCIENTIFICA_STAGE_PORT,
                 baudrate=SCIENTIFICA_STAGE_BAUDRATE,
                 timeout_s=SCIENTIFICA_STAGE_TIMEOUT_S,
                 device_id=SCIENTIFICA_STAGE_DEVICE_ID,
                 x_axis_id=SCIENTIFICA_STAGE_X_AXIS_ID,
                 y_axis_id=SCIENTIFICA_STAGE_Y_AXIS_ID,
+                scaling_x=scaling_x,
+                scaling_y=scaling_y,
             )
 
         if self._z_controller is None:
@@ -2826,3 +2911,14 @@ class HardwareManager(QObject):
                     dev.close()
             except Exception:
                 pass
+
+    def set_ums_scaling_factor(self, factor: float):
+        """
+        Update the UMS scaling factor at runtime.
+        Propagates the change to the live XY controller if it exists.
+        """
+        if self._xy_controller is not None:
+            try:
+                self._xy_controller.set_scaling_factor(float(factor))
+            except Exception as e:
+                print(f"[HardwareManager] set_ums_scaling_factor failed: {e}")

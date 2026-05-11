@@ -33,14 +33,15 @@ def setup_positioner_settings_dialog(dialog):
     positioner_widget = dialog.parent()
 
     axes = [
-        ("x", "X - stage", "X-Stage", "µm", "mm/s"),
-        ("y", "Y - stage", "Y-Stage", "µm", "mm/s"),
-        ("z", "Z-VCoil",   "Z-Vcoil", "µm", "mm/s"),
-        ("p", "P",         "Polarization", "°", "°/s"),
+        # axis_key, axis_label, shared_axis_name, pos_unit, vel_unit, has_ums_scaling
+        ("x", "X - stage", "X-Stage",      "µm", "mm/s", True),
+        ("y", "Y - stage", "Y-Stage",      "µm", "mm/s", True),
+        ("z", "Z-VCoil",   "Z-Vcoil",      "µm", "mm/s", False),
+        ("p", "P",         "Polarization", "°",  "°/s",  False),
     ]
 
     # ---- build UI avec valeurs actuelles ----
-    for axis_key, axis_label, shared_axis_name, pos_unit, vel_unit in axes:
+    for axis_key, axis_label, shared_axis_name, pos_unit, vel_unit, has_ums in axes:
         axis_title_container = QWidget()
         axis_title_layout = QVBoxLayout(axis_title_container)
         axis_title_layout.setContentsMargins(0, 0, 0, 0)
@@ -97,9 +98,27 @@ def setup_positioner_settings_dialog(dialog):
         tol_layout.addWidget(tol_edit)
         dialog.add_layout(tol_layout)
 
+        # UMS scaling factor (X et Y seulement)
+        if has_ums:
+            ums_value = float(axis_cfg.get(
+                "ums_scaling",
+                defaults.get("ums_scaling", 1.0)
+            ))
+            ums_layout = QHBoxLayout()
+            ums_edit = QLineEdit(str(ums_value))
+            ums_edit.setObjectName(f"ums_scaling_edit_{axis_key}")
+            ums_edit.setToolTip(
+                "Scientifica UMS calibration factor:\n"
+                "real_motion_µm = firmware_command_µm × factor\n"
+                "Default = 0.639. Set to 1.0 to disable scaling on this axis."
+            )
+            ums_layout.addWidget(QLabel("UMS scaling factor:"))
+            ums_layout.addWidget(ums_edit)
+            dialog.add_layout(ums_layout)
+
     # ---- apply on accept ----
     def on_dialog_accepted():
-        for axis_key, _axis_label, shared_axis_name, _pos_unit, _vel_unit in axes:
+        for axis_key, _axis_label, shared_axis_name, _pos_unit, _vel_unit, has_ums in axes:
             min_edit = dialog.findChild(QLineEdit, f"min_position_edit_{axis_key}")
             max_edit = dialog.findChild(QLineEdit, f"max_position_edit_{axis_key}")
             vel_edit = dialog.findChild(QLineEdit, f"velocity_edit_{axis_key}")
@@ -137,6 +156,38 @@ def setup_positioner_settings_dialog(dialog):
                     velocity_limit,
                     tolerance
                 )
+
+            # UMS scaling factor : sauvegarde + push manager
+            if has_ums:
+                ums_edit_w = dialog.findChild(QLineEdit, f"ums_scaling_edit_{axis_key}")
+                if ums_edit_w is not None:
+                    try:
+                        ums_value = float(ums_edit_w.text().replace(",", "."))
+                    except ValueError:
+                        ums_value = 1.0
+                    if ums_value <= 0.0:
+                        ums_value = 1.0
+
+                    if positioner_widget.axis_settings_manager is not None:
+                        positioner_widget.axis_settings_manager.update_axis_settings(
+                            shared_axis_name,
+                            ums_scaling=ums_value,
+                        )
+
+        # Propagation des facteurs UMS X+Y au manager (qui propage au controller XY)
+        if positioner_widget.manager is not None and positioner_widget.axis_settings_manager is not None:
+            try:
+                sx = float(
+                    positioner_widget.axis_settings_manager
+                    .get_axis_settings("X-Stage").get("ums_scaling", 1.0)
+                )
+                sy = float(
+                    positioner_widget.axis_settings_manager
+                    .get_axis_settings("Y-Stage").get("ums_scaling", 1.0)
+                )
+                positioner_widget.manager.set_ums_scaling_factors(sx, sy)
+            except Exception as e:
+                print(f"[PositionerWidget] set_ums_scaling_factors failed: {e}")
 
     dialog.accepted.connect(on_dialog_accepted)
 
@@ -525,6 +576,17 @@ class PositionerWidget(QWidget):
                     )
                 except Exception:
                     pass
+
+        # Push UMS scaling factors to the manager / hardware at startup
+        if self.manager is not None:
+            try:
+                sx_cfg = self.axis_settings_manager.get_axis_settings("X-Stage") or {}
+                sy_cfg = self.axis_settings_manager.get_axis_settings("Y-Stage") or {}
+                sx = float(sx_cfg.get("ums_scaling", 1.0))
+                sy = float(sy_cfg.get("ums_scaling", 1.0))
+                self.manager.set_ums_scaling_factors(sx, sy)
+            except Exception:
+                pass
     
     def set_manager(self, manager):
         """Permet d’injecter (ou remplacer) le manager après construction."""

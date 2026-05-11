@@ -46,6 +46,13 @@ class PositionerManager(QObject):
         self._axes = axes
         self._state: Dict[str, AxisState] = {a: AxisState() for a in axes}
 
+    def set_ums_scaling_factor(self, factor: float):
+        """
+        No-op default. Implementations that talk to a Scientifica XY controller
+        override this to forward the new factor.
+        """
+        return
+    
     def stop_all(self):
         """Arrête le mouvement de tous les axes."""
         for axis in self._axes:
