@@ -302,26 +302,26 @@ class MainWindow(QMainWindow):
     def _on_spectro_stop_clicked(self):
         try:
             self.spectro_manager.stop_mapping()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.spectro_manager.stop_all_live()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.positioner_manager.stop_all()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self._clear_spectro_ui_buffers()
 
         try:
             self.ui.spectro_panel_widget.set_running(False)
             self.ui.spectro_widget.set_running(False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self._on_spectro_status_changed("Spectro stopped")
 
@@ -429,8 +429,8 @@ class MainWindow(QMainWindow):
     def _on_spectro_progress_changed(self, done: int, total: int):
         try:
             self.ui.spectro_panel_widget.set_progress(done, total)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self._on_spectro_status_changed(f"Spectro {done}/{total}")
 
@@ -445,8 +445,8 @@ class MainWindow(QMainWindow):
         try:
             total = len(self.spectro_manager.pixel_list)
             self.ui.spectro_panel_widget.set_progress(total, total)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             save_params = self.ui.spectro_panel_widget.get_save_parameters()
@@ -541,8 +541,8 @@ class MainWindow(QMainWindow):
     def _on_camera_reset_clicked(self):
         try:
             self.camera_controller.stop_live()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.ui.camera_widget.reset_controls()
@@ -567,28 +567,28 @@ class MainWindow(QMainWindow):
         try:
             if getattr(self, "laser_command_manager", None) is not None:
                 self.laser_command_manager.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
         
         try:
             self._spectro_brillouin_ui_timer.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self._spectro_raman_ui_timer.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.spectro_manager.stop_all_live()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.hardware.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         super().closeEvent(event)
     
@@ -657,13 +657,13 @@ class MainWindow(QMainWindow):
     def _stop_stitching_hardware(self):
         try:
             self.acquisition_manager.stop_acquisition()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.positioner_manager.stop_all()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot(object)
     def _on_stitch_mosaic_updated(self, mosaic):
@@ -674,8 +674,8 @@ class MainWindow(QMainWindow):
         try:
             scan_params = self.ui.scan_widget.get_scan_parameters()
             self.ui.stitch_widget.set_mosaic_layout_preview(scan_params)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot()
     def _on_stitch_run_started(self):
@@ -786,8 +786,8 @@ class MainWindow(QMainWindow):
         self.ui.analog_out_widget.reset_buffer()
         try:
             self.ui.visu_step_widget.reset_buffer()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         # On utilise les positions initiales déjà capturées si elles existent,
         # sinon on lit directement le positioner.
@@ -796,16 +796,16 @@ class MainWindow(QMainWindow):
             if z0 is None:
                 z0 = float(self.positioner_manager.get_rel_pos("z"))
             self.ui.visu_step_widget.set_initial_position("Z-Vcoil", float(z0))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             p0 = self._stepper_return_targets_rel.get("p")
             if p0 is None:
                 p0 = float(self.positioner_manager.get_rel_pos("p"))
             self.ui.visu_step_widget.set_initial_position("Polarization", float(p0))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         # ---- config FRC depuis ScanWidget / ScanParams dict ----
         try:
@@ -871,8 +871,8 @@ class MainWindow(QMainWindow):
             try:
                 self.ui.visu_step_widget.set_run_total_ms(total_ms)
                 self.ui.analog_out_widget.set_run_total_ms(total_ms)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
             # IMPORTANT:
             # en mode sample scan, on ne pousse pas de ExecutionPlan galvo.
@@ -881,13 +881,13 @@ class MainWindow(QMainWindow):
 
             try:
                 self.scan_manager.stop_stream()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
             try:
                 self._visualizer_flush_timer.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
         else:
             self.scan_manager.prepare_run(scan_parameters, mode=mode)
@@ -900,8 +900,8 @@ class MainWindow(QMainWindow):
                     total_ms = (float(plan.total_samples) / float(plan.sample_rate_hz)) * 1e3
                     self.ui.visu_step_widget.set_run_total_ms(total_ms)
                     self.ui.analog_out_widget.set_run_total_ms(total_ms)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
             try:
                 self.acquisition_manager.set_execution_plan(self.scan_manager.get_last_execution_plan())
@@ -1208,8 +1208,8 @@ class MainWindow(QMainWindow):
         """Gère le démarrage d'un run acquisition/preview."""
         try:
             self.ui.visu_step_widget.set_running(True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self.user_shutter_override = None
         self._update_controls_enabled(True)
@@ -1224,18 +1224,18 @@ class MainWindow(QMainWindow):
 
         try:
             self._visualizer_flush_timer.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.ui.visu_step_widget.set_running(False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.scan_manager.stop_stream()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self.user_shutter_override = None
 
@@ -1370,8 +1370,8 @@ class MainWindow(QMainWindow):
                 self.ui.frc_widget.set_pixel_size_um(pix_x)
             elif pix_y > 0:
                 self.ui.frc_widget.set_pixel_size_um(pix_y)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         # lancer ton single normal
         self.previewsingleButtonClicked()
@@ -1491,8 +1491,8 @@ class MainWindow(QMainWindow):
                 # sinon, déconnecter l'ancien
                 try:
                     old_scene.sigMouseMoved.disconnect(old_proxy)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[MainWindow] ignored exception: {e}")
 
             proxy = lambda pos, c=ch: self.on_image_mouse_moved(c, pos)
             self._mouse_move_proxies[ch] = (scene, proxy)
@@ -1545,8 +1545,8 @@ class MainWindow(QMainWindow):
 
         try:
             self.ui.positioner_widget.set_keyboard_shortcuts_locked(True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
         
         self.start_scan_outputs(scan_parameters, mode="acquisition")
         self.acquisition_manager.start_acquisition(scan_parameters)
@@ -1559,13 +1559,13 @@ class MainWindow(QMainWindow):
 
         try:
             self.stitching_manager.stop_run()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.positioner_manager.stop_all()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     def _connect_laser_controls(self):
         lw = self.ui.laser_widget
@@ -1587,23 +1587,23 @@ class MainWindow(QMainWindow):
     def _on_laser_command_finished(self, laser_name: str, value: int):
         try:
             self.statusBar().showMessage(f"{laser_name} set to {int(value)}%", 1500)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot(str, int, str)
     def _on_laser_command_failed(self, laser_name: str, value: int, message: str):
         logger.error(f"[MainWindow] laser command failed for {laser_name}={value}%: {message}")
         try:
             self.statusBar().showMessage(f"Laser error ({laser_name}): {message}", 5000)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot(str, float)
     def _on_laser_gdd_finished(self, laser_name: str, gdd_fs2: float):
         try:
             self.statusBar().showMessage(f"{laser_name} GDD set to {gdd_fs2:.0f} fs²", 1500)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
 
     @Slot(str, float, str)
@@ -1611,8 +1611,8 @@ class MainWindow(QMainWindow):
         logger.error(f"[MainWindow] laser GDD command failed for {laser_name}={gdd_fs2} fs^2: {message}")
         try:
             self.statusBar().showMessage(f"Laser GDD error ({laser_name}): {message}", 5000)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
 
     @Slot(str, float)
@@ -1622,8 +1622,8 @@ class MainWindow(QMainWindow):
                 f"{laser_name} rep rate set to {rep_rate_khz:.3f} kHz",
                 1500,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
 
     @Slot(str, float, str)
@@ -1631,8 +1631,8 @@ class MainWindow(QMainWindow):
         logger.error(f"[MainWindow] laser rep-rate command failed for {laser_name}={rep_rate_khz} kHz: {message}")
         try:
             self.statusBar().showMessage(f"Laser rep-rate error ({laser_name}): {message}", 5000)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     def _on_laser_power_toggled(self, laser_name: str, enabled: bool):
         laser_name = str(laser_name)

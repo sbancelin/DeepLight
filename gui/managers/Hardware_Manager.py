@@ -695,13 +695,15 @@ class _SparkAlcorSerialController:
 # LASER MANAGER
 # =============================================================================
 
-class LaserManager(QObject):
+class LaserHardware(QObject):
     """
-    Unified manager for all laser-like devices.
+    Unified hardware-level controller for all laser-like devices.
     V2 scope:
     - Cobolt via serial
-    - TEC dependency for Cobolt ON
     - placeholders for Alcor later
+
+    Renamed from LaserManager to avoid name collision with
+    gui.managers.Laser_Manager.LaserManager (the threaded command queue).
     """
 
     def __init__(self, backend_name: str = "mock", parent=None):
@@ -763,7 +765,7 @@ class LaserManager(QObject):
             try:
                 return self._cobolt_hwp.get_power_percent(offset_deg=0.0)
             except Exception as e:
-                logger.warning(f"[LaserManager] Cobolt HWP get_power_percent failed: {e}")
+                logger.warning(f"[LaserHardware] Cobolt HWP get_power_percent failed: {e}")
                 return 0.0
 
         if laser_name == "Alcor 920":
@@ -799,7 +801,7 @@ class LaserManager(QObject):
             try:
                 return bool(self._cobolt.get_laser_on_state())
             except Exception as e:
-                logger.warning(f"[LaserManager] Cobolt get_enabled failed: {e}")
+                logger.warning(f"[LaserHardware] Cobolt get_enabled failed: {e}")
                 return False
             
         if laser_name == "Alcor 920":
@@ -808,14 +810,14 @@ class LaserManager(QObject):
             try:
                 return bool(self._alcor.get_enabled())
             except Exception as e:
-                logger.warning(f"[LaserManager] SparkAlcor get_enabled failed: {e}")
+                logger.warning(f"[LaserHardware] SparkAlcor get_enabled failed: {e}")
                 return False
 
         return False
     
     def set_power_percent(self, laser_name: str, percent: float):
         if not self._is_real_backend():
-            logger.debug(f"[LaserManager] mock set_power_percent laser={laser_name} percent={percent}")
+            logger.debug(f"[LaserHardware] mock set_power_percent laser={laser_name} percent={percent}")
             return
 
         laser_name = str(laser_name)
@@ -836,7 +838,7 @@ class LaserManager(QObject):
 
     def set_gdd_fs2(self, laser_name: str, gdd_fs2: float):
         if not self._is_real_backend():
-            logger.debug(f"[LaserManager] mock set_gdd_fs2 laser={laser_name} gdd_fs2={gdd_fs2}")
+            logger.debug(f"[LaserHardware] mock set_gdd_fs2 laser={laser_name} gdd_fs2={gdd_fs2}")
             return
 
         laser_name = str(laser_name)
@@ -861,7 +863,7 @@ class LaserManager(QObject):
 
     def set_rep_rate_khz(self, laser_name: str, rep_rate_khz: float):
         if not self._is_real_backend():
-            logger.debug(f"[LaserManager] mock set_rep_rate_khz laser={laser_name} rep_rate_khz={rep_rate_khz}")
+            logger.debug(f"[LaserHardware] mock set_rep_rate_khz laser={laser_name} rep_rate_khz={rep_rate_khz}")
             return
 
         laser_name = str(laser_name)
@@ -887,27 +889,21 @@ class LaserManager(QObject):
         try:
             if self._cobolt is not None:
                 self._cobolt.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[LaserHardware.close] cobolt.close failed: {e}")
 
         if self._cobolt_hwp is not None:
             self._cobolt_hwp.close()
 
         try:
-            if self._cobolt_tec is not None:
-                self._cobolt_tec.close()
-        except Exception:
-            pass
-
-        try:
             if self._alcor is not None:
                 self._alcor.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[LaserHardware.close] alcor.close failed: {e}")
 
     def set_enabled(self, laser_name: str, enabled: bool):
         if not self._is_real_backend():
-            logger.debug(f"[LaserManager] mock set_enabled laser={laser_name} enabled={enabled}")
+            logger.debug(f"[LaserHardware] mock set_enabled laser={laser_name} enabled={enabled}")
             return
 
         laser_name = str(laser_name)
@@ -919,7 +915,7 @@ class LaserManager(QObject):
             self._alcor.set_enabled(bool(enabled))
             return
 
-        logger.warning(f"[LaserManager] set_enabled not implemented for {laser_name!r}")
+        logger.warning(f"[LaserHardware] set_enabled not implemented for {laser_name!r}")
 
 # =============================================================================
 # THORLABS KINESIS LOADER
@@ -2593,7 +2589,7 @@ class HardwareManager(QObject):
         if self._laser_manager is not None:
             return self._laser_manager
 
-        self._laser_manager = LaserManager(self.backend_name, parent=parent)
+        self._laser_manager = LaserHardware(self.backend_name, parent=parent)
         return self._laser_manager
     
     def create_camera_controller(self, parent=None):
