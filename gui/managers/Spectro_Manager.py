@@ -136,8 +136,11 @@ class _SpectroMappingWorker(QObject):
 
         try:
             speed_z = max(0.001, float(pm.get_max_speed("z")))
-            pm.move_to_rel("z", float(z_um), float(speed_z))
-            self._wait_axis_rel_target("z", float(z_um), timeout_s=30.0)
+            cur_z = float(pm.get_rel_pos("z"))
+            tol_z = max(float(pm.get_tolerance("z")), 0.1)
+            if abs(cur_z - float(z_um)) > tol_z:
+                pm.move_to_rel("z", float(z_um), float(speed_z))
+                self._wait_axis_rel_target("z", float(z_um), timeout_s=30.0)
         except Exception:
             pass
 
@@ -574,11 +577,14 @@ class SpectroManager(QObject):
             self._wait_axis_rel_target("x", float(x_um), timeout_s=30.0)
             self._wait_axis_rel_target("y", float(y_um), timeout_s=30.0)
 
-        # Z point par point si demandé
+        # Z point par point si demandé — skip si déjà en position
         try:
             speed_z = max(0.001, float(pm.get_max_speed("z")))
-            pm.move_to_rel("z", float(z_um), float(speed_z))
-            self._wait_axis_rel_target("z", float(z_um), timeout_s=30.0)
+            cur_z = float(pm.get_rel_pos("z"))
+            tol_z = max(float(pm.get_tolerance("z")), 0.1)
+            if abs(cur_z - float(z_um)) > tol_z:
+                pm.move_to_rel("z", float(z_um), float(speed_z))
+                self._wait_axis_rel_target("z", float(z_um), timeout_s=30.0)
         except Exception:
             # Si z n'est pas présent ou pas utilisable, on n'empêche pas XY
             pass
@@ -913,8 +919,18 @@ class SpectroManager(QObject):
         dataset["positions"] = np.zeros((total_pixels, 3), dtype=np.float32)
 
         # coordonnées cartésiennes pré-calculées
+        # quand pz=1 on snapshot la position Z courante du stage pour ne pas y revenir à 0
+        if pz <= 1:
+            pm = self.positioner_manager
+            if pm is not None and pm.has_axis("z"):
+                z_origin_um = float(pm.get_rel_pos("z"))
+            else:
+                z_origin_um = 0.0
+        else:
+            z_origin_um = None  # non utilisé : on calcule z * stepz
+
         for z in range(pz):
-            z_um = 0.0 if pz <= 1 else z * stepz
+            z_um = z_origin_um if pz <= 1 else z * stepz
             for y in range(py):
                 y_um = 0.0 if py <= 1 else y * stepy
                 for x in range(px):
