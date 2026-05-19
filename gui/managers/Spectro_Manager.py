@@ -295,23 +295,37 @@ class _SpectroMappingWorker(QObject):
         self._running = True
         try:
             total = len(self.pixel_list)
+            n_repeats = max(1, int(self.scan_parameters.get("n_repeats", 1) or 1))
+            repeat_delay_s = max(0.0, float(self.scan_parameters.get("repeat_delay_s", 0.0) or 0.0))
 
             for idx, info in enumerate(self.pixel_list):
                 if not self._running:
                     break
 
+                t = int(info.get("t_index", 0))
                 lin = int(info["linear_index"])
                 x = int(info["x_index"])
                 y = int(info["y_index"])
                 z = int(info["z_index"])
 
-                pos_um = self.dataset["positions_um"][z, y, x]
+                if info.get("is_repeat_start", False) and repeat_delay_s > 0:
+                    self.sigStatusMessage.emit(
+                        f"Time lapse: attente {int(repeat_delay_s)} s avant répétition {t + 1}/{n_repeats}..."
+                    )
+                    t_end = time.perf_counter() + repeat_delay_s
+                    while self._running and time.perf_counter() < t_end:
+                        time.sleep(0.05)
+                    if not self._running:
+                        break
+
+                pos_um = self.dataset["positions_um"][t, z, y, x]
                 x_um = float(pos_um[0])
                 y_um = float(pos_um[1])
                 z_um = float(pos_um[2])
 
+                repeat_str = f"T={t + 1}/{n_repeats} | " if n_repeats > 1 else ""
                 self.sigStatusMessage.emit(
-                    f"Spectro {lin + 1}/{total} | "
+                    f"{repeat_str}Spectro {lin + 1}/{total} | "
                     f"X={x + 1}/{self.scan_parameters.get('pixels_x', 1)} "
                     f"Y={y + 1}/{self.scan_parameters.get('pixels_y', 1)} "
                     f"Z={z + 1}/{self.scan_parameters.get('pixels_z', 1)}"
@@ -327,8 +341,8 @@ class _SpectroMappingWorker(QObject):
 
                 acq_t0 = time.perf_counter()
 
-                self.dataset["linear_index_map"][z, y, x] = lin
-                self.dataset["acquisition_order_indices"][lin] = (z, y, x)
+                self.dataset["linear_index_map"][t, z, y, x] = lin
+                self.dataset["acquisition_order_indices"][lin] = (t, z, y, x)
                 self.dataset["acquisition_order_positions_um"][lin] = (x_um, y_um, z_um)
                 self.dataset["positions"][lin] = (x_um, y_um, z_um)
                 self.dataset["timestamps_s"][lin] = (
@@ -342,7 +356,7 @@ class _SpectroMappingWorker(QObject):
                         image = self._mock_brillouin_image(
                             x_idx=x, y_idx=y, z_idx=z, t_index=lin, params=self.brillouin_params
                         )
-                    self.dataset["brillouin_images"][z, y, x] = image
+                    self.dataset["brillouin_images"][t, z, y, x] = image
                     self.sigImageUpdate.emit(image)
 
                 if "raman_spectra" in self.dataset:
@@ -351,10 +365,10 @@ class _SpectroMappingWorker(QObject):
                         x_idx=x, y_idx=y, z_idx=z, t_index=lin,
                         params=self.raman_params, wavelengths=wavelengths
                     )
-                    self.dataset["raman_spectra"][z, y, x] = spectrum
+                    self.dataset["raman_spectra"][t, z, y, x] = spectrum
                     self.sigSpectrumUpdate.emit(spectrum)
 
-                self.dataset["pixel_valid"][z, y, x] = True
+                self.dataset["pixel_valid"][t, z, y, x] = True
                 self.sigProgress.emit(idx + 1, total)
 
                 exposure_ms = float(self.scan_parameters.get("exposure_ms", 0.0) or 0.0)
@@ -369,6 +383,20 @@ class _SpectroMappingWorker(QObject):
 
         except Exception as e:
             self.sigFailed.emit(f"Spectro mapping failed: {e}")
+
+        finally:
+            origin = (self.dataset or {}).get("origin_um")
+            if origin:
+                try:
+                    self.sigStatusMessage.emit("Retour à la position initiale...")
+                    self._running = True
+                    self._move_stage_to_pixel_blocking(
+                        float(origin["x"]), float(origin["y"]), float(origin["z"])
+                    )
+                except Exception:
+                    pass
+                finally:
+                    self._running = False
 
 class SpectroManager(QObject):
     """
@@ -622,8 +650,9 @@ class SpectroManager(QObject):
         px = max(1, int(self._scan_parameters.get("pixels_x", 1) or 1))
         py = max(1, int(self._scan_parameters.get("pixels_y", 1) or 1))
         pz = max(1, int(self._scan_parameters.get("pixels_z", 1) or 1))
+        pt = max(1, int(self._scan_parameters.get("n_repeats", 1) or 1))
 
-        self.pixel_list = self._build_serpentine_grid(px, py, pz)
+        self.pixel_list = self._build_serpentine_grid(px, py, pz, n_repeats=pt)
         self.current_pixel_index = 0
         self.dataset = self._create_dataset(
             self._scan_parameters,
@@ -845,25 +874,25 @@ class SpectroManager(QObject):
     # ==========================================================
     # Grid / ordre serpentin
     # ==========================================================
-    def _build_serpentine_grid(self, pixels_x, pixels_y, pixels_z=1):
+    def _build_serpentine_grid(self, pixels_x, pixels_y, pixels_z=1, n_repeats=1):
         grid = []
-
         linear = 0
-        for z in range(int(pixels_z)):
-            for y in range(int(pixels_y)):
-                xs = list(range(int(pixels_x)))
-                if y % 2 == 1:
-                    xs.reverse()
-
-                for x in xs:
-                    grid.append({
-                        "linear_index": int(linear),
-                        "x_index": int(x),
-                        "y_index": int(y),
-                        "z_index": int(z),
-                    })
-                    linear += 1
-
+        for t in range(max(1, int(n_repeats))):
+            for z in range(int(pixels_z)):
+                for y in range(int(pixels_y)):
+                    xs = list(range(int(pixels_x)))
+                    if y % 2 == 1:
+                        xs.reverse()
+                    for x in xs:
+                        grid.append({
+                            "linear_index": int(linear),
+                            "t_index": int(t),
+                            "x_index": int(x),
+                            "y_index": int(y),
+                            "z_index": int(z),
+                            "is_repeat_start": bool(t > 0 and z == 0 and y == 0 and x == 0),
+                        })
+                        linear += 1
         return grid
 
     # ==========================================================
@@ -880,28 +909,33 @@ class SpectroManager(QObject):
         px = max(1, int(scan_parameters.get("pixels_x", 1) or 1))
         py = max(1, int(scan_parameters.get("pixels_y", 1) or 1))
         pz = max(1, int(scan_parameters.get("pixels_z", 1) or 1))
+        pt = max(1, int(scan_parameters.get("n_repeats", 1) or 1))
 
         sx = float(scan_parameters.get("size_x_um", 0.0) or 0.0)
         sy = float(scan_parameters.get("size_y_um", 0.0) or 0.0)
         sz = float(scan_parameters.get("size_z_um", 0.0) or 0.0)
-
         stepx = float(scan_parameters.get("step_x_um", 0.0) or 0.0)
         stepy = float(scan_parameters.get("step_y_um", 0.0) or 0.0)
         stepz = float(scan_parameters.get("step_z_um", 0.0) or 0.0)
 
-        total_pixels = px * py * pz
+        pm = self.positioner_manager
+        x_origin_um = float(pm.get_rel_pos("x")) if pm is not None and pm.has_axis("x") else 0.0
+        y_origin_um = float(pm.get_rel_pos("y")) if pm is not None and pm.has_axis("y") else 0.0
+        z_origin_um = float(pm.get_rel_pos("z")) if pm is not None and pm.has_axis("z") else 0.0
+
+        total_pixels = pt * px * py * pz
 
         dataset = {
             "version": "spectro_mock_v2",
-            "grid_shape": (pz, py, px),
-            "axis_order": ("z", "y", "x"),
+            "grid_shape": (pt, pz, py, px),
+            "axis_order": ("t", "z", "y", "x"),
             "serpentine": bool(scan_parameters.get("serpentine", True)),
-            "positions_um": np.zeros((pz, py, px, 3), dtype=np.float32),              # [z,y,x] -> (x_um,y_um,z_um)
-            "linear_index_map": np.full((pz, py, px), -1, dtype=np.int32),
-            "acquisition_order_indices": np.full((total_pixels, 3), -1, dtype=np.int32),
+            "positions_um": np.zeros((pt, pz, py, px, 3), dtype=np.float32),
+            "linear_index_map": np.full((pt, pz, py, px), -1, dtype=np.int32),
+            "acquisition_order_indices": np.full((total_pixels, 4), -1, dtype=np.int32),
             "acquisition_order_positions_um": np.zeros((total_pixels, 3), dtype=np.float32),
             "timestamps_s": np.full((total_pixels,), np.nan, dtype=np.float64),
-            "pixel_valid": np.zeros((pz, py, px), dtype=bool),
+            "pixel_valid": np.zeros((pt, pz, py, px), dtype=bool),
             "metadata": {
                 "acquisition_parameters": dict(scan_parameters or {}),
                 "brillouin_parameters": dict(brillouin_params or {}),
@@ -919,33 +953,23 @@ class SpectroManager(QObject):
             },
         }
 
-        # legacy flatten pour compat future si besoin
         dataset["positions"] = np.zeros((total_pixels, 3), dtype=np.float32)
+        dataset["origin_um"] = {"x": x_origin_um, "y": y_origin_um, "z": z_origin_um}
 
-        # coordonnées cartésiennes pré-calculées
-        # quand pz=1 on snapshot la position Z courante du stage pour ne pas y revenir à 0
-        if pz <= 1:
-            pm = self.positioner_manager
-            if pm is not None and pm.has_axis("z"):
-                z_origin_um = float(pm.get_rel_pos("z"))
-            else:
-                z_origin_um = 0.0
-        else:
-            z_origin_um = None  # non utilisé : on calcule z * stepz
-
-        for z in range(pz):
-            z_um = z_origin_um if pz <= 1 else z * stepz
-            for y in range(py):
-                y_um = 0.0 if py <= 1 else y * stepy
-                for x in range(px):
-                    x_um = 0.0 if px <= 1 else x * stepx
-                    dataset["positions_um"][z, y, x] = (x_um, y_um, z_um)
+        for t in range(pt):
+            for z in range(pz):
+                z_um = z_origin_um if pz <= 1 else z_origin_um - sz / 2.0 + z * stepz
+                for y in range(py):
+                    y_um = y_origin_um if py <= 1 else y_origin_um - sy / 2.0 + y * stepy
+                    for x in range(px):
+                        x_um = x_origin_um if px <= 1 else x_origin_um - sx / 2.0 + x * stepx
+                        dataset["positions_um"][t, z, y, x] = (x_um, y_um, z_um)
 
         if modes.get("brillouin", False):
             roi = self._get_effective_brillouin_roi(brillouin_params)
             h = int(roi["height"])
             w = int(roi["width"])
-            dataset["brillouin_images"] = np.zeros((pz, py, px, h, w), dtype=np.float32)
+            dataset["brillouin_images"] = np.zeros((pt, pz, py, px, h, w), dtype=np.float32)
 
             dataset["metadata"]["brillouin_roi"] = {
                 "enabled": bool(roi["enabled"]),
@@ -960,7 +984,7 @@ class SpectroManager(QObject):
         if modes.get("raman", False):
             wavelengths = self._build_raman_wavelengths(raman_params)
             dataset["raman_wavelengths"] = wavelengths.astype(np.float32, copy=False)
-            dataset["raman_spectra"] = np.zeros((pz, py, px, wavelengths.size), dtype=np.float32)
+            dataset["raman_spectra"] = np.zeros((pt, pz, py, px, wavelengths.size), dtype=np.float32)
 
         return dataset
 
@@ -988,18 +1012,20 @@ class SpectroManager(QObject):
                 if "brillouin_images" in self.dataset and self.current_pixel_index > 0:
                     last_idx = min(self.current_pixel_index - 1, len(self.pixel_list) - 1)
                     info = self.pixel_list[last_idx]
+                    t = int(info.get("t_index", 0))
                     z = int(info["z_index"])
                     y = int(info["y_index"])
                     x = int(info["x_index"])
-                    self.sigImageUpdate.emit(self.dataset["brillouin_images"][z, y, x])
+                    self.sigImageUpdate.emit(self.dataset["brillouin_images"][t, z, y, x])
 
                 if "raman_spectra" in self.dataset and self.current_pixel_index > 0:
                     last_idx = min(self.current_pixel_index - 1, len(self.pixel_list) - 1)
                     info = self.pixel_list[last_idx]
+                    t = int(info.get("t_index", 0))
                     z = int(info["z_index"])
                     y = int(info["y_index"])
                     x = int(info["x_index"])
-                    self.sigSpectrumUpdate.emit(self.dataset["raman_spectra"][z, y, x])
+                    self.sigSpectrumUpdate.emit(self.dataset["raman_spectra"][t, z, y, x])
             except Exception:
                 pass
 

@@ -267,7 +267,7 @@ class SpectroWidget(QWidget):
         self.spin_brillouin_exposure_ms = QDoubleSpinBox()
         self.spin_brillouin_exposure_ms.setDecimals(3)
         self.spin_brillouin_exposure_ms.setRange(0.001, 1_000_000.0)
-        self.spin_brillouin_exposure_ms.setValue(10.0)
+        self.spin_brillouin_exposure_ms.setValue(100.0)
         self.spin_brillouin_exposure_ms.setSingleStep(1.0)
         self.spin_brillouin_exposure_ms.setFixedWidth(86)
         _apply_spinbox_palette(self.spin_brillouin_exposure_ms)

@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QSizePolicy, QLineEdit, QFileDialog,
-    QPlainTextEdit, QComboBox, QMessageBox, QFrame, QProgressBar
+    QPlainTextEdit, QComboBox, QMessageBox, QFrame, QProgressBar, QCheckBox
 )
 from PySide6.QtCore import Signal, QDate, Qt
 from PySide6.QtGui import QIcon
@@ -19,6 +19,11 @@ LINE_EDIT_STYLE = """
         border-radius: 3px;
         padding: 2px;
         min-height: 20px;
+    }
+    QLineEdit:disabled {
+        background-color: #1e1e1e;
+        color: #555;
+        border: 1px solid #333;
     }
 """
 
@@ -111,6 +116,32 @@ PROGRESS_BAR_STYLE = """
 """
 
 HEADER_LABEL_STYLE = "color: white; font-weight: bold; padding-bottom: 2px;"
+
+CHECKBOX_STYLE = """
+QCheckBox {
+    color: white;
+}
+QCheckBox::indicator {
+    width: 12px;
+    height: 12px;
+    background-color: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+}
+QCheckBox::indicator:checked {
+    background-color: #2E8B57;
+    border: 1px solid #555;
+    border-radius: 3px;
+}
+QCheckBox::indicator:checked:hover {
+    background-color: #3AB16F;
+    border: 1px solid #777;
+}
+QCheckBox::indicator:unchecked:hover {
+    background-color: #444;
+    border: 1px solid #777;
+}
+"""
 
 
 class SpectroPanelWidget(QWidget):
@@ -214,12 +245,12 @@ class SpectroPanelWidget(QWidget):
         # ---- X
         mapping_layout.addWidget(QLabel("X"), 1, 0)
 
-        self.size_x_edit = QLineEdit("20")
+        self.size_x_edit = QLineEdit("100")
         self.size_x_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.size_x_edit.setValidator(float_validator)
         mapping_layout.addWidget(self.size_x_edit, 1, 1)
 
-        self.pix_x_edit = QLineEdit("20")
+        self.pix_x_edit = QLineEdit("11")
         self.pix_x_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.pix_x_edit.setValidator(int_validator)
         mapping_layout.addWidget(self.pix_x_edit, 1, 2)
@@ -232,12 +263,12 @@ class SpectroPanelWidget(QWidget):
         # ---- Y
         mapping_layout.addWidget(QLabel("Y"), 2, 0)
 
-        self.size_y_edit = QLineEdit("20")
+        self.size_y_edit = QLineEdit("100")
         self.size_y_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.size_y_edit.setValidator(float_validator)
         mapping_layout.addWidget(self.size_y_edit, 2, 1)
 
-        self.pix_y_edit = QLineEdit("20")
+        self.pix_y_edit = QLineEdit("11")
         self.pix_y_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.pix_y_edit.setValidator(int_validator)
         mapping_layout.addWidget(self.pix_y_edit, 2, 2)
@@ -264,6 +295,32 @@ class SpectroPanelWidget(QWidget):
         self.step_z_edit.setReadOnly(True)
         self.step_z_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
         mapping_layout.addWidget(self.step_z_edit, 3, 3)
+
+        # ---- T (time lapse)
+        self.cb_timelapse = QCheckBox("Time lapse")
+        self.cb_timelapse.setStyleSheet(CHECKBOX_STYLE)
+        mapping_layout.addWidget(self.cb_timelapse, 4, 0, 1, 2)
+
+        self.repeats_edit = QLineEdit("5")
+        self.repeats_edit.setStyleSheet(LINE_EDIT_STYLE)
+        self.repeats_edit.setValidator(QIntValidator(1, 100000))
+        self.repeats_edit.setEnabled(False)
+        mapping_layout.addWidget(self.repeats_edit, 4, 2)
+
+        delay_container = QWidget()
+        delay_container.setStyleSheet("background: transparent;")
+        delay_hbox = QHBoxLayout(delay_container)
+        delay_hbox.setContentsMargins(0, 0, 0, 0)
+        delay_hbox.setSpacing(4)
+        self.delay_s_edit = QLineEdit("60")
+        self.delay_s_edit.setStyleSheet(LINE_EDIT_STYLE)
+        self.delay_s_edit.setValidator(QDoubleValidator(0.0, 1e9, 1))
+        self.delay_s_edit.setEnabled(False)
+        delay_hbox.addWidget(self.delay_s_edit)
+        delay_unit = QLabel("s")
+        delay_unit.setStyleSheet("color: #aaa; border: none; background: transparent;")
+        delay_hbox.addWidget(delay_unit)
+        mapping_layout.addWidget(delay_container, 4, 3)
 
         content_layout.addWidget(mapping_frame)
 
@@ -425,11 +482,22 @@ class SpectroPanelWidget(QWidget):
             self.size_x_edit, self.size_y_edit, self.size_z_edit,
             self.pix_x_edit, self.pix_y_edit, self.pix_z_edit,
             self.exposure_edit, self.settle_edit,
+            self.repeats_edit, self.delay_s_edit,
         ):
             edit.textChanged.connect(self._update_derived_values)
 
+        self.cb_timelapse.toggled.connect(self._on_timelapse_toggled)
+
         self._update_derived_values()
         self._emit_mode_changed()
+
+    # ==========================================================
+    # Slots
+    # ==========================================================
+    def _on_timelapse_toggled(self, checked: bool):
+        self.repeats_edit.setEnabled(bool(checked))
+        self.delay_s_edit.setEnabled(bool(checked))
+        self._update_derived_values()
 
     # ==========================================================
     # Helpers
@@ -458,7 +526,7 @@ class SpectroPanelWidget(QWidget):
     def _compute_step(size_um: float, pixels: int) -> float:
         if int(pixels) <= 1:
             return 0.0
-        return float(size_um) / float(pixels)
+        return float(size_um) / float(pixels - 1)
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -485,12 +553,12 @@ class SpectroPanelWidget(QWidget):
         return f"{n / 1024**3:.2f} GB"
 
     def _update_derived_values(self):
-        size_x = self._safe_float(self.size_x_edit.text(), 20.0)
-        size_y = self._safe_float(self.size_y_edit.text(), 20.0)
+        size_x = self._safe_float(self.size_x_edit.text(), 100.0)
+        size_y = self._safe_float(self.size_y_edit.text(), 100.0)
         size_z = self._safe_float(self.size_z_edit.text(), 0.0)
 
-        pix_x = max(1, self._safe_int(self.pix_x_edit.text(), 20))
-        pix_y = max(1, self._safe_int(self.pix_y_edit.text(), 20))
+        pix_x = max(1, self._safe_int(self.pix_x_edit.text(), 11))
+        pix_y = max(1, self._safe_int(self.pix_y_edit.text(), 11))
         pix_z = max(1, self._safe_int(self.pix_z_edit.text(), 1))
 
         step_x = self._compute_step(size_x, pix_x)
@@ -504,9 +572,14 @@ class SpectroPanelWidget(QWidget):
         exposure_ms = self._safe_float(self.exposure_edit.text(), 100.0)
         settle_ms = self._safe_float(self.settle_edit.text(), 10.0)
 
+        timelapse_on = self.cb_timelapse.isChecked()
+        n_repeats = max(1, self._safe_int(self.repeats_edit.text(), 1)) if timelapse_on else 1
+        delay_s = max(0.0, self._safe_float(self.delay_s_edit.text(), 0.0)) if timelapse_on else 0.0
+
         n_pix = pix_x * pix_y * pix_z
         t_per_pix_s = max(0.0, exposure_ms + settle_ms) / 1000.0
-        total_s = n_pix * t_per_pix_s
+        scan_s = n_pix * t_per_pix_s
+        total_s = n_repeats * scan_s + max(0, n_repeats - 1) * delay_s
         self.estimated_time_edit.setText(self._format_duration(total_s))
 
         total_bytes = 0.0
@@ -536,7 +609,7 @@ class SpectroPanelWidget(QWidget):
         if not has_any_mode:
             self.estimated_size_edit.setText("—")
         else:
-            self.estimated_size_edit.setText(self._format_bytes(total_bytes))
+            self.estimated_size_edit.setText(self._format_bytes(total_bytes * n_repeats))
 
     def _on_acquire_clicked(self):
         folder = self.folder_line_edit.text().strip()
@@ -607,12 +680,12 @@ class SpectroPanelWidget(QWidget):
         self._update_derived_values()
     
     def get_acquisition_parameters(self):
-        size_x = self._safe_float(self.size_x_edit.text(), 20.0)
-        size_y = self._safe_float(self.size_y_edit.text(), 20.0)
+        size_x = self._safe_float(self.size_x_edit.text(), 100.0)
+        size_y = self._safe_float(self.size_y_edit.text(), 100.0)
         size_z = self._safe_float(self.size_z_edit.text(), 0.0)
 
-        pix_x = max(1, self._safe_int(self.pix_x_edit.text(), 20))
-        pix_y = max(1, self._safe_int(self.pix_y_edit.text(), 20))
+        pix_x = max(1, self._safe_int(self.pix_x_edit.text(), 11))
+        pix_y = max(1, self._safe_int(self.pix_y_edit.text(), 11))
         pix_z = max(1, self._safe_int(self.pix_z_edit.text(), 1))
 
         return {
@@ -629,6 +702,8 @@ class SpectroPanelWidget(QWidget):
             "step_z_um": self._compute_step(size_z, pix_z),
             "serpentine": True,
             "brillouin_roi": dict(self._brillouin_roi_state),
+            "n_repeats": max(1, self._safe_int(self.repeats_edit.text(), 1)) if self.cb_timelapse.isChecked() else 1,
+            "repeat_delay_s": max(0.0, self._safe_float(self.delay_s_edit.text(), 0.0)) if self.cb_timelapse.isChecked() else 0.0,
         }
 
     def reset_progress(self):

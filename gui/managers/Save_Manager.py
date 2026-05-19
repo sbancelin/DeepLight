@@ -534,31 +534,30 @@ class SaveManager:
         # dataset["brillouin_images"] attendu en (Z, Y, X, H, W)
         # -------------------------
         if "brillouin_images" in dataset:
-            arr = np.asarray(dataset["brillouin_images"], dtype=np.float32)   # (pz, py, px, h, w)
+            arr = np.asarray(dataset["brillouin_images"], dtype=np.float32)
+            # Handle legacy (pz, py, px, h, w) — prepend t=1 dimension
+            if arr.ndim == 5:
+                arr = arr[np.newaxis]
+            pt, pz, py, px, h, w = arr.shape
+            n_channels = py * px
 
             if fmt == "OME-TIFF":
-                # On remappe le dataset Brillouin en OME-TIFF standard:
-                # T = répétition (ici 1)
-                # C = indice linéaire dans l'ordre serpentin, par plan Z
-                # Z = index z du mapping
-                # Y,X = image caméra
-                pz, py, px, h, w = arr.shape
-                n_channels = py * px
-
-                stack = np.zeros((1, n_channels, pz, h, w), dtype=np.float32)
+                stack = np.zeros((pt, n_channels, pz, h, w), dtype=np.float32)
 
                 order = np.asarray(dataset.get("acquisition_order_indices", []), dtype=np.int32)
 
                 for linear_idx in range(len(order)):
-                    z_idx, y_idx, x_idx = [int(v) for v in order[linear_idx]]
+                    row = order[linear_idx]
+                    if len(row) == 4:
+                        t_idx, z_idx, y_idx, x_idx = int(row[0]), int(row[1]), int(row[2]), int(row[3])
+                    else:
+                        t_idx, z_idx, y_idx, x_idx = 0, int(row[0]), int(row[1]), int(row[2])
 
-                    if not (0 <= z_idx < pz and 0 <= y_idx < py and 0 <= x_idx < px):
+                    if not (0 <= t_idx < pt and 0 <= z_idx < pz and 0 <= y_idx < py and 0 <= x_idx < px):
                         continue
 
-                    # canal = indice linéaire XY dans le serpentin, indépendamment de z
                     c_idx = int(y_idx * px + x_idx)
-
-                    stack[0, c_idx, z_idx, :, :] = arr[z_idx, y_idx, x_idx, :, :]
+                    stack[t_idx, c_idx, z_idx, :, :] = arr[t_idx, z_idx, y_idx, x_idx, :, :]
 
                 out_name = "brillouin.ome.tif"
                 tifffile.imwrite(
@@ -581,7 +580,7 @@ class SaveManager:
                     "0",
                     data=arr,
                     shape=arr.shape,
-                    chunks=(1, 1, 1, min(256, arr.shape[-2]), min(256, arr.shape[-1])),
+                    chunks=(1, 1, 1, 1, min(256, arr.shape[-2]), min(256, arr.shape[-1])),
                     dtype=np.float32,
                     overwrite=True,
                 )
@@ -589,6 +588,7 @@ class SaveManager:
                     "version": "0.4",
                     "datasets": [{"path": "0"}],
                     "axes": [
+                        {"name": "t", "type": "time"},
                         {"name": "z", "type": "space"},
                         {"name": "y", "type": "space"},
                         {"name": "x", "type": "space"},
@@ -610,6 +610,9 @@ class SaveManager:
         # -------------------------
         if "raman_spectra" in dataset:
             arr = np.asarray(dataset["raman_spectra"], dtype=np.float32)
+            # Handle legacy (pz, py, px, L) — prepend t=1 dimension
+            if arr.ndim == 4:
+                arr = arr[np.newaxis]
 
             if fmt == "OME-TIFF":
                 out_name = "raman.ome.tif"
@@ -617,7 +620,7 @@ class SaveManager:
                     os.path.join(root_path, out_name),
                     arr,
                     photometric="minisblack",
-                    metadata={"axes": "ZYXS"},
+                    metadata={"axes": "TZYXS"},
                 )
             else:
                 out_name = "raman.zarr"
@@ -627,7 +630,7 @@ class SaveManager:
                     "0",
                     data=arr,
                     shape=arr.shape,
-                    chunks=(1, 1, 1, min(1024, arr.shape[-1])),
+                    chunks=(1, 1, 1, 1, min(1024, arr.shape[-1])),
                     dtype=np.float32,
                     overwrite=True,
                 )
@@ -635,6 +638,7 @@ class SaveManager:
                     "version": "0.4",
                     "datasets": [{"path": "0"}],
                     "axes": [
+                        {"name": "t", "type": "time"},
                         {"name": "z", "type": "space"},
                         {"name": "y", "type": "space"},
                         {"name": "x", "type": "space"},

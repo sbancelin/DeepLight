@@ -1475,7 +1475,7 @@ class ScanWidget(QWidget):
             if self._should_skip_stage_speed_check(row_index, axis_name):
                 return True, ""
 
-            step_um = size_um / pixels if pixels > 0 else 0.0
+            step_um = size_um / (pixels - 1) if pixels > 1 else size_um
             dwell_s = dwell_us * 1e-6
             speed_um_s = step_um / dwell_s if dwell_s > 0 else float("inf")
             speed_mm_s = speed_um_s / 1000.0
@@ -1519,7 +1519,7 @@ class ScanWidget(QWidget):
                 f"With conv = {conv:.2f} µm/V, max full span is {max_span_um:.2f} µm."
             )
 
-        step_um = size_um / pixels if pixels > 0 else 0.0
+        step_um = size_um / (pixels - 1) if pixels > 1 else size_um
         dwell_s = dwell_us * 1e-6
         speed_um_s = step_um / dwell_s if dwell_s > 0 else float("inf")
         speed_mm_s = speed_um_s / 1000.0
@@ -1533,7 +1533,7 @@ class ScanWidget(QWidget):
             )
 
         return True, ""
-    
+
     def _validate_row_and_revert_if_needed(self, row_index: int):
         axis_name = self.scan_dim_combos[row_index].currentText()
         if axis_name == "None":
@@ -1929,9 +1929,11 @@ class ScanWidget(QWidget):
         try:
             size = float(size_edit.text() or "0")
             pixel = float(pixel_edit.text() or "1")
-            if pixel != 0:
-                step = size / pixel
+            if pixel > 1:
+                step = size / (pixel - 1)
                 step_edit.setText(f"{step:.3f}")
+            elif pixel == 1:
+                step_edit.setText(f"{size:.3f}")
             else:
                 step_edit.setText("0")
         except ValueError:

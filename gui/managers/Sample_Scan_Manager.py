@@ -136,7 +136,7 @@ class SampleScanManager:
     def _compute_step_um(size_um: float, pixels: int) -> float:
         if pixels <= 1:
             return 0.0
-        return float(size_um) / float(pixels)
+        return float(size_um) / float(pixels - 1)
     
     @staticmethod
     def _compute_axis_positions_from_row(row: Dict) -> List[float]:
@@ -188,10 +188,10 @@ class SampleScanManager:
             else:
                 x_iter = range(self.nx)
 
-            y_um = y0 + (iy + 0.5) * self.step_y_um if self.ny > 1 else self.offset_y_um
+            y_um = y0 + iy * self.step_y_um if self.ny > 1 else self.offset_y_um
 
             for ix in x_iter:
-                x_um = x0 + (ix + 0.5) * self.step_x_um if self.nx > 1 else self.offset_x_um
+                x_um = x0 + ix * self.step_x_um if self.nx > 1 else self.offset_x_um
                 yield SamplePixelEvent(
                     ix=ix,
                     iy=iy,
