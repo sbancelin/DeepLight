@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QMainWindow, QFileDialog
 from PySide6.QtGui import QIcon, QGuiApplication
 from PySide6.QtCore import Slot, QTimer, Qt
 
@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
         self._connect_spectro_controls()
 
         self._rec_saving_active = False
-        self._stepper_return_targets_rel = {"z": None, "p": None}
+        self._stepper_return_targets_rel = {"x": None, "y": None, "z": None, "p": None}
         self._update_estimated_stack_size()
 
         # Connection des signaux
@@ -202,7 +202,7 @@ class MainWindow(QMainWindow):
             output_mw = self.laser_manager.get_output_power_mw("Cobolt 660")
             enabled = self.laser_manager.get_enabled("Cobolt 660")
 
-            logger.info(
+            logger.debug(
                 f"[MainWindow] Cobolt synced: "
                 f"setpoint={percent:.1f}% output={output_mw:.1f} mW enabled={enabled}"
             )
@@ -243,10 +243,14 @@ class MainWindow(QMainWindow):
         sm.sigBrillouinLiveRunningChanged.connect(sw.set_brillouin_live_button_state)
         sm.sigRamanLiveRunningChanged.connect(sw.set_raman_live_button_state)
 
-        # --- Brillouin mock controls ---
+        # --- Brillouin controls ---
         sw.button_brillouin_snap.clicked.connect(self._on_brillouin_snap_clicked)
         sw.button_brillouin_live.clicked.connect(self._on_brillouin_live_clicked)
         sw.button_brillouin_stop.clicked.connect(self._on_spectro_stop_clicked)
+        sw.sigBrillouinReconnectRequested.connect(self._on_brillouin_reconnect_clicked)
+        sw.sigBrillouinSaveRequested.connect(self._on_brillouin_save_clicked)
+        sw.spin_brillouin_exposure_ms.valueChanged.connect(self._on_brillouin_acq_params_changed)
+        sw.combo_brillouin_binning.currentIndexChanged.connect(self._on_brillouin_acq_params_changed)
 
         # --- Raman mock controls ---
         sw.button_raman_snap.clicked.connect(self._on_raman_snap_clicked)
@@ -264,7 +268,47 @@ class MainWindow(QMainWindow):
             self._on_spectro_status_changed("Brillouin camera ready")
         except Exception as e:
             self._on_spectro_status_changed(f"Brillouin init failed: {e}")
-    
+
+    @Slot()
+    def _on_brillouin_reconnect_clicked(self):
+        try:
+            self._on_spectro_status_changed("Reconnecting Brillouin camera...")
+            self.hardware.ensure_brillouin_camera_ready()
+            self._on_spectro_status_changed("Brillouin camera ready")
+            logger.info("[Spectro] Brillouin camera reconnected successfully.")
+        except Exception as e:
+            self._on_spectro_status_changed(f"Reconnect failed: {e}")
+            logger.error(f"[Spectro] Brillouin reconnect failed: {e}")
+
+    @Slot()
+    def _on_brillouin_save_clicked(self):
+        import tifffile
+        img = self.ui.spectro_widget.brillouin_image
+        if img is None or img.size == 0:
+            logger.warning("[Spectro] No Brillouin image to save.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Brillouin image",
+            "",
+            "TIFF (*.tif *.tiff);;NumPy (*.npy);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".npy"):
+                import numpy as np
+                np.save(path, img)
+            else:
+                if not (path.lower().endswith(".tif") or path.lower().endswith(".tiff")):
+                    path += ".tif"
+                tifffile.imwrite(path, img)
+            logger.info(f"[Spectro] Brillouin image saved: {path}")
+            self._on_spectro_status_changed("Image saved")
+        except Exception as e:
+            logger.error(f"[Spectro] Save failed: {e}")
+            self._on_spectro_status_changed(f"Save failed: {e}")
+
     @Slot()
     def _on_spectro_acquire_clicked(self):
         if self.spectro_manager.is_running():
@@ -347,6 +391,11 @@ class MainWindow(QMainWindow):
             logger.error(f"[Spectro] Brillouin live failed: {e}")
             self._on_spectro_status_changed("Error")
 
+    @Slot()
+    def _on_brillouin_acq_params_changed(self):
+        if self.spectro_manager.is_brillouin_live_running():
+            params = self.ui.spectro_widget.get_brillouin_parameters()
+            self.spectro_manager.update_brillouin_live_params(params)
 
     @Slot()
     def _on_raman_snap_clicked(self):
@@ -498,12 +547,18 @@ class MainWindow(QMainWindow):
         cw.button_live.toggled.connect(self._on_camera_live_clicked)
         cw.button_stop.clicked.connect(self._on_camera_stop_clicked)
         cw.button_reset.clicked.connect(self._on_camera_reset_clicked)
+        cw.sigReconnectRequested.connect(self._on_camera_reconnect_clicked)
+        cw.sigSaveRequested.connect(self._on_camera_save_clicked)
 
-        # paramètres supportés par le widget
+        # paramètres — pushés au controller à chaque changement
         cw.spin_exposure_ms.valueChanged.connect(self._push_camera_parameters)
         cw.cb_auto_exposure.toggled.connect(self._push_camera_parameters)
         cw.combo_binning.currentTextChanged.connect(self._push_camera_parameters)
-        cw.combo_pixel_format.currentTextChanged.connect(self._push_camera_parameters)
+        cw.cb_roi_enabled.toggled.connect(self._push_camera_parameters)
+        cw.spin_roi_x.valueChanged.connect(self._push_camera_parameters)
+        cw.spin_roi_y.valueChanged.connect(self._push_camera_parameters)
+        cw.spin_roi_width.valueChanged.connect(self._push_camera_parameters)
+        cw.spin_roi_height.valueChanged.connect(self._push_camera_parameters)
 
     @Slot()
     def _push_camera_parameters(self, *_args):
@@ -551,6 +606,39 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.ui.camera_widget.set_status(f"Reset failed: {e}")
 
+    @Slot()
+    def _on_camera_reconnect_clicked(self):
+        try:
+            self.ui.camera_widget.set_status("Reconnecting...")
+            self.camera_controller.reconnect_camera()
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Reconnect failed: {e}")
+
+    @Slot()
+    def _on_camera_save_clicked(self):
+        import tifffile
+        img = self.ui.camera_widget.current_image
+        if img is None or img.size == 0:
+            self.ui.camera_widget.set_status("No image to save")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Camera image", "",
+            "TIFF (*.tif *.tiff);;NumPy (*.npy);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".npy"):
+                import numpy as np
+                np.save(path, img)
+            else:
+                if not (path.lower().endswith(".tif") or path.lower().endswith(".tiff")):
+                    path += ".tif"
+                tifffile.imwrite(path, img)
+            self.ui.camera_widget.set_status("Image saved")
+        except Exception as e:
+            self.ui.camera_widget.set_status(f"Save failed: {e}")
+
     @Slot(bool)
     def _on_camera_running_changed(self, running: bool):
         self.ui.camera_widget.set_running(bool(running))
@@ -559,7 +647,15 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_camera_frame_ready(self, img):
         try:
-            self.ui.camera_widget.set_image(img)
+            cw = self.ui.camera_widget
+            if img is not None:
+                h, w = img.shape[:2]
+                # Only update the native sensor shape from full, unbinned, un-cropped frames
+                roi_off = not cw.cb_roi_enabled.isChecked()
+                binning_off = cw.combo_binning.currentText() == "1x1"
+                if roi_off and binning_off:
+                    cw.set_camera_full_shape(h, w)
+            cw.set_image(img)
         except Exception as e:
             self.ui.camera_widget.set_status(f"Display failed: {e}")
 
@@ -584,6 +680,16 @@ class MainWindow(QMainWindow):
             self.spectro_manager.stop_all_live()
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        try:
+            speed = max(0.01, float(self.positioner_manager.get_max_speed("x")))
+            self.positioner_manager.move_xy_to_rel(0.0, 0.0, speed, speed)
+            wait_fn = getattr(self.positioner_manager, "wait_until_xy_reached", None)
+            if callable(wait_fn):
+                wait_fn(0.0, 0.0, timeout_s=30.0)
+            logger.info("[MainWindow] XY stage returned to origin.")
+        except Exception as e:
+            logger.warning(f"[MainWindow] XY return to origin at close failed: {e}")
 
         try:
             self.hardware.close()
@@ -698,18 +804,14 @@ class MainWindow(QMainWindow):
         
     def _capture_stepper_return_targets(self):
         """
-        Mémorise la position relative initiale de Z et P
+        Mémorise la position relative initiale de X, Y, Z et P
         au début d'une acquisition.
         """
-        try:
-            self._stepper_return_targets_rel["z"] = float(self.positioner_manager.get_rel_pos("z"))
-        except Exception:
-            self._stepper_return_targets_rel["z"] = None
-
-        try:
-            self._stepper_return_targets_rel["p"] = float(self.positioner_manager.get_rel_pos("p"))
-        except Exception:
-            self._stepper_return_targets_rel["p"] = None
+        for axis in ("x", "y", "z", "p"):
+            try:
+                self._stepper_return_targets_rel[axis] = float(self.positioner_manager.get_rel_pos(axis))
+            except Exception:
+                self._stepper_return_targets_rel[axis] = None
     
     
     def _attach_initial_relative_positions(self, scan_parameters: dict) -> dict:
@@ -1162,7 +1264,7 @@ class MainWindow(QMainWindow):
     
     @Slot(object)
     def on_acquisition_done(self, data):
-        logger.info(f"ACQ DONE. Stored reps: {len(data)}")
+        logger.debug(f"ACQ DONE. Stored reps: {len(data)}")
         
     @Slot(bool)
     def on_shutter_requested(self, open_: bool):
@@ -1256,7 +1358,22 @@ class MainWindow(QMainWindow):
         if getattr(self, "_rec_saving_active", False):
             self.save_manager.finish_rec_session()
             self._rec_saving_active = False
-    
+
+        self._return_xy_to_pre_scan_position()
+
+    def _return_xy_to_pre_scan_position(self):
+        x0 = self._stepper_return_targets_rel.get("x")
+        y0 = self._stepper_return_targets_rel.get("y")
+        if x0 is None and y0 is None:
+            return
+        try:
+            speed = max(0.01, float(self.positioner_manager.get_max_speed("x")))
+            x_target = float(x0) if x0 is not None else self.positioner_manager.get_rel_pos("x")
+            y_target = float(y0) if y0 is not None else self.positioner_manager.get_rel_pos("y")
+            self.positioner_manager.move_xy_to_rel(x_target, y_target, speed, speed)
+        except Exception as e:
+            logger.warning(f"[MainWindow] XY return after scan failed: {e}")
+
     @Slot(str, np.ndarray)
     def update_image_views_with_data(self, channel, image_data):
         shown = np.asarray(image_data, dtype=np.float32)
@@ -1379,6 +1496,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def previewsingleButtonClicked(self, checked: bool = False):
         """Démarre une acquisition en mode preview single."""
+        self._capture_stepper_return_targets()
         scan_parameters = self.ui.scan_widget.get_scan_parameters()
         scan_parameters = self._attach_detector_specs(scan_parameters)
         scan_parameters = self._attach_initial_relative_positions(scan_parameters)
@@ -1392,6 +1510,7 @@ class MainWindow(QMainWindow):
     def previewcontinuousButtonClicked(self, checked: bool):
         """ preview button clicked event """
         if checked:
+            self._capture_stepper_return_targets()
             scan_parameters = self.ui.scan_widget.get_scan_parameters()
             scan_parameters = self._attach_detector_specs(scan_parameters)
             scan_parameters = self._attach_initial_relative_positions(scan_parameters)

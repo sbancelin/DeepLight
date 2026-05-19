@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import time
 import cv2
@@ -104,11 +105,11 @@ class MockCameraBackend(CameraBackendBase):
         if not self.connected:
             self.connect()
         self.live_running = True
-        logger.info("[MockCamera] live started")
+        logger.debug("[MockCamera] live started")
 
     def stop_live(self) -> None:
         self.live_running = False
-        logger.info("[MockCamera] live stopped")
+        logger.debug("[MockCamera] live stopped")
 
 
 # =============================================================================
@@ -163,18 +164,15 @@ class OpenCVCameraBackend(CameraBackendBase):
         if self.cap is None:
             return
 
-        # Exposure uniquement
+        # Exposure — DirectShow drivers use log2(seconds) for CAP_PROP_EXPOSURE
         if not bool(params.auto_exposure):
             try:
                 self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
             except Exception:
                 pass
-
-            # Beaucoup de drivers DirectShow attendent une valeur "native".
-            # Ici on garde ton exposure_ms comme commande utilisateur,
-            # en essayant d'abord la valeur telle quelle.
             try:
-                self.cap.set(cv2.CAP_PROP_EXPOSURE, float(params.exposure_ms))
+                exposure_s = max(1e-5, float(params.exposure_ms) / 1000.0)
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, math.log2(exposure_s))
             except Exception:
                 pass
         else:
@@ -221,11 +219,11 @@ class OpenCVCameraBackend(CameraBackendBase):
         if not self.connected:
             self.connect()
         self.live_running = True
-        logger.info("[OpenCVCamera] live started")
+        logger.debug("[OpenCVCamera] live started")
 
     def stop_live(self) -> None:
         self.live_running = False
-        logger.info("[OpenCVCamera] live stopped")
+        logger.debug("[OpenCVCamera] live stopped")
 
     def get_frame(self) -> np.ndarray:
         return self.snap()
@@ -242,6 +240,7 @@ class CameraController(QObject):
     def __init__(self, backend: CameraBackendBase, parent=None):
         super().__init__(parent)
         self.backend = backend
+        self._current_params: dict = {}
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_live_timer)
@@ -256,6 +255,36 @@ class CameraController(QObject):
             auto_exposure=bool(d.get("auto_exposure", False)),
         )
 
+    @staticmethod
+    def _apply_roi(img: np.ndarray, params: dict) -> np.ndarray:
+        if not params.get("roi_enabled", False):
+            return img
+        h_img, w_img = img.shape[:2]
+        x = max(0, min(int(params.get("roi_x", 0)), w_img - 1))
+        y = max(0, min(int(params.get("roi_y", 0)), h_img - 1))
+        w = max(1, min(int(params.get("roi_width", w_img)), w_img - x))
+        h = max(1, min(int(params.get("roi_height", h_img)), h_img - y))
+        return img[y:y + h, x:x + w]
+
+    @staticmethod
+    def _apply_binning(img: np.ndarray, params: dict) -> np.ndarray:
+        try:
+            b = max(1, int(str(params.get("binning", "1x1")).lower().split("x")[0]))
+        except Exception:
+            b = 1
+        if b <= 1:
+            return img
+        h, w = img.shape[:2]
+        h_b, w_b = h // b, w // b
+        if img.ndim == 2:
+            return img[:h_b * b, :w_b * b].reshape(h_b, b, w_b, b).mean(axis=(1, 3)).astype(img.dtype)
+        # RGB/colour: bin each channel independently
+        ch = img.shape[2]
+        out = np.empty((h_b, w_b, ch), dtype=np.float32)
+        for c in range(ch):
+            out[:, :, c] = img[:h_b * b, :w_b * b, c].reshape(h_b, b, w_b, b).mean(axis=(1, 3))
+        return np.clip(out, 0, np.iinfo(img.dtype).max if np.issubdtype(img.dtype, np.integer) else out.max()).astype(img.dtype)
+
     def connect_camera(self):
         self.backend.connect()
         self.status_changed.emit("Connected")
@@ -265,6 +294,15 @@ class CameraController(QObject):
         self.backend.disconnect()
         self.status_changed.emit("Disconnected")
 
+    def reconnect_camera(self):
+        self.stop_live()
+        try:
+            self.backend.disconnect()
+        except Exception:
+            pass
+        self.backend.connect()
+        self.status_changed.emit("Reconnected")
+
     def list_binning(self):
         return list(self.backend.list_binning())
 
@@ -273,6 +311,7 @@ class CameraController(QObject):
 
     @Slot(dict)
     def apply_parameters(self, widget_params: dict):
+        self._current_params = dict(widget_params)
         params = self._params_from_widget_dict(widget_params)
         self.backend.set_parameters(params)
 
@@ -282,6 +321,8 @@ class CameraController(QObject):
             self.connect_camera()
             self.apply_parameters(widget_params)
             img = self.backend.snap()
+            img = self._apply_roi(img, widget_params)
+            img = self._apply_binning(img, widget_params)
             self.frame_ready.emit(img)
             self.status_changed.emit("Snap done")
         except Exception as e:
@@ -317,6 +358,8 @@ class CameraController(QObject):
     def _on_live_timer(self):
         try:
             img = self.backend.get_frame()
+            img = self._apply_roi(img, self._current_params)
+            img = self._apply_binning(img, self._current_params)
             self.frame_ready.emit(img)
         except Exception as e:
             self.stop_live()

@@ -160,6 +160,8 @@ class SpectroWidget(QWidget):
     - Raman     : bouton activable + bandeau compact + graphe du spectre
     """
     sigBrillouinRoiChanged = Signal(dict)
+    sigBrillouinReconnectRequested = Signal()
+    sigBrillouinSaveRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -212,154 +214,117 @@ class SpectroWidget(QWidget):
         brillouin_controls_layout.setContentsMargins(8, 6, 8, 6)
         brillouin_controls_layout.setSpacing(4)
 
-        brillouin_controls_row1 = QHBoxLayout()
-        brillouin_controls_row1.setContentsMargins(0, 0, 0, 0)
-        brillouin_controls_row1.setSpacing(6)
+        # ---- Rangée 1 : snap / live / stop / save / reconnect / status
+        row_1 = QHBoxLayout()
+        row_1.setContentsMargins(0, 0, 0, 0)
+        row_1.setSpacing(6)
+        brillouin_controls_layout.addLayout(row_1)
 
-        brillouin_controls_row2 = QHBoxLayout()
-        brillouin_controls_row2.setContentsMargins(0, 0, 0, 0)
-        brillouin_controls_row2.setSpacing(6)
-
-        brillouin_controls_layout.addLayout(brillouin_controls_row1)
-        brillouin_controls_layout.addLayout(brillouin_controls_row2)
+        # Kuro only supports Mono16 — combo kept as hidden attr for API compatibility
+        self.combo_brillouin_pixel_format = QComboBox()
+        self.combo_brillouin_pixel_format.addItems(["Mono16"])
+        self.combo_brillouin_pixel_format.setVisible(False)
 
         self.button_brillouin_snap = QPushButton("Snap")
         self.button_brillouin_snap.setStyleSheet(_BUTTON_STYLE)
         self.button_brillouin_snap.setFixedWidth(58)
-        brillouin_controls_row1.addWidget(self.button_brillouin_snap)
+        row_1.addWidget(self.button_brillouin_snap)
 
         self.button_brillouin_live = QPushButton("Live")
         self.button_brillouin_live.setCheckable(True)
         self.button_brillouin_live.setStyleSheet(_BUTTON_STYLE_TOGGLE)
         self.button_brillouin_live.setFixedWidth(58)
-        brillouin_controls_row1.addWidget(self.button_brillouin_live)
+        row_1.addWidget(self.button_brillouin_live)
 
         self.button_brillouin_stop = QPushButton("Stop")
         self.button_brillouin_stop.setStyleSheet(_BUTTON_STYLE)
         self.button_brillouin_stop.setFixedWidth(52)
-        brillouin_controls_row1.addWidget(self.button_brillouin_stop)
+        row_1.addWidget(self.button_brillouin_stop)
+
+        self.button_brillouin_save = QPushButton("Save")
+        self.button_brillouin_save.setStyleSheet(_BUTTON_STYLE)
+        self.button_brillouin_save.setFixedWidth(52)
+        row_1.addWidget(self.button_brillouin_save)
+
+        self.button_brillouin_reconnect = QPushButton("Reconnect")
+        self.button_brillouin_reconnect.setStyleSheet(_BUTTON_STYLE)
+        row_1.addWidget(self.button_brillouin_reconnect)
 
         self.label_brillouin_status = QLabel("Idle")
         self.label_brillouin_status.setStyleSheet(_STATUS_VALUE_STYLE)
-        self.label_brillouin_status.setMinimumWidth(42)
-        brillouin_controls_row1.addWidget(self.label_brillouin_status)
+        self.label_brillouin_status.setMinimumWidth(60)
+        row_1.addWidget(self.label_brillouin_status)
 
-        exposure_label = QLabel("Exposure")
-        brillouin_controls_row1.addWidget(exposure_label)
+        row_1.addStretch(1)
 
+        # ---- Rangée 2 : exposure / auto / binning / ROI
+        row_2 = QHBoxLayout()
+        row_2.setContentsMargins(0, 0, 0, 0)
+        row_2.setSpacing(6)
+        brillouin_controls_layout.addLayout(row_2)
+
+        row_2.addWidget(QLabel("Exposure"))
         self.spin_brillouin_exposure_ms = QDoubleSpinBox()
         self.spin_brillouin_exposure_ms.setDecimals(3)
         self.spin_brillouin_exposure_ms.setRange(0.001, 1_000_000.0)
         self.spin_brillouin_exposure_ms.setValue(10.0)
         self.spin_brillouin_exposure_ms.setSingleStep(1.0)
-        self.spin_brillouin_exposure_ms.setFixedWidth(78)
+        self.spin_brillouin_exposure_ms.setFixedWidth(86)
         _apply_spinbox_palette(self.spin_brillouin_exposure_ms)
-        brillouin_controls_row1.addWidget(self.spin_brillouin_exposure_ms)
+        row_2.addWidget(self.spin_brillouin_exposure_ms)
 
-        exposure_unit_label = QLabel("(ms)")
-        exposure_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
-        brillouin_controls_row1.addWidget(exposure_unit_label)
+        exp_unit = QLabel("ms")
+        exp_unit.setStyleSheet(_STATUS_VALUE_STYLE)
+        row_2.addWidget(exp_unit)
 
-        self.cb_brillouin_auto_exposure = QCheckBox("Auto Exp")
+        self.cb_brillouin_auto_exposure = QCheckBox("Auto")
         self.cb_brillouin_auto_exposure.setStyleSheet(_CHECKBOX_STYLE)
-        brillouin_controls_row1.addWidget(self.cb_brillouin_auto_exposure)
+        row_2.addWidget(self.cb_brillouin_auto_exposure)
 
-        gain_label = QLabel("Gain")
-        brillouin_controls_row1.addWidget(gain_label)
-
-        self.spin_brillouin_gain = QDoubleSpinBox()
-        self.spin_brillouin_gain.setDecimals(3)
-        self.spin_brillouin_gain.setRange(0.0, 1000.0)
-        self.spin_brillouin_gain.setValue(0.0)
-        self.spin_brillouin_gain.setSingleStep(1.0)
-        self.spin_brillouin_gain.setFixedWidth(70)
-        _apply_spinbox_palette(self.spin_brillouin_gain)
-        brillouin_controls_row1.addWidget(self.spin_brillouin_gain)
-
-        self.cb_brillouin_auto_gain = QCheckBox("Auto G")
-        self.cb_brillouin_auto_gain.setStyleSheet(_CHECKBOX_STYLE)
-        brillouin_controls_row1.addWidget(self.cb_brillouin_auto_gain)
-
-        format_label = QLabel("Format")
-        brillouin_controls_row2.addWidget(format_label)
-
-        self.combo_brillouin_pixel_format = QComboBox()
-        self.combo_brillouin_pixel_format.addItems(["Mono16", "Mono32"])
-        _apply_combo_style(self.combo_brillouin_pixel_format)
-        self.combo_brillouin_pixel_format.setMinimumWidth(86)
-        brillouin_controls_row2.addWidget(self.combo_brillouin_pixel_format)
-
-        binning_label = QLabel("Binning")
-        brillouin_controls_row2.addWidget(binning_label)
-
+        row_2.addWidget(QLabel("Binning"))
         self.combo_brillouin_binning = QComboBox()
         self.combo_brillouin_binning.addItems(["1x1", "2x2", "4x4"])
         _apply_combo_style(self.combo_brillouin_binning)
-        self.combo_brillouin_binning.setMinimumWidth(72)
-        brillouin_controls_row2.addWidget(self.combo_brillouin_binning)
-
-        trigger_label = QLabel("Trigger")
-        brillouin_controls_row2.addWidget(trigger_label)
-
-        self.combo_brillouin_trigger_mode = QComboBox()
-        self.combo_brillouin_trigger_mode.addItems(["Internal", "External", "Software"])
-        _apply_combo_style(self.combo_brillouin_trigger_mode)
-        self.combo_brillouin_trigger_mode.setMinimumWidth(90)
-        brillouin_controls_row2.addWidget(self.combo_brillouin_trigger_mode)
+        self.combo_brillouin_binning.setMinimumWidth(66)
+        row_2.addWidget(self.combo_brillouin_binning)
 
         self.cb_brillouin_roi_enabled = QCheckBox("ROI")
         self.cb_brillouin_roi_enabled.setStyleSheet(_CHECKBOX_STYLE)
-        brillouin_controls_row2.addWidget(self.cb_brillouin_roi_enabled)
+        row_2.addWidget(self.cb_brillouin_roi_enabled)
 
-        roi_x_label = QLabel("X")
-        brillouin_controls_row2.addWidget(roi_x_label)
+        for label_txt, attr, rng in (
+            ("X", "spin_brillouin_roi_x",      (0, 1199)),
+            ("Y", "spin_brillouin_roi_y",      (0, 1199)),
+            ("W", "spin_brillouin_roi_width",  (1, 1200)),
+            ("H", "spin_brillouin_roi_height", (1, 1200)),
+        ):
+            row_2.addWidget(QLabel(label_txt))
+            sp = QDoubleSpinBox()
+            sp.setDecimals(0)
+            sp.setRange(*rng)
+            sp.setValue(rng[1])
+            sp.setSingleStep(1)
+            sp.setFixedWidth(62)
+            _apply_spinbox_palette(sp)
+            row_2.addWidget(sp)
+            setattr(self, attr, sp)
 
-        self.spin_brillouin_roi_x = QDoubleSpinBox()
-        self.spin_brillouin_roi_x.setDecimals(0)
-        self.spin_brillouin_roi_x.setRange(0, 1199)
-        self.spin_brillouin_roi_x.setValue(0)
-        self.spin_brillouin_roi_x.setSingleStep(1)
-        self.spin_brillouin_roi_x.setFixedWidth(62)
-        _apply_spinbox_palette(self.spin_brillouin_roi_x)
-        brillouin_controls_row2.addWidget(self.spin_brillouin_roi_x)
+        self.button_brillouin_full_frame = QPushButton("Full Frame")
+        self.button_brillouin_full_frame.setStyleSheet(_BUTTON_STYLE)
+        self.button_brillouin_full_frame.setFixedWidth(82)
+        row_2.addWidget(self.button_brillouin_full_frame)
 
-        roi_y_label = QLabel("Y")
-        brillouin_controls_row2.addWidget(roi_y_label)
+        row_2.addStretch(1)
 
-        self.spin_brillouin_roi_y = QDoubleSpinBox()
-        self.spin_brillouin_roi_y.setDecimals(0)
-        self.spin_brillouin_roi_y.setRange(0, 1199)
-        self.spin_brillouin_roi_y.setValue(0)
-        self.spin_brillouin_roi_y.setSingleStep(1)
-        self.spin_brillouin_roi_y.setFixedWidth(62)
-        _apply_spinbox_palette(self.spin_brillouin_roi_y)
-        brillouin_controls_row2.addWidget(self.spin_brillouin_roi_y)
-
-        roi_w_label = QLabel("W")
-        brillouin_controls_row2.addWidget(roi_w_label)
-
-        self.spin_brillouin_roi_width = QDoubleSpinBox()
-        self.spin_brillouin_roi_width.setDecimals(0)
-        self.spin_brillouin_roi_width.setRange(1, 1200)
-        self.spin_brillouin_roi_width.setValue(1200)
-        self.spin_brillouin_roi_width.setSingleStep(1)
-        self.spin_brillouin_roi_width.setFixedWidth(62)
-        _apply_spinbox_palette(self.spin_brillouin_roi_width)
-        brillouin_controls_row2.addWidget(self.spin_brillouin_roi_width)
-
-        roi_h_label = QLabel("H")
-        brillouin_controls_row2.addWidget(roi_h_label)
-
-        self.spin_brillouin_roi_height = QDoubleSpinBox()
-        self.spin_brillouin_roi_height.setDecimals(0)
-        self.spin_brillouin_roi_height.setRange(1, 1200)
-        self.spin_brillouin_roi_height.setValue(1200)
-        self.spin_brillouin_roi_height.setSingleStep(1)
-        self.spin_brillouin_roi_height.setFixedWidth(62)
-        _apply_spinbox_palette(self.spin_brillouin_roi_height)
-        brillouin_controls_row2.addWidget(self.spin_brillouin_roi_height)
-
-        brillouin_controls_row2.addStretch(1)
+        # kept for API compatibility but hidden
+        self.spin_brillouin_gain = QDoubleSpinBox()
+        self.spin_brillouin_gain.setValue(0.0)
+        self.spin_brillouin_gain.setVisible(False)
+        self.cb_brillouin_auto_gain = QCheckBox()
+        self.cb_brillouin_auto_gain.setVisible(False)
+        self.combo_brillouin_trigger_mode = QComboBox()
+        self.combo_brillouin_trigger_mode.addItems(["Internal", "External", "Software"])
+        self.combo_brillouin_trigger_mode.setVisible(False)
         brillouin_section_layout.addWidget(brillouin_controls_frame)
 
         # ---- Vue image
@@ -601,8 +566,10 @@ class SpectroWidget(QWidget):
         # ==========================================================
         # Connexions
         # ==========================================================
+        self.button_brillouin_reconnect.clicked.connect(self.sigBrillouinReconnectRequested.emit)
+        self.button_brillouin_save.clicked.connect(self.sigBrillouinSaveRequested.emit)
+        self.button_brillouin_full_frame.clicked.connect(self._on_brillouin_full_frame_clicked)
         self.cb_brillouin_auto_exposure.toggled.connect(self._on_brillouin_auto_exposure_toggled)
-        self.cb_brillouin_auto_gain.toggled.connect(self._on_brillouin_auto_gain_toggled)
         self.cb_brillouin_autoscale.toggled.connect(self._on_brillouin_autoscale_toggled)
         self.cb_brillouin_lock.toggled.connect(self._on_brillouin_lock_toggled)
         self.cb_brillouin_grid.toggled.connect(self._on_brillouin_grid_toggled)
@@ -927,6 +894,29 @@ class SpectroWidget(QWidget):
     # Slots Brillouin
     # ==========================================================
     def _on_brillouin_roi_enabled_toggled(self, checked):
+        if checked:
+            full_h, full_w = self._brillouin_full_shape
+            w_def, h_def = 400, 200
+            x_def = max(0, (full_w - w_def) // 2)
+            y_def = max(0, (full_h - h_def) // 2)
+            for sp in (
+                self.spin_brillouin_roi_x,
+                self.spin_brillouin_roi_y,
+                self.spin_brillouin_roi_width,
+                self.spin_brillouin_roi_height,
+            ):
+                sp.blockSignals(True)
+            self.spin_brillouin_roi_x.setValue(x_def)
+            self.spin_brillouin_roi_y.setValue(y_def)
+            self.spin_brillouin_roi_width.setValue(w_def)
+            self.spin_brillouin_roi_height.setValue(h_def)
+            for sp in (
+                self.spin_brillouin_roi_x,
+                self.spin_brillouin_roi_y,
+                self.spin_brillouin_roi_width,
+                self.spin_brillouin_roi_height,
+            ):
+                sp.blockSignals(False)
         self._update_brillouin_roi_controls_enabled()
         self._sync_roi_item_from_controls()
         self._emit_roi_changed()
@@ -971,8 +961,14 @@ class SpectroWidget(QWidget):
     def _on_brillouin_auto_exposure_toggled(self, checked):
         self.spin_brillouin_exposure_ms.setEnabled(not bool(checked))
 
-    def _on_brillouin_auto_gain_toggled(self, checked):
-        self.spin_brillouin_gain.setEnabled(not bool(checked))
+    def _on_brillouin_full_frame_clicked(self):
+        h, w = self._brillouin_full_shape
+        self.spin_brillouin_roi_x.setValue(0)
+        self.spin_brillouin_roi_y.setValue(0)
+        self.spin_brillouin_roi_width.setValue(w)
+        self.spin_brillouin_roi_height.setValue(h)
+        self._sync_roi_item_from_controls()
+        self._emit_roi_changed()
 
     def _on_brillouin_autoscale_toggled(self, checked):
         self.brillouin_autoscale_enabled = bool(checked)

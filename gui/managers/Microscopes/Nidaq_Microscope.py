@@ -123,6 +123,10 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self._active_ao_task = None
         self._active_ai_task = None
 
+    def _log(self, msg: str):
+        from ...widgets.Log_Widget import logger
+        logger.debug(f"[NidaqMicroscope] {msg}")
+
     def _require_nidaq(self):
         if not _HAS_NIDAQ:
             raise RuntimeError(

@@ -263,6 +263,14 @@ class MockPositionerManager(PositionerManager):
         target = st.abs_pos + self.rel_delta_to_abs_delta(axis, delta)
         self._start_move(axis, target_abs=target, speed_um_s=speed_um_s)
 
+    @Slot(float, float, float, float)
+    def move_xy_to_rel(self, x_rel: float, y_rel: float, speed_x: float, speed_y: float):
+        speed = max(float(speed_x), float(speed_y), 0.001)
+        if "x" in self._state:
+            self.move_to_rel("x", float(x_rel), speed)
+        if "y" in self._state:
+            self.move_to_rel("y", float(y_rel), speed)
+
     def _start_move(self, axis: str, target_abs: float, speed_um_s: float):
         st = self._state[axis]
         st.target_abs = float(target_abs)

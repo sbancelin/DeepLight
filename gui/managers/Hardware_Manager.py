@@ -2865,7 +2865,7 @@ class HardwareManager(QObject):
             return None
 
         if self.backend_name == "nidaq":
-            logger.info("[HardwareManager] Brillouin source = PICam/Kuro")
+            logger.debug("[HardwareManager] Brillouin source = PICam/Kuro")
             cam = self._get_brillouin_camera()
             img = cam.snap(params or {})
             logger.debug(

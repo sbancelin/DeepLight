@@ -87,6 +87,7 @@ class PiCamKuroManager:
 
         self._dll_dir_handle = None
         self._last_shape = (1200, 1200)
+        self._last_binning = 1
         self._last_dtype = np.uint16
 
     # ------------------------------------------------------------------
@@ -375,66 +376,67 @@ class PiCamKuroManager:
         )
 
     def _set_pixel_format(self, params: dict):
-        fmt = str((params or {}).get("pixel_format", "Mono16")).lower()
-
-        # Pour la Kuro / PICam on force pour l’instant un chemin simple et robuste :
-        # tout ce qui n’est pas explicitement 32 bits sera acquis en 16 bits.
-        if "32" in fmt:
-            picam_fmt = PicamPixelFormat_Monochrome32Bit
-            self._last_dtype = np.uint32
-        else:
-            picam_fmt = PicamPixelFormat_Monochrome16Bit
-            self._last_dtype = np.uint16
-
-        self._check(
-            self.lib.Picam_SetParameterIntegerValue(
-                self.camera,
-                piint(PicamParameter_PixelFormat),
-                piint(picam_fmt),
-            ),
-            "Picam_SetParameterIntegerValue(PixelFormat)",
-        )
+        # Kuro only supports Monochrome16Bit natively; Mono32 is not available.
+        # PixelFormat may also be read-only on the Kuro. Always fall back to uint16.
+        self._last_dtype = np.uint16
+        try:
+            self._check(
+                self.lib.Picam_SetParameterIntegerValue(
+                    self.camera,
+                    piint(PicamParameter_PixelFormat),
+                    piint(PicamPixelFormat_Monochrome16Bit),
+                ),
+                "Picam_SetParameterIntegerValue(PixelFormat)",
+            )
+        except RuntimeError as e:
+            logger.debug(f"[PICam] PixelFormat read-only or unsupported ({e})")
 
     def _set_roi_and_binning(self, params: dict):
         sensor_h, sensor_w = self._get_sensor_shape()
         binning = self._parse_binning_factor(params)
-
-        full_w_binned = max(1, sensor_w // binning)
-        full_h_binned = max(1, sensor_h // binning)
-
         roi_enabled = bool((params or {}).get("roi_enabled", False))
 
+        # UI coordinates are in sensor pixels (unbinned).
+        # PICam expects sensor-pixel x/y/width/height; x_binning/y_binning encode the binning.
+        # All four values must be multiples of the binning factor.
         if roi_enabled:
-            x_b = int((params or {}).get("roi_x", 0) or 0)
-            y_b = int((params or {}).get("roi_y", 0) or 0)
-            w_b = int((params or {}).get("roi_width", full_w_binned) or full_w_binned)
-            h_b = int((params or {}).get("roi_height", full_h_binned) or full_h_binned)
-
-            x_b = max(0, min(x_b, full_w_binned - 1))
-            y_b = max(0, min(y_b, full_h_binned - 1))
-            w_b = max(1, min(w_b, full_w_binned - x_b))
-            h_b = max(1, min(h_b, full_h_binned - y_b))
+            x = int((params or {}).get("roi_x", 0) or 0)
+            y = int((params or {}).get("roi_y", 0) or 0)
+            w = int((params or {}).get("roi_width", sensor_w) or sensor_w)
+            h = int((params or {}).get("roi_height", sensor_h) or sensor_h)
         else:
-            x_b = 0
-            y_b = 0
-            w_b = full_w_binned
-            h_b = full_h_binned
+            x, y, w, h = 0, 0, sensor_w, sensor_h
 
-        x = int(x_b * binning)
-        y = int(y_b * binning)
-        width = int(w_b * binning)
-        height = int(h_b * binning)
+        # Snap to binning grid
+        x = (x // binning) * binning
+        y = (y // binning) * binning
+        w = max(binning, (w // binning) * binning)
+        h = max(binning, (h // binning) * binning)
 
-        roi = PicamRoi(
-            x=piint(x),
-            width=piint(width),
-            x_binning=piint(binning),
-            y=piint(y),
-            height=piint(height),
-            y_binning=piint(binning),
+        # Clamp within sensor boundaries
+        x = max(0, min(x, sensor_w - binning))
+        y = max(0, min(y, sensor_h - binning))
+        w = min(w, sensor_w - x)
+        h = min(h, sensor_h - y)
+
+        logger.debug(
+            f"[PICam] ROI: x={x} y={y} w={w} h={h} binning={binning} "
+            f"→ output {h // binning}×{w // binning}"
         )
-        roi_array = (PicamRoi * 1)(roi)
-        rois = PicamRois(roi_array=roi_array, roi_count=piint(1))
+
+        roi = PicamRoi()
+        roi.x = x
+        roi.width = w
+        roi.x_binning = 1
+        roi.y = y
+        roi.height = h
+        roi.y_binning = 1
+
+        # Keep roi_buf alive until after the DLL call (ctypes does not hold a ref internally)
+        roi_buf = (PicamRoi * 1)(roi)
+        rois = PicamRois()
+        rois.roi_array = roi_buf
+        rois.roi_count = 1
 
         self._check(
             self.lib.Picam_SetParameterRoisValue(
@@ -444,8 +446,10 @@ class PiCamKuroManager:
             ),
             "Picam_SetParameterRoisValue(Rois)",
         )
+        del rois  # roi_buf still alive as local variable
 
-        self._last_shape = (int(h_b), int(w_b))
+        self._last_shape = (h, w)
+        self._last_binning = binning
 
     def apply_parameters(self, params: dict | None):
         params = dict(params or {})
@@ -501,8 +505,9 @@ class PiCamKuroManager:
 
         image = arr[:expected].reshape((h, w)).astype(np.float32, copy=False)
 
-        logger.debug(
-            f"[PICam] snap ok shape={image.shape} dtype={image.dtype} "
-            f"min={float(image.min())} max={float(image.max())}"
-        )
+        b = self._last_binning
+        if b > 1:
+            h_b, w_b = h // b, w // b
+            image = image[:h_b * b, :w_b * b].reshape(h_b, b, w_b, b).sum(axis=(1, 3)).astype(np.float32)
+
         return image

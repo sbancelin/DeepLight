@@ -98,6 +98,8 @@ class LogWidget(QWidget):
         logger.message_logged.connect(self._append)
 
     def _append(self, html: str, level: str):
+        if level == "debug":
+            return
         cursor = self.text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.text_edit.setTextCursor(cursor)

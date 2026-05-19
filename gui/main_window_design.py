@@ -325,7 +325,7 @@ class Ui_MainWindowDesign:
         self.histogram_panel = CollapsiblePanel("Histogram", self.histogram_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.log_panel = CollapsiblePanel("Logs", self.log_widget, collapsed=False, preferred_content_height=200, parent=self.right_panel_dock.container)
-        
+
         self.right_panel_dock.add_panel(self.spectro_panel)
         self.right_panel_dock.add_panel(self.analog_panel)
         self.right_panel_dock.add_panel(self.stepper_panel)

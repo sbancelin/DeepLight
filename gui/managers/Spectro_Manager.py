@@ -10,7 +10,7 @@ class _BrillouinLiveWorker(QObject):
     def __init__(self, hardware, params=None):
         super().__init__()
         self.hardware = hardware
-        self.params = dict(params or {})
+        self.params = params if params is not None else {}
         self._running = False
 
     @Slot()
@@ -445,6 +445,10 @@ class SpectroManager(QObject):
 
     def is_brillouin_live_running(self) -> bool:
         return bool(self._brillouin_live_running)
+
+    def update_brillouin_live_params(self, params: dict):
+        if self._brillouin_live_running and self._brillouin_live_params is not None:
+            self._brillouin_live_params.update(params)
 
     def is_raman_live_running(self) -> bool:
         return bool(self._raman_live_running)

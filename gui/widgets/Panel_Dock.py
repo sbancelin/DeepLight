@@ -37,12 +37,17 @@ class PanelDock(QDockWidget):
         self.scroll.setWidget(self.container)
         root_layout.addWidget(self.scroll)
 
+        self._root_layout = root_layout
         self.setWidget(root)
 
     def add_panel(self, panel):
         self.container_layout.addWidget(panel)
         if hasattr(panel, "toggled"):
             panel.toggled.connect(self._refresh_scroll_area)
+
+    def set_bottom_widget(self, widget):
+        """Ajoute un widget fixe sous la zone scrollable (non scrollable)."""
+        self._root_layout.addWidget(widget)
 
     def _refresh_scroll_area(self):
         self.container.adjustSize()
