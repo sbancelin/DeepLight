@@ -125,13 +125,17 @@ class SaveManager:
 
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["linear_index", "z_index", "y_index", "x_index", "x_um", "y_um", "z_um"])
+            writer.writerow(["linear_index", "t_index", "z_index", "y_index", "x_index", "x_um", "y_um", "z_um"])
 
             n = min(len(order), len(pos_um))
             for i in range(n):
-                z_idx, y_idx, x_idx = [int(v) for v in order[i]]
+                row_idx = order[i]
+                if len(row_idx) == 4:
+                    t_idx, z_idx, y_idx, x_idx = int(row_idx[0]), int(row_idx[1]), int(row_idx[2]), int(row_idx[3])
+                else:
+                    t_idx, z_idx, y_idx, x_idx = 0, int(row_idx[0]), int(row_idx[1]), int(row_idx[2])
                 x_um, y_um, z_um = [float(v) for v in pos_um[i]]
-                writer.writerow([i, z_idx, y_idx, x_idx, x_um, y_um, z_um])
+                writer.writerow([i, t_idx, z_idx, y_idx, x_idx, x_um, y_um, z_um])
 
     # ---------- manual save (what you see) ----------
 
