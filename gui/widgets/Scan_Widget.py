@@ -113,45 +113,59 @@ CHECKBOX_STYLE = """
     }
 """
 
-LASER_MODE_BUTTON_STYLE = """
+LASER_TOGGLE_STYLE = """
     QPushButton {
-        background-color: #333;
-        color: white;
+        background-color: #2c2c2c;
+        color: #aaa;
         border: 1px solid #555;
-        border-radius: 6px;
-        padding: 6px;
+        border-right: none;
+        border-top-left-radius: 5px;
+        border-bottom-left-radius: 5px;
+        border-top-right-radius: 0px;
+        border-bottom-right-radius: 0px;
+        padding: 2px 8px;
         font-weight: bold;
     }
     QPushButton:checked {
         background-color: #2E8B57;
-        border: 1px solid #58d68d;
+        color: white;
+        border: 1px solid #3AB16F;
+        border-right: none;
     }
-    QPushButton:hover {
-        background-color: #444;
+    QPushButton:hover:!checked {
+        background-color: #3a3a3a;
+        color: #ddd;
     }
     QPushButton:checked:hover {
         background-color: #3AB16F;
+        color: white;
     }
 """
 
-SAMPLE_MODE_BUTTON_STYLE = """
+SAMPLE_TOGGLE_STYLE = """
     QPushButton {
-        background-color: #333;
-        color: white;
+        background-color: #2c2c2c;
+        color: #aaa;
         border: 1px solid #555;
-        border-radius: 6px;
-        padding: 6px;
+        border-top-right-radius: 5px;
+        border-bottom-right-radius: 5px;
+        border-top-left-radius: 0px;
+        border-bottom-left-radius: 0px;
+        padding: 2px 8px;
         font-weight: bold;
     }
     QPushButton:checked {
         background-color: #FF7700;
+        color: white;
         border: 1px solid #FF9200;
     }
-    QPushButton:hover {
-        background-color: #444;
+    QPushButton:hover:!checked {
+        background-color: #3a3a3a;
+        color: #ddd;
     }
     QPushButton:checked:hover {
         background-color: #FF9200;
+        color: white;
     }
 """
 
@@ -390,11 +404,11 @@ class ScanWidget(QWidget):
         mode_group = QGroupBox("", self)
         mode_group.setMinimumWidth(0)
         mode_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        mode_group.setStyleSheet(GROUPBOX_STYLE)
+        mode_group.setStyleSheet("QGroupBox { border: none; margin: 0; padding: 2px; }")
 
         mode_layout = QHBoxLayout(mode_group)
-        mode_layout.setContentsMargins(6, 6, 6, 6)
-        mode_layout.setSpacing(6)
+        mode_layout.setContentsMargins(4, 1, 4, 1)
+        mode_layout.setSpacing(0)
 
         self.laser_mode_button = QPushButton("Laser scanning")
         self.laser_mode_button.setCheckable(True)
@@ -405,7 +419,6 @@ class ScanWidget(QWidget):
         self.sample_mode_button.setChecked(False)
 
         for btn in (self.laser_mode_button, self.sample_mode_button):
-            btn.setMinimumHeight(30)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         mode_layout.addWidget(self.laser_mode_button)
@@ -805,7 +818,27 @@ class ScanWidget(QWidget):
         dialog = SettingsDialog("Scan - Settings", self)
         setup_scan_settings_dialog(dialog)
         dialog.exec()
-    
+
+    def embed_save_section(self, save_widget):
+        """Embeds the save widget as a grouped section at the bottom of the scan panel."""
+        count = self.main_layout.count()
+        if count > 0:
+            last = self.main_layout.itemAt(count - 1)
+            if last and last.spacerItem() is not None:
+                self.main_layout.removeItem(last)
+
+        save_group = QGroupBox("", self)
+        save_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        save_group.setStyleSheet(GROUPBOX_STYLE)
+
+        group_layout = QVBoxLayout(save_group)
+        group_layout.setContentsMargins(4, 4, 4, 4)
+        group_layout.setSpacing(0)
+        group_layout.addWidget(save_widget)
+
+        self.main_layout.addWidget(save_group)
+        self.main_layout.addStretch()
+
     def set_settings_manager(self, manager):
         """Injection du AxisSettingsManager partagé."""
         self.axis_settings_manager = manager
@@ -970,8 +1003,8 @@ class ScanWidget(QWidget):
         self.laser_mode_button.setChecked(self.scan_kind == "laser")
         self.sample_mode_button.setChecked(self.scan_kind == "sample")
 
-        self.laser_mode_button.setStyleSheet(LASER_MODE_BUTTON_STYLE)
-        self.sample_mode_button.setStyleSheet(SAMPLE_MODE_BUTTON_STYLE)
+        self.laser_mode_button.setStyleSheet(LASER_TOGGLE_STYLE)
+        self.sample_mode_button.setStyleSheet(SAMPLE_TOGGLE_STYLE)
 
         self.laser_mode_button.blockSignals(False)
         self.sample_mode_button.blockSignals(False)
@@ -1020,10 +1053,8 @@ class ScanWidget(QWidget):
         self.samples_per_pixel_edit.setText("1")
         self.samples_per_pixel_edit.setProperty("last_valid_text", "1")
 
-        self.bidirectional_button.setChecked(False)
+        self.bidirectional_button.setChecked(True)
         self.bidirectional_shift_edit.setText("0")
-        self.bidirectional_shift_edit.setEnabled(False)
-        self._set_disabled_lineedit_style(self.bidirectional_shift_edit)
         self.bidirectional_shift_edit.setProperty("last_valid_text", "0")
 
         for i in range(2):
@@ -1678,6 +1709,12 @@ class ScanWidget(QWidget):
             max_voltages[axis_name] = float(s.get("vmax", defaults.get("vmax", 10.0)))
             velocity_max[axis_name] = float(s.get("vel_max", defaults.get("vel_max", 1.0)))
 
+        # Backlash X pour le mode sample serpentin (lu depuis les settings X-Stage)
+        backlash_x_um = 1.2
+        if self.axis_settings_manager is not None:
+            x_stage_cfg = self.axis_settings_manager.get_axis_settings("X-Stage")
+            backlash_x_um = max(0.0, float(x_stage_cfg.get("backlash_um", 1.2)))
+
         # Récupérer les autres paramètres
         bidirectional_scan = self.bidirectional_button.isChecked()
         bidirectional_shift_px = self._read_int_edit(self.bidirectional_shift_edit, 0) if bidirectional_scan else 0
@@ -1770,6 +1807,7 @@ class ScanWidget(QWidget):
             "frame_flyback_time_s": frame_flyback_time_s,
             "bidirectional_scan": bidirectional_scan,
             "bidirectional_shift_px": bidirectional_shift_px,
+            "backlash_x_um": backlash_x_um,
             "repetitions": repetitions,
             "delay_between_rep": delay_between_rep,
             "laser_off_between_rep": laser_off_between_rep,

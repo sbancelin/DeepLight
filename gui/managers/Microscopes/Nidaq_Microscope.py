@@ -1009,6 +1009,15 @@ class NidaqMicroscope(MicroscopeBackendBase):
             iy = int(event.iy)
             ix = int(event.ix)
 
+            # Pré-positionnement backlash : déplacer sans acquérir
+            if event.is_backlash:
+                if callable(move_xy_blocking):
+                    move_xy_blocking(x_target, y_target, float(speed_x), float(speed_y), timeout_s=5.0)
+                else:
+                    self._emit_sample_axis_move(event.x_axis_name, x_target, "sample_pixel_x", 0.0)
+                    self._emit_sample_axis_move(event.y_axis_name, y_target, "sample_pixel_y", 0.0)
+                continue
+
             t_sched_ms = ((dwell_s + settle_s) * float(pixel_done)) * 1e3
 
             emit_status({

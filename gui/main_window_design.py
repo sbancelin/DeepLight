@@ -259,9 +259,12 @@ class Ui_MainWindowDesign:
 
         self.scan_widget = ScanWidget()
         self.detector_widget = DetectorWidget()
-        self.save_widget = SaveWidget() 
+        self.save_widget = SaveWidget()
         self.laser_widget = LaserWidget()
         self.positioner_widget = PositionerWidget()
+        self.spectro_panel_widget = SpectroPanelWidget()
+
+        self.scan_widget.embed_save_section(self.save_widget)
 
         self.scan_panel = CollapsiblePanel(
             "Scan",
@@ -270,13 +273,19 @@ class Ui_MainWindowDesign:
             settings_callback=self.scan_widget.open_settings_dialog,
             parent=self.left_panel_dock.container
         )
+        self.spectro_panel = CollapsiblePanel(
+            "Spectro",
+            self.spectro_panel_widget,
+            collapsed=False,
+            settings_callback=self.spectro_panel_widget.open_settings_dialog,
+            parent=self.left_panel_dock.container
+        )
         self.detector_panel = CollapsiblePanel(
             title="Detectors",
             content_widget=self.detector_widget,
             collapsed=False,
             parent=self.left_panel_dock.container
         )
-        self.save_panel = CollapsiblePanel("Save", self.save_widget, collapsed=False, parent=self.left_panel_dock.container)
         self.laser_panel = CollapsiblePanel(
             title="Lasers",
             content_widget=self.laser_widget,
@@ -293,17 +302,16 @@ class Ui_MainWindowDesign:
         )
 
         self.left_panel_dock.add_panel(self.scan_panel)
+        self.left_panel_dock.add_panel(self.spectro_panel)
         self.left_panel_dock.add_panel(self.positioner_panel)
         self.left_panel_dock.add_panel(self.detector_panel)
         self.left_panel_dock.add_panel(self.laser_panel)
-        self.left_panel_dock.add_panel(self.save_panel)
 
         MainWindowDesign.addDockWidget(Qt.LeftDockWidgetArea, self.left_panel_dock)
 
 ##################  Right panel dock ####################
         self.right_panel_dock = PanelDock("Helpers", MainWindowDesign)
 
-        self.spectro_panel_widget = SpectroPanelWidget()
         self.analog_out_widget = AnalogOutVisualizerWidget()
         self.visu_step_widget = StepperVisualizerWidget()
         self.nyquist_widget = NyquistWidget()
@@ -312,12 +320,6 @@ class Ui_MainWindowDesign:
         self.frc_widget = FRCWidget()
         self.log_widget = LogWidget()
 
-        self.spectro_panel = CollapsiblePanel(
-            "Spectro",
-            self.spectro_panel_widget,
-            collapsed=False,
-            parent=self.right_panel_dock.container
-        )
         self.analog_panel = CollapsiblePanel("Analog Visualizer", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
         self.stepper_panel = CollapsiblePanel("Stepper Visualizer", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
@@ -326,7 +328,6 @@ class Ui_MainWindowDesign:
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.log_panel = CollapsiblePanel("Logs", self.log_widget, collapsed=False, preferred_content_height=200, parent=self.right_panel_dock.container)
 
-        self.right_panel_dock.add_panel(self.spectro_panel)
         self.right_panel_dock.add_panel(self.analog_panel)
         self.right_panel_dock.add_panel(self.stepper_panel)
         self.right_panel_dock.add_panel(self.nyquist_panel)

@@ -213,7 +213,7 @@ class CameraWidget(QWidget):
         self.button_save.setFixedWidth(52)
         row_1.addWidget(self.button_save)
 
-        self.button_reconnect = QPushButton("Reconnect")
+        self.button_reconnect = QPushButton("Connect")
         self.button_reconnect.setStyleSheet(_BUTTON_STYLE)
         row_1.addWidget(self.button_reconnect)
 

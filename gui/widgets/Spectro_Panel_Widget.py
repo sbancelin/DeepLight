@@ -1,12 +1,10 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QSizePolicy, QLineEdit, QFileDialog,
-    QPlainTextEdit, QComboBox, QMessageBox, QFrame, QProgressBar, QCheckBox
+    QPlainTextEdit, QComboBox, QMessageBox, QFrame, QProgressBar
 )
 from PySide6.QtCore import Signal, QDate, Qt
-from PySide6.QtGui import QIcon
-
-from PySide6.QtGui import QDoubleValidator, QIntValidator
+from PySide6.QtGui import QIcon, QDoubleValidator, QIntValidator
 
 import os
 
@@ -117,45 +115,16 @@ PROGRESS_BAR_STYLE = """
 
 HEADER_LABEL_STYLE = "color: white; font-weight: bold; padding-bottom: 2px;"
 
-CHECKBOX_STYLE = """
-QCheckBox {
-    color: white;
-}
-QCheckBox::indicator {
-    width: 12px;
-    height: 12px;
-    background-color: #333;
-    border: 1px solid #555;
-    border-radius: 3px;
-}
-QCheckBox::indicator:checked {
-    background-color: #2E8B57;
-    border: 1px solid #555;
-    border-radius: 3px;
-}
-QCheckBox::indicator:checked:hover {
-    background-color: #3AB16F;
-    border: 1px solid #777;
-}
-QCheckBox::indicator:unchecked:hover {
-    background-color: #444;
-    border: 1px solid #777;
-}
-"""
-
 
 class SpectroPanelWidget(QWidget):
     """
     Panneau d'acquisition Spectro indépendant de la logique Scan raster.
-    Style aligné sur ScanWidget et SaveWidget.
     """
 
     sigSpectroModeChanged = Signal(bool, bool)   # brillouin, raman
     sigAcquireClicked = Signal()
     sigStopClicked = Signal()
 
-    # Mock Brillouin aligné sur KURO full frame
-    # et sauvegarde mock en float32
     _BRILLOUIN_IMG_H = 1200
     _BRILLOUIN_IMG_W = 1200
     _BRILLOUIN_BYTES_PER_PIXEL = 4
@@ -165,6 +134,11 @@ class SpectroPanelWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # Paramètres de settings (non exposés dans l'UI principale)
+        self._settle_ms = 10.0
+        self._brillouin_exposure_ms = 100.0
+        self._raman_exposure_ms = 100.0
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
@@ -218,7 +192,7 @@ class SpectroPanelWidget(QWidget):
         content_layout.addWidget(modes_frame)
 
         # ==========================================================
-        # Mapping
+        # Mapping  (X / Y / Z en µm,  T en s)
         # ==========================================================
         mapping_frame = QFrame()
         mapping_frame.setStyleSheet(PANEL_FRAME_STYLE)
@@ -232,176 +206,125 @@ class SpectroPanelWidget(QWidget):
         mapping_layout.setColumnStretch(2, 1)
         mapping_layout.setColumnStretch(3, 1)
 
-        headers = ["Axis", "Size (µm)", "#Pix", "Step (µm)"]
-        for col, header in enumerate(headers):
-            label = QLabel(header)
-            label.setStyleSheet(HEADER_LABEL_STYLE)
-            label.setAlignment(Qt.AlignCenter)
-            mapping_layout.addWidget(label, 0, col)
+        # En-têtes sans unités (X/Y/Z = µm, T = s)
+        for col, header in enumerate(["Axis", "Size", "#Pix", "Step"]):
+            lbl = QLabel(header)
+            lbl.setStyleSheet(HEADER_LABEL_STYLE)
+            lbl.setAlignment(Qt.AlignCenter)
+            mapping_layout.addWidget(lbl, 0, col)
 
-        float_validator = QDoubleValidator(bottom=0.0)
-        int_validator = QIntValidator(1, 100000)
+        float_val = QDoubleValidator(bottom=0.0)
+        int_val = QIntValidator(1, 100000)
 
         # ---- X
-        mapping_layout.addWidget(QLabel("X"), 1, 0)
-
+        mapping_layout.addWidget(QLabel("X (µm)"), 1, 0)
         self.size_x_edit = QLineEdit("100")
         self.size_x_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.size_x_edit.setValidator(float_validator)
+        self.size_x_edit.setValidator(float_val)
         mapping_layout.addWidget(self.size_x_edit, 1, 1)
-
         self.pix_x_edit = QLineEdit("11")
         self.pix_x_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.pix_x_edit.setValidator(int_validator)
+        self.pix_x_edit.setValidator(int_val)
         mapping_layout.addWidget(self.pix_x_edit, 1, 2)
-
-        self.step_x_edit = QLineEdit("1.000")
+        self.step_x_edit = QLineEdit("0.000")
         self.step_x_edit.setReadOnly(True)
         self.step_x_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
         mapping_layout.addWidget(self.step_x_edit, 1, 3)
 
         # ---- Y
-        mapping_layout.addWidget(QLabel("Y"), 2, 0)
-
+        mapping_layout.addWidget(QLabel("Y (µm)"), 2, 0)
         self.size_y_edit = QLineEdit("100")
         self.size_y_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.size_y_edit.setValidator(float_validator)
+        self.size_y_edit.setValidator(float_val)
         mapping_layout.addWidget(self.size_y_edit, 2, 1)
-
         self.pix_y_edit = QLineEdit("11")
         self.pix_y_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.pix_y_edit.setValidator(int_validator)
+        self.pix_y_edit.setValidator(int_val)
         mapping_layout.addWidget(self.pix_y_edit, 2, 2)
-
-        self.step_y_edit = QLineEdit("1.000")
+        self.step_y_edit = QLineEdit("0.000")
         self.step_y_edit.setReadOnly(True)
         self.step_y_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
         mapping_layout.addWidget(self.step_y_edit, 2, 3)
 
         # ---- Z
-        mapping_layout.addWidget(QLabel("Z"), 3, 0)
-
+        mapping_layout.addWidget(QLabel("Z (µm)"), 3, 0)
         self.size_z_edit = QLineEdit("0")
         self.size_z_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.size_z_edit.setValidator(float_validator)
+        self.size_z_edit.setValidator(float_val)
         mapping_layout.addWidget(self.size_z_edit, 3, 1)
-
         self.pix_z_edit = QLineEdit("1")
         self.pix_z_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.pix_z_edit.setValidator(int_validator)
+        self.pix_z_edit.setValidator(int_val)
         mapping_layout.addWidget(self.pix_z_edit, 3, 2)
-
         self.step_z_edit = QLineEdit("0.000")
         self.step_z_edit.setReadOnly(True)
         self.step_z_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
         mapping_layout.addWidget(self.step_z_edit, 3, 3)
 
-        # ---- T (time lapse)
-        self.cb_timelapse = QCheckBox("Time lapse")
-        self.cb_timelapse.setStyleSheet(CHECKBOX_STYLE)
-        mapping_layout.addWidget(self.cb_timelapse, 4, 0, 1, 2)
+        # ---- T  (taille calculée, #pix et step éditables)
+        t_label = QLabel("T (s)")
+        t_label.setToolTip(
+            "Time lapse\n"
+            "#Pix  = nombre d'acquisitions\n"
+            "Step  = intervalle entre acquisitions (s)\n"
+            "Size  = durée totale calculée = (#Pix - 1) × Step"
+        )
+        mapping_layout.addWidget(t_label, 4, 0)
 
-        self.repeats_edit = QLineEdit("5")
-        self.repeats_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.repeats_edit.setValidator(QIntValidator(1, 100000))
-        self.repeats_edit.setEnabled(False)
-        mapping_layout.addWidget(self.repeats_edit, 4, 2)
+        self.total_t_edit = QLineEdit("0.0")
+        self.total_t_edit.setReadOnly(True)
+        self.total_t_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
+        self.total_t_edit.setToolTip("Durée totale (calculée)")
+        mapping_layout.addWidget(self.total_t_edit, 4, 1)
 
-        delay_container = QWidget()
-        delay_container.setStyleSheet("background: transparent;")
-        delay_hbox = QHBoxLayout(delay_container)
-        delay_hbox.setContentsMargins(0, 0, 0, 0)
-        delay_hbox.setSpacing(4)
-        self.delay_s_edit = QLineEdit("60")
-        self.delay_s_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.delay_s_edit.setValidator(QDoubleValidator(0.0, 1e9, 1))
-        self.delay_s_edit.setEnabled(False)
-        delay_hbox.addWidget(self.delay_s_edit)
-        delay_unit = QLabel("s")
-        delay_unit.setStyleSheet("color: #aaa; border: none; background: transparent;")
-        delay_hbox.addWidget(delay_unit)
-        mapping_layout.addWidget(delay_container, 4, 3)
+        self.pix_t_edit = QLineEdit("1")
+        self.pix_t_edit.setStyleSheet(LINE_EDIT_STYLE)
+        self.pix_t_edit.setValidator(int_val)
+        self.pix_t_edit.setToolTip("Nombre d'acquisitions temporelles")
+        mapping_layout.addWidget(self.pix_t_edit, 4, 2)
+
+        self.step_t_edit = QLineEdit("0")
+        self.step_t_edit.setStyleSheet(LINE_EDIT_STYLE)
+        self.step_t_edit.setValidator(QDoubleValidator(0.0, 1e9, 1))
+        self.step_t_edit.setToolTip("Intervalle entre acquisitions (s)")
+        mapping_layout.addWidget(self.step_t_edit, 4, 3)
 
         content_layout.addWidget(mapping_frame)
 
         # ==========================================================
-        # Acquisition
+        # Estimations
         # ==========================================================
-        acq_frame = QFrame()
-        acq_frame.setStyleSheet(PANEL_FRAME_STYLE)
-        acq_layout = QGridLayout(acq_frame)
-        acq_layout.setContentsMargins(6, 6, 6, 6)
-        acq_layout.setHorizontalSpacing(6)
-        acq_layout.setVerticalSpacing(4)
+        est_frame = QFrame()
+        est_frame.setStyleSheet(PANEL_FRAME_STYLE)
+        est_layout = QGridLayout(est_frame)
+        est_layout.setContentsMargins(6, 6, 6, 6)
+        est_layout.setHorizontalSpacing(6)
+        est_layout.setVerticalSpacing(4)
+        est_layout.setColumnStretch(0, 0)
+        est_layout.setColumnStretch(1, 1)
+        est_layout.setColumnStretch(2, 0)
+        est_layout.setColumnStretch(3, 1)
 
-        acq_layout.setColumnStretch(0, 0)
-        acq_layout.setColumnStretch(1, 1)
-        acq_layout.setColumnStretch(2, 0)
-        acq_layout.setColumnStretch(3, 1)
-
-        exposure_label = QLabel("Exposure (ms)")
-        exposure_label.setStyleSheet("color: white; font-weight: bold;")
-        acq_layout.addWidget(exposure_label, 0, 0)
-
-        self.exposure_edit = QLineEdit("100")
-        self.exposure_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.exposure_edit.setValidator(float_validator)
-        acq_layout.addWidget(self.exposure_edit, 0, 1)
-
-        settle_label = QLabel("Settle (ms)")
-        settle_label.setStyleSheet("color: white; font-weight: bold;")
-        acq_layout.addWidget(settle_label, 0, 2)
-
-        self.settle_edit = QLineEdit("10")
-        self.settle_edit.setStyleSheet(LINE_EDIT_STYLE)
-        self.settle_edit.setValidator(float_validator)
-        acq_layout.addWidget(self.settle_edit, 0, 3)
-
-        estimated_time_label = QLabel("Estimated time")
-        estimated_time_label.setStyleSheet("color: white; font-weight: bold;")
-        acq_layout.addWidget(estimated_time_label, 1, 0)
-
+        lbl_time = QLabel("Estimated time")
+        lbl_time.setStyleSheet("color: white; font-weight: bold;")
+        est_layout.addWidget(lbl_time, 0, 0)
         self.estimated_time_edit = QLineEdit("—")
         self.estimated_time_edit.setReadOnly(True)
         self.estimated_time_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
-        acq_layout.addWidget(self.estimated_time_edit, 1, 1)
+        est_layout.addWidget(self.estimated_time_edit, 0, 1)
 
-        estimated_size_label = QLabel("Estimated size")
-        estimated_size_label.setStyleSheet("color: white; font-weight: bold;")
-        acq_layout.addWidget(estimated_size_label, 1, 2)
-
+        lbl_size = QLabel("Estimated size")
+        lbl_size.setStyleSheet("color: white; font-weight: bold;")
+        est_layout.addWidget(lbl_size, 0, 2)
         self.estimated_size_edit = QLineEdit("—")
         self.estimated_size_edit.setReadOnly(True)
         self.estimated_size_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
-        acq_layout.addWidget(self.estimated_size_edit, 1, 3)
+        est_layout.addWidget(self.estimated_size_edit, 0, 3)
 
-        self.button_acquire = QPushButton("Acquire")
-        self.button_acquire.setIcon(QIcon("gui/Icons/REC.svg"))
-        self.button_acquire.setStyleSheet(BUTTON_STYLE)
-        self.button_acquire.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.button_acquire.clicked.connect(self._on_acquire_clicked)
-        acq_layout.addWidget(self.button_acquire, 2, 0, 1, 2)
-
-        self.button_stop = QPushButton("Stop")
-        self.button_stop.setIcon(QIcon("gui/Icons/stop.svg"))
-        self.button_stop.setStyleSheet(BUTTON_STYLE)
-        self.button_stop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.button_stop.clicked.connect(self.sigStopClicked.emit)
-        acq_layout.addWidget(self.button_stop, 2, 2, 1, 2)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("Idle")
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
-        self.progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        acq_layout.addWidget(self.progress_bar, 3, 0, 1, 4)
-
-        content_layout.addWidget(acq_frame)
+        content_layout.addWidget(est_frame)
 
         # ==========================================================
-        # Save
+        # Save  (dossier, nom, commentaires, format)
         # ==========================================================
         save_frame = QFrame()
         save_frame.setStyleSheet(PANEL_FRAME_STYLE)
@@ -409,27 +332,25 @@ class SpectroPanelWidget(QWidget):
         save_layout.setContentsMargins(6, 6, 6, 6)
         save_layout.setHorizontalSpacing(6)
         save_layout.setVerticalSpacing(4)
-
         save_layout.setColumnStretch(0, 0)
         save_layout.setColumnStretch(1, 1)
         save_layout.setColumnStretch(2, 0)
 
         current_date = QDate.currentDate()
-        year = current_date.toString("yyyy")
-        month = current_date.toString("MMMM")
-        day = current_date.toString("dd")
-        default_folder = fr"C:\Data\{year}\{month}\{day}"
+        default_folder = (
+            fr"C:\Data\{current_date.toString('yyyy')}"
+            fr"\{current_date.toString('MMMM')}"
+            fr"\{current_date.toString('dd')}"
+        )
 
         folder_label = QLabel("Folder")
         folder_label.setStyleSheet("color: white; font-weight: bold;")
         save_layout.addWidget(folder_label, 0, 0)
-
         self.folder_line_edit = QLineEdit(default_folder)
         self.folder_line_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.folder_line_edit.setMinimumWidth(0)
         self.folder_line_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         save_layout.addWidget(self.folder_line_edit, 0, 1)
-
         self.folder_button = QPushButton()
         self.folder_button.setIcon(QIcon("gui/Icons/folder.svg"))
         self.folder_button.setStyleSheet(BUTTON_STYLE)
@@ -441,7 +362,6 @@ class SpectroPanelWidget(QWidget):
         filename_label = QLabel("File Name")
         filename_label.setStyleSheet("color: white; font-weight: bold;")
         save_layout.addWidget(filename_label, 1, 0)
-
         self.filename_line_edit = QLineEdit()
         self.filename_line_edit.setPlaceholderText("Spectro acquisition name")
         self.filename_line_edit.setStyleSheet(LINE_EDIT_STYLE)
@@ -459,7 +379,6 @@ class SpectroPanelWidget(QWidget):
         format_label = QLabel("File Format")
         format_label.setStyleSheet("color: white; font-weight: bold;")
         save_layout.addWidget(format_label, 4, 0)
-
         self.format_combo = QComboBox()
         self.format_combo.addItems(["OME-TIFF", "OME-Zarr"])
         self.format_combo.setCurrentText("OME-TIFF")
@@ -471,6 +390,43 @@ class SpectroPanelWidget(QWidget):
 
         content_layout.addWidget(save_frame)
 
+        # ==========================================================
+        # Acquire / Stop / Barre de progression
+        # ==========================================================
+        acq_frame = QFrame()
+        acq_frame.setStyleSheet(PANEL_FRAME_STYLE)
+        acq_layout = QGridLayout(acq_frame)
+        acq_layout.setContentsMargins(6, 6, 6, 6)
+        acq_layout.setHorizontalSpacing(6)
+        acq_layout.setVerticalSpacing(4)
+        acq_layout.setColumnStretch(0, 1)
+        acq_layout.setColumnStretch(1, 1)
+
+        self.button_acquire = QPushButton("Acquire")
+        self.button_acquire.setIcon(QIcon("gui/Icons/REC.svg"))
+        self.button_acquire.setStyleSheet(BUTTON_STYLE)
+        self.button_acquire.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.button_acquire.clicked.connect(self._on_acquire_clicked)
+        acq_layout.addWidget(self.button_acquire, 0, 0)
+
+        self.button_stop = QPushButton("Stop")
+        self.button_stop.setIcon(QIcon("gui/Icons/stop.svg"))
+        self.button_stop.setStyleSheet(BUTTON_STYLE)
+        self.button_stop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.button_stop.clicked.connect(self.sigStopClicked.emit)
+        acq_layout.addWidget(self.button_stop, 0, 1)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("Idle")
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
+        self.progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        acq_layout.addWidget(self.progress_bar, 1, 0, 1, 2)
+
+        content_layout.addWidget(acq_frame)
+
         self.main_layout = main_layout
         self.main_layout.addWidget(content_widget)
         self.main_layout.addStretch()
@@ -481,23 +437,35 @@ class SpectroPanelWidget(QWidget):
         for edit in (
             self.size_x_edit, self.size_y_edit, self.size_z_edit,
             self.pix_x_edit, self.pix_y_edit, self.pix_z_edit,
-            self.exposure_edit, self.settle_edit,
-            self.repeats_edit, self.delay_s_edit,
+            self.pix_t_edit, self.step_t_edit,
         ):
             edit.textChanged.connect(self._update_derived_values)
-
-        self.cb_timelapse.toggled.connect(self._on_timelapse_toggled)
 
         self._update_derived_values()
         self._emit_mode_changed()
 
     # ==========================================================
-    # Slots
+    # Settings dialog
     # ==========================================================
-    def _on_timelapse_toggled(self, checked: bool):
-        self.repeats_edit.setEnabled(bool(checked))
-        self.delay_s_edit.setEnabled(bool(checked))
-        self._update_derived_values()
+    def open_settings_dialog(self):
+        from .Dialogs import SettingsDialog
+        dialog = SettingsDialog("Spectro - Settings", self)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Settle time (ms):"))
+        settle_edit = QLineEdit(str(self._settle_ms))
+        row.addWidget(settle_edit)
+        dialog.add_layout(row)
+
+        def _on_accepted():
+            try:
+                self._settle_ms = max(0.0, float(settle_edit.text().replace(",", ".")))
+            except Exception:
+                pass
+            self._update_derived_values()
+
+        dialog.accepted.connect(_on_accepted)
+        dialog.exec()
 
     # ==========================================================
     # Helpers
@@ -546,11 +514,11 @@ class SpectroPanelWidget(QWidget):
         n = float(max(n_bytes, 0.0))
         if n < 1024:
             return f"{n:.0f} B"
-        if n < 1024**2:
+        if n < 1024 ** 2:
             return f"{n / 1024:.1f} KB"
-        if n < 1024**3:
-            return f"{n / 1024**2:.1f} MB"
-        return f"{n / 1024**3:.2f} GB"
+        if n < 1024 ** 3:
+            return f"{n / 1024 ** 2:.1f} MB"
+        return f"{n / 1024 ** 3:.2f} GB"
 
     def _update_derived_values(self):
         size_x = self._safe_float(self.size_x_edit.text(), 100.0)
@@ -561,60 +529,57 @@ class SpectroPanelWidget(QWidget):
         pix_y = max(1, self._safe_int(self.pix_y_edit.text(), 11))
         pix_z = max(1, self._safe_int(self.pix_z_edit.text(), 1))
 
-        step_x = self._compute_step(size_x, pix_x)
-        step_y = self._compute_step(size_y, pix_y)
-        step_z = self._compute_step(size_z, pix_z)
+        pix_t = max(1, self._safe_int(self.pix_t_edit.text(), 1))
+        step_t_s = max(0.0, self._safe_float(self.step_t_edit.text(), 0.0))
 
-        self.step_x_edit.setText(f"{step_x:.3f}")
-        self.step_y_edit.setText(f"{step_y:.3f}")
-        self.step_z_edit.setText(f"{step_z:.3f}")
+        # X/Y/Z : step calculé depuis size/pix
+        self.step_x_edit.setText(f"{self._compute_step(size_x, pix_x):.3f}")
+        self.step_y_edit.setText(f"{self._compute_step(size_y, pix_y):.3f}")
+        self.step_z_edit.setText(f"{self._compute_step(size_z, pix_z):.3f}")
 
-        exposure_ms = self._safe_float(self.exposure_edit.text(), 100.0)
-        settle_ms = self._safe_float(self.settle_edit.text(), 10.0)
+        # T : durée totale calculée depuis pix et step
+        total_t_s = (pix_t - 1) * step_t_s if pix_t > 1 else 0.0
+        self.total_t_edit.setText(f"{total_t_s:.1f}")
 
-        timelapse_on = self.cb_timelapse.isChecked()
-        n_repeats = max(1, self._safe_int(self.repeats_edit.text(), 1)) if timelapse_on else 1
-        delay_s = max(0.0, self._safe_float(self.delay_s_edit.text(), 0.0)) if timelapse_on else 0.0
+        # Exposition : on prend le max des modes actifs
+        exposure_ms = 0.0
+        if self.button_brillouin.isChecked():
+            exposure_ms = max(exposure_ms, self._brillouin_exposure_ms)
+        if self.button_raman.isChecked():
+            exposure_ms = max(exposure_ms, self._raman_exposure_ms)
+        if not self.button_brillouin.isChecked() and not self.button_raman.isChecked():
+            exposure_ms = max(self._brillouin_exposure_ms, self._raman_exposure_ms)
 
         n_pix = pix_x * pix_y * pix_z
-        t_per_pix_s = max(0.0, exposure_ms + settle_ms) / 1000.0
+        t_per_pix_s = max(0.0, exposure_ms + self._settle_ms) / 1000.0
         scan_s = n_pix * t_per_pix_s
-        total_s = n_repeats * scan_s + max(0, n_repeats - 1) * delay_s
-        self.estimated_time_edit.setText(self._format_duration(total_s))
+        total_acq_s = pix_t * scan_s + max(0, pix_t - 1) * step_t_s
+        self.estimated_time_edit.setText(self._format_duration(total_acq_s))
 
         total_bytes = 0.0
         has_any_mode = False
 
         if self.button_brillouin.isChecked():
             roi = dict(self._brillouin_roi_state or {})
-            roi_enabled = bool(roi.get("enabled", False))
-
-            if roi_enabled:
+            if bool(roi.get("enabled", False)):
                 img_h = max(1, int(roi.get("height", self._BRILLOUIN_IMG_H)))
                 img_w = max(1, int(roi.get("width", self._BRILLOUIN_IMG_W)))
             else:
                 img_h = self._BRILLOUIN_IMG_H
                 img_w = self._BRILLOUIN_IMG_W
-
-            # dataset mock stocké en float32
             has_any_mode = True
-            brillouin_img_bytes = img_h * img_w * 4
-            total_bytes += brillouin_img_bytes * n_pix
+            total_bytes += img_h * img_w * 4 * n_pix
 
         if self.button_raman.isChecked():
             has_any_mode = True
-            raman_spec_bytes = self._RAMAN_POINTS * self._RAMAN_BYTES_PER_POINT
-            total_bytes += raman_spec_bytes * n_pix
+            total_bytes += self._RAMAN_POINTS * self._RAMAN_BYTES_PER_POINT * n_pix
 
         if not has_any_mode:
             self.estimated_size_edit.setText("—")
         else:
-            self.estimated_size_edit.setText(self._format_bytes(total_bytes * n_repeats))
+            self.estimated_size_edit.setText(self._format_bytes(total_bytes * pix_t))
 
     def _on_acquire_clicked(self):
-        folder = self.folder_line_edit.text().strip()
-        filename = self.filename_line_edit.text().strip()
-
         if not self.button_brillouin.isChecked() and not self.button_raman.isChecked():
             QMessageBox.warning(
                 self,
@@ -623,7 +588,7 @@ class SpectroPanelWidget(QWidget):
             )
             return
 
-        if not filename:
+        if not self.filename_line_edit.text().strip():
             QMessageBox.warning(
                 self,
                 "Missing file name",
@@ -631,6 +596,7 @@ class SpectroPanelWidget(QWidget):
             )
             return
 
+        folder = self.folder_line_edit.text().strip()
         if folder:
             os.makedirs(folder, exist_ok=True)
 
@@ -658,13 +624,10 @@ class SpectroPanelWidget(QWidget):
     def set_modes(self, brillouin: bool, raman: bool):
         self.button_brillouin.blockSignals(True)
         self.button_raman.blockSignals(True)
-
         self.button_brillouin.setChecked(bool(brillouin))
         self.button_raman.setChecked(bool(raman))
-
         self.button_brillouin.blockSignals(False)
         self.button_raman.blockSignals(False)
-
         self._emit_mode_changed()
         self._update_derived_values()
 
@@ -678,7 +641,15 @@ class SpectroPanelWidget(QWidget):
             "height": int(roi.get("height", 1200)),
         }
         self._update_derived_values()
-    
+
+    def set_brillouin_exposure_ms(self, ms: float):
+        self._brillouin_exposure_ms = max(0.0, float(ms))
+        self._update_derived_values()
+
+    def set_raman_exposure_ms(self, ms: float):
+        self._raman_exposure_ms = max(0.0, float(ms))
+        self._update_derived_values()
+
     def get_acquisition_parameters(self):
         size_x = self._safe_float(self.size_x_edit.text(), 100.0)
         size_y = self._safe_float(self.size_y_edit.text(), 100.0)
@@ -688,9 +659,11 @@ class SpectroPanelWidget(QWidget):
         pix_y = max(1, self._safe_int(self.pix_y_edit.text(), 11))
         pix_z = max(1, self._safe_int(self.pix_z_edit.text(), 1))
 
+        pix_t = max(1, self._safe_int(self.pix_t_edit.text(), 1))
+        step_t_s = max(0.0, self._safe_float(self.step_t_edit.text(), 0.0))
+
         return {
-            "exposure_ms": self._safe_float(self.exposure_edit.text(), 100.0),
-            "settle_ms": self._safe_float(self.settle_edit.text(), 10.0),
+            "settle_ms": self._settle_ms,
             "size_x_um": size_x,
             "size_y_um": size_y,
             "size_z_um": size_z,
@@ -702,8 +675,8 @@ class SpectroPanelWidget(QWidget):
             "step_z_um": self._compute_step(size_z, pix_z),
             "serpentine": True,
             "brillouin_roi": dict(self._brillouin_roi_state),
-            "n_repeats": max(1, self._safe_int(self.repeats_edit.text(), 1)) if self.cb_timelapse.isChecked() else 1,
-            "repeat_delay_s": max(0.0, self._safe_float(self.delay_s_edit.text(), 0.0)) if self.cb_timelapse.isChecked() else 0.0,
+            "n_repeats": pix_t,
+            "repeat_delay_s": step_t_s,
         }
 
     def reset_progress(self):
@@ -715,11 +688,10 @@ class SpectroPanelWidget(QWidget):
         total = max(1, int(total))
         done = max(0, min(int(done), total))
         percent = int(round(100.0 * done / total))
-
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(percent)
         self.progress_bar.setFormat(f"{done}/{total} ({percent}%)")
-    
+
     def get_save_parameters(self):
         return {
             "folder": self.folder_line_edit.text().strip(),
@@ -731,7 +703,6 @@ class SpectroPanelWidget(QWidget):
     def set_running(self, running: bool):
         self.button_acquire.setEnabled(not bool(running))
         self.button_stop.setEnabled(True)
-
         if bool(running):
             self.progress_bar.setFormat("0%")
             self.progress_bar.setValue(0)

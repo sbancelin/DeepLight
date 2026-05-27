@@ -409,6 +409,8 @@ class _ElliptecELL14Controller:
 
         self._last_angle_deg = angle_deg
 
+        self.command(f"ma{hex_counts}", timeout_s=10.0)
+
         if blocking:
             time.sleep(0.2)
             try:
@@ -711,23 +713,10 @@ class LaserHardware(QObject):
 
         self.backend_name = (backend_name or "mock").lower()
 
-        self._cobolt = None
         self._alcor = None
         self._cobolt_hwp = None
 
         if self.backend_name == "nidaq":
-            self._cobolt = _CoboltLaserController(
-                port=COBOLT_FLAMENCO_PORT,
-                baudrate=COBOLT_FLAMENCO_BAUDRATE,
-            )
-
-            try:
-                self._cobolt.connect()
-                sn = self._cobolt.get_serial_number()
-                logger.info(f"[Cobolt] Serial number: {sn}")
-            except Exception as e:
-                logger.error(f"[Cobolt] Connection failed: {e}")
-
             self._cobolt_hwp = _ElliptecELL14Controller(
                 port=COBOLT_ELL14_PORT,
                 address=COBOLT_ELL14_ADDRESS,
@@ -739,20 +728,30 @@ class LaserHardware(QObject):
                 self._cobolt_hwp.connect()
             except Exception as e:
                 logger.error(f"[ELL14] Cobolt HWP connection failed: {e}")
-            
+
+    @property
+    def is_alcor_connected(self) -> bool:
+        return self._alcor is not None and self._alcor.connected
+
+    def connect_alcor(self) -> bool:
+        """Attempt to connect to the Alcor 920 laser. Returns True on success."""
+        if self.backend_name != "nidaq":
+            return False
+        if self._alcor is None:
             self._alcor = _SparkAlcorSerialController(
                 port=SPARK_ALCOR_PORT,
                 baudrate=SPARK_ALCOR_BAUDRATE,
                 timeout_s=SPARK_ALCOR_TIMEOUT_S,
             )
-
-            try:
-                self._alcor.connect()
-                self._alcor.set_power_percent(0.0)
-                enabled = self._alcor.get_enabled()
-                logger.info(f"[SparkAlcor] Initialized power=0.0% enabled={enabled}")
-            except Exception as e:
-                logger.error(f"[SparkAlcor] Connection failed: {e}")
+        try:
+            self._alcor.connect()
+            self._alcor.set_power_percent(0.0)
+            enabled = self._alcor.get_enabled()
+            logger.info(f"[SparkAlcor] Connected: power=0.0% enabled={enabled}")
+            return True
+        except Exception as e:
+            logger.error(f"[SparkAlcor] Connection failed: {e}")
+            return False
 
     def get_power_percent(self, laser_name: str) -> float:
         if self.backend_name != "nidaq":
@@ -776,14 +775,6 @@ class LaserHardware(QObject):
         return 0.0
 
     def get_output_power_mw(self, laser_name: str) -> float:
-        if self.backend_name != "nidaq":
-            return 0.0
-
-        if laser_name == "Cobolt 660":
-            if self._cobolt is None:
-                return 0.0
-            return 1000.0 * self._cobolt.get_output_power_w()
-
         return 0.0
     
     def _is_real_backend(self) -> bool:
@@ -795,15 +786,6 @@ class LaserHardware(QObject):
 
         laser_name = str(laser_name)
 
-        if laser_name == "Cobolt 660":
-            if self._cobolt is None:
-                return False
-            try:
-                return bool(self._cobolt.get_laser_on_state())
-            except Exception as e:
-                logger.warning(f"[LaserHardware] Cobolt get_enabled failed: {e}")
-                return False
-            
         if laser_name == "Alcor 920":
             if self._alcor is None:
                 return False
@@ -886,12 +868,6 @@ class LaserHardware(QObject):
         return float(self._alcor.get_rep_rate_khz())
 
     def close(self):
-        try:
-            if self._cobolt is not None:
-                self._cobolt.close()
-        except Exception as e:
-            logger.debug(f"[LaserHardware.close] cobolt.close failed: {e}")
-
         if self._cobolt_hwp is not None:
             self._cobolt_hwp.close()
 
@@ -2590,6 +2566,22 @@ class HardwareManager(QObject):
             return self._laser_manager
 
         self._laser_manager = LaserHardware(self.backend_name, parent=parent)
+
+        if (
+            self.backend_name == "nidaq"
+            and self._laser_manager._cobolt_hwp is not None
+            and self._laser_manager._cobolt_hwp.connected
+        ):
+            try:
+                cfg = self._get_laser_runtime_settings("Cobolt 660")
+                self._laser_manager._cobolt_hwp.set_power_percent(
+                    0.0,
+                    offset_deg=float(cfg["offset_deg"]),
+                )
+                logger.info(f"[HardwareManager] Cobolt ELL14 HWP initialized to 0% (offset_deg={float(cfg['offset_deg']):.3f} deg)")
+            except Exception as e:
+                logger.error(f"[HardwareManager] Cobolt ELL14 HWP init to 0% failed: {e}")
+
         return self._laser_manager
     
     def create_camera_controller(self, parent=None):

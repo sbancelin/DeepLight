@@ -216,6 +216,7 @@ def setup_laser_settings_dialog(dialog):
 
     dialog.accepted.connect(on_dialog_accepted)
 
+
 class LaserWidget(QWidget):
     """Widget pour le contrôle des lasers."""
     laser_power_changed = Signal(str, float)
@@ -224,6 +225,8 @@ class LaserWidget(QWidget):
     # Alcor-specific controls
     laser_gdd_changed = Signal(str, float)          # fs^2
     laser_rep_rate_changed = Signal(str, float)  # kHz
+
+    alcor_connect_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -401,6 +404,8 @@ class LaserWidget(QWidget):
         gdd_spin = None
         rep_rate_spin = None
         rep_rate_valid_label = None
+        alcor_connect_btn = None
+        alcor_status_label = None
 
         if laser_name == "Alcor 920":
             gdd_label = QLabel("GDD (fs²)")
@@ -443,6 +448,17 @@ class LaserWidget(QWidget):
             laser_layout.addWidget(rep_rate_label, 1, 3)
             laser_layout.addWidget(rep_rate_spin, 1, 4)
             laser_layout.addWidget(rep_rate_valid_label, 1, 5, 1, 2)
+
+            # Bouton de connexion Alcor + label de statut
+            alcor_connect_btn = QPushButton("Connect")
+            alcor_connect_btn.setStyleSheet(SMALL_BUTTON_STYLE)
+            alcor_connect_btn.setFixedHeight(22)
+            alcor_connect_btn.clicked.connect(self._on_alcor_connect_clicked)
+            laser_layout.addWidget(alcor_connect_btn, 2, 0, 1, 2)
+
+            alcor_status_label = QLabel("Not connected")
+            alcor_status_label.setStyleSheet("color: #888; background: transparent; border: none;")
+            laser_layout.addWidget(alcor_status_label, 2, 2, 1, 5)
 
         def _on_spin_changed(val, slider=setpoint_slider):
             slider_value = self._power_to_slider_value(val)
@@ -513,6 +529,8 @@ class LaserWidget(QWidget):
             'gdd_spin': gdd_spin,
             'rep_rate_spin': rep_rate_spin,
             'rep_rate_valid_label': rep_rate_valid_label,
+            'connect_button': alcor_connect_btn,
+            'connect_status_label': alcor_status_label,
         }
 
     @staticmethod
@@ -645,6 +663,39 @@ class LaserWidget(QWidget):
         self._update_power_button_style(button, bool(enabled))
         button.blockSignals(False)
     
+    def _on_alcor_connect_clicked(self):
+        controls = self.laser_controls.get("Alcor 920", {})
+        btn = controls.get("connect_button")
+        lbl = controls.get("connect_status_label")
+        if btn is not None:
+            btn.setEnabled(False)
+            btn.setText("Connecting…")
+        if lbl is not None:
+            lbl.setText("Connecting…")
+            lbl.setStyleSheet("color: #888; background: transparent; border: none;")
+        self.alcor_connect_requested.emit()
+
+    def set_alcor_connected(self, connected: bool, message: str = ""):
+        controls = self.laser_controls.get("Alcor 920", {})
+        btn = controls.get("connect_button")
+        lbl = controls.get("connect_status_label")
+        if connected:
+            if btn is not None:
+                btn.setText("Connected")
+                btn.setEnabled(False)
+            if lbl is not None:
+                lbl.setText("Connected")
+                lbl.setStyleSheet("color: #7ec87e; background: transparent; border: none;")
+        else:
+            if btn is not None:
+                btn.setText("Connect")
+                btn.setStyleSheet(SMALL_BUTTON_STYLE)
+                btn.setEnabled(True)
+            if lbl is not None:
+                text = message if message else "Not connected"
+                lbl.setText(text)
+                lbl.setStyleSheet("color: #cc6666; background: transparent; border: none;")
+
     def open_settings_dialog(self):
         from .Dialogs import SettingsDialog
         dialog = SettingsDialog("Laser - Settings", self)

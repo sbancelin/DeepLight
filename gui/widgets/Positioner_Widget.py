@@ -34,15 +34,15 @@ def setup_positioner_settings_dialog(dialog):
     positioner_widget = dialog.parent()
 
     axes = [
-        # axis_key, axis_label, shared_axis_name, pos_unit, vel_unit, has_ums_scaling
-        ("x", "X - stage", "X-Stage",      "µm", "mm/s", True),
-        ("y", "Y - stage", "Y-Stage",      "µm", "mm/s", True),
-        ("z", "Z-VCoil",   "Z-Vcoil",      "µm", "mm/s", False),
-        ("p", "P",         "Polarization", "°",  "°/s",  False),
+        # axis_key, axis_label, shared_axis_name, pos_unit, vel_unit, has_ums_scaling, has_backlash
+        ("x", "X - stage", "X-Stage",      "µm", "mm/s", True,  True),
+        ("y", "Y - stage", "Y-Stage",      "µm", "mm/s", True,  True),
+        ("z", "Z-VCoil",   "Z-Vcoil",      "µm", "mm/s", False, False),
+        ("p", "P",         "Polarization", "°",  "°/s",  False, False),
     ]
 
     # ---- build UI avec valeurs actuelles ----
-    for axis_key, axis_label, shared_axis_name, pos_unit, vel_unit, has_ums in axes:
+    for axis_key, axis_label, shared_axis_name, pos_unit, vel_unit, has_ums, has_backlash in axes:
         axis_title_container = QWidget()
         axis_title_layout = QVBoxLayout(axis_title_container)
         axis_title_layout.setContentsMargins(0, 0, 0, 0)
@@ -68,7 +68,6 @@ def setup_positioner_settings_dialog(dialog):
         cur_min = float(axis_cfg.get("min_um", defaults.get("min_um", positioner_widget.axis_limits[axis_key]["min"])))
         cur_max = float(axis_cfg.get("max_um", defaults.get("max_um", positioner_widget.axis_limits[axis_key]["max"])))
         cur_vmax = float(axis_cfg.get("vel_max", defaults.get("vel_max", positioner_widget.axis_velocity_limits[axis_key]["max"])))
-        cur_tol = float(axis_cfg.get("tolerance", defaults.get("tolerance", 0.1)))
 
         # Min/Max
         position_layout = QHBoxLayout()
@@ -91,13 +90,28 @@ def setup_positioner_settings_dialog(dialog):
         vel_layout.addWidget(vel_edit)
         dialog.add_layout(vel_layout)
 
-        # Tolerance
-        tol_layout = QHBoxLayout()
-        tol_edit = QLineEdit(str(cur_tol))
-        tol_edit.setObjectName(f"tolerance_edit_{axis_key}")
-        tol_layout.addWidget(QLabel(f"Tolerance ({pos_unit}):"))
-        tol_layout.addWidget(tol_edit)
-        dialog.add_layout(tol_layout)
+        # Backlash (X/Y) ou Tolerance (Z/P)
+        if has_backlash:
+            cur_backlash = float(axis_cfg.get("backlash_um", defaults.get("backlash_um", 1.2)))
+            backlash_layout = QHBoxLayout()
+            backlash_edit = QLineEdit(str(cur_backlash))
+            backlash_edit.setObjectName(f"backlash_edit_{axis_key}")
+            backlash_edit.setToolTip(
+                "Correction de jeu mécanique (µm).\n"
+                "En mode serpentin, le stage dépasse de cette valeur\n"
+                "le premier pixel de chaque ligne inversée avant de revenir."
+            )
+            backlash_layout.addWidget(QLabel(f"Backlash ({pos_unit}):"))
+            backlash_layout.addWidget(backlash_edit)
+            dialog.add_layout(backlash_layout)
+        else:
+            cur_tol = float(axis_cfg.get("tolerance", defaults.get("tolerance", 0.1)))
+            tol_layout = QHBoxLayout()
+            tol_edit = QLineEdit(str(cur_tol))
+            tol_edit.setObjectName(f"tolerance_edit_{axis_key}")
+            tol_layout.addWidget(QLabel(f"Tolerance ({pos_unit}):"))
+            tol_layout.addWidget(tol_edit)
+            dialog.add_layout(tol_layout)
 
         # UMS scaling factor (X et Y seulement)
         if has_ums:
@@ -119,44 +133,57 @@ def setup_positioner_settings_dialog(dialog):
 
     # ---- apply on accept ----
     def on_dialog_accepted():
-        for axis_key, _axis_label, shared_axis_name, _pos_unit, _vel_unit, has_ums in axes:
+        for axis_key, _axis_label, shared_axis_name, _pos_unit, _vel_unit, has_ums, has_backlash in axes:
             min_edit = dialog.findChild(QLineEdit, f"min_position_edit_{axis_key}")
             max_edit = dialog.findChild(QLineEdit, f"max_position_edit_{axis_key}")
             vel_edit = dialog.findChild(QLineEdit, f"velocity_edit_{axis_key}")
-            tol_edit = dialog.findChild(QLineEdit, f"tolerance_edit_{axis_key}")
 
-            if not (min_edit and max_edit and vel_edit and tol_edit):
+            if not (min_edit and max_edit and vel_edit):
                 continue
 
             min_position = float(min_edit.text().replace(",", "."))
             max_position = float(max_edit.text().replace(",", "."))
             velocity_limit = float(vel_edit.text().replace(",", "."))
-            tolerance = float(tol_edit.text().replace(",", "."))
 
             # update widget cache
             positioner_widget.axis_limits[axis_key]["min"] = min_position
             positioner_widget.axis_limits[axis_key]["max"] = max_position
             positioner_widget.axis_velocity_limits[axis_key]["max"] = velocity_limit
 
-            # stockage partagé + sauvegarde
-            if positioner_widget.axis_settings_manager is not None:
-                positioner_widget.axis_settings_manager.update_axis_settings(
-                    shared_axis_name,
-                    min_um=min_position,
-                    max_um=max_position,
-                    vel_max=velocity_limit,
-                    tolerance=tolerance,
-                )
+            if has_backlash:
+                backlash_edit_w = dialog.findChild(QLineEdit, f"backlash_edit_{axis_key}")
+                backlash_um = max(0.0, float(backlash_edit_w.text().replace(",", "."))) if backlash_edit_w else 1.2
 
-            # propagate vers manager hardware/mock
-            if positioner_widget.manager:
-                positioner_widget.manager.set_limits(
-                    axis_key,
-                    min_position,
-                    max_position,
-                    velocity_limit,
-                    tolerance
-                )
+                if positioner_widget.axis_settings_manager is not None:
+                    positioner_widget.axis_settings_manager.update_axis_settings(
+                        shared_axis_name,
+                        min_um=min_position,
+                        max_um=max_position,
+                        vel_max=velocity_limit,
+                        backlash_um=backlash_um,
+                    )
+
+                if positioner_widget.manager:
+                    positioner_widget.manager.set_limits(
+                        axis_key, min_position, max_position, velocity_limit, 0.1
+                    )
+            else:
+                tol_edit = dialog.findChild(QLineEdit, f"tolerance_edit_{axis_key}")
+                tolerance = float(tol_edit.text().replace(",", ".")) if tol_edit else 0.1
+
+                if positioner_widget.axis_settings_manager is not None:
+                    positioner_widget.axis_settings_manager.update_axis_settings(
+                        shared_axis_name,
+                        min_um=min_position,
+                        max_um=max_position,
+                        vel_max=velocity_limit,
+                        tolerance=tolerance,
+                    )
+
+                if positioner_widget.manager:
+                    positioner_widget.manager.set_limits(
+                        axis_key, min_position, max_position, velocity_limit, tolerance
+                    )
 
             # UMS scaling factor : sauvegarde + push manager
             if has_ums:

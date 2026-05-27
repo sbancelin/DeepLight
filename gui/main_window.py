@@ -251,34 +251,42 @@ class MainWindow(QMainWindow):
         sw.sigBrillouinSaveRequested.connect(self._on_brillouin_save_clicked)
         sw.spin_brillouin_exposure_ms.valueChanged.connect(self._on_brillouin_acq_params_changed)
         sw.combo_brillouin_binning.currentIndexChanged.connect(self._on_brillouin_acq_params_changed)
+        sw.spin_brillouin_exposure_ms.valueChanged.connect(sp.set_brillouin_exposure_ms)
 
         # --- Raman mock controls ---
         sw.button_raman_snap.clicked.connect(self._on_raman_snap_clicked)
         sw.button_raman_live.clicked.connect(self._on_raman_live_clicked)
         sw.button_raman_stop.clicked.connect(self._on_spectro_stop_clicked)
+        sw.spin_raman_exposure_ms.valueChanged.connect(sp.set_raman_exposure_ms)
 
     @Slot(bool, bool)
     def _on_spectro_mode_changed(self, brillouin: bool, raman: bool):
         if not bool(brillouin):
             return
 
+        if self.backend_name == "mock":
+            self._on_spectro_status_changed("Simulated (mock)")
+            return
         try:
             self._on_spectro_status_changed("Initializing Brillouin camera...")
             self.hardware.ensure_brillouin_camera_ready()
-            self._on_spectro_status_changed("Brillouin camera ready")
+            self._on_spectro_status_changed("Brillouin camera connected")
         except Exception as e:
             self._on_spectro_status_changed(f"Brillouin init failed: {e}")
 
     @Slot()
     def _on_brillouin_reconnect_clicked(self):
+        if self.backend_name == "mock":
+            self._on_spectro_status_changed("Simulated (mock)")
+            return
         try:
-            self._on_spectro_status_changed("Reconnecting Brillouin camera...")
+            self._on_spectro_status_changed("Connecting Brillouin camera...")
             self.hardware.ensure_brillouin_camera_ready()
-            self._on_spectro_status_changed("Brillouin camera ready")
-            logger.info("[Spectro] Brillouin camera reconnected successfully.")
+            self._on_spectro_status_changed("Brillouin camera connected")
+            logger.info("[Spectro] Brillouin camera connected successfully.")
         except Exception as e:
-            self._on_spectro_status_changed(f"Reconnect failed: {e}")
-            logger.error(f"[Spectro] Brillouin reconnect failed: {e}")
+            self._on_spectro_status_changed(f"Connect failed: {e}")
+            logger.error(f"[Spectro] Brillouin connect failed: {e}")
 
     @Slot()
     def _on_brillouin_save_clicked(self):
@@ -1692,6 +1700,7 @@ class MainWindow(QMainWindow):
         lw.laser_power_toggled.connect(self._on_laser_power_toggled)
         lw.laser_gdd_changed.connect(self.laser_command_manager.enqueue_gdd)
         lw.laser_rep_rate_changed.connect(self.laser_command_manager.enqueue_rep_rate)
+        lw.alcor_connect_requested.connect(self.laser_command_manager.request_alcor_connect)
 
         self.laser_command_manager.command_finished.connect(self._on_laser_command_finished)
         self.laser_command_manager.command_failed.connect(self._on_laser_command_failed)
@@ -1701,6 +1710,8 @@ class MainWindow(QMainWindow):
 
         self.laser_command_manager.rep_rate_finished.connect(self._on_laser_rep_rate_finished)
         self.laser_command_manager.rep_rate_failed.connect(self._on_laser_rep_rate_failed)
+
+        self.laser_command_manager.alcor_connect_finished.connect(self._on_alcor_connect_finished)
 
     @Slot(str, int)
     def _on_laser_command_finished(self, laser_name: str, value: int):
@@ -1744,6 +1755,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
+
+    @Slot(bool, str)
+    def _on_alcor_connect_finished(self, success: bool, message: str):
+        self.ui.laser_widget.set_alcor_connected(success, message)
 
     @Slot(str, float, str)
     def _on_laser_rep_rate_failed(self, laser_name: str, rep_rate_khz: float, message: str):

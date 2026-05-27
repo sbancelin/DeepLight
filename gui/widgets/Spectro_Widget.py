@@ -246,7 +246,7 @@ class SpectroWidget(QWidget):
         self.button_brillouin_save.setFixedWidth(52)
         row_1.addWidget(self.button_brillouin_save)
 
-        self.button_brillouin_reconnect = QPushButton("Reconnect")
+        self.button_brillouin_reconnect = QPushButton("Connect")
         self.button_brillouin_reconnect.setStyleSheet(_BUTTON_STYLE)
         row_1.addWidget(self.button_brillouin_reconnect)
 

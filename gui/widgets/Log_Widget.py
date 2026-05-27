@@ -1,3 +1,4 @@
+import sys
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                                 QPushButton, QTextEdit, QApplication)
@@ -48,6 +49,9 @@ class _AppLogger(QObject):
             f'<span style="color:{color}">{msg}</span>'
         )
         self.message_logged.emit(html, level)
+        if level != "debug":
+            stream = sys.stderr if level in ("error", "warning") else sys.stdout
+            print(f"[{ts}] {label} {msg}", file=stream, flush=True)
 
     def debug(self, msg: str):
         self._emit("debug", msg)

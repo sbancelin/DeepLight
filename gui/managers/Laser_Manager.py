@@ -14,6 +14,8 @@ class _LaserCommandWorker(QObject):
     rep_rate_finished = Signal(str, float)
     rep_rate_failed = Signal(str, float, str)
 
+    alcor_connect_finished = Signal(bool, str)
+
     def __init__(self, hardware_manager, laser_manager, settings_manager):
         super().__init__()
         self.hardware_manager = hardware_manager
@@ -99,7 +101,17 @@ class _LaserCommandWorker(QObject):
             self.rep_rate_failed.emit(str(laser_name), float(rep_rate_khz), str(e))
         else:
             self.rep_rate_finished.emit(str(laser_name), float(rep_rate_khz))
-    
+
+    @Slot()
+    def connect_alcor(self):
+        try:
+            success = self.laser_manager.connect_alcor()
+            msg = "Alcor 920 connected" if success else "Alcor 920 connection failed"
+        except Exception as e:
+            success = False
+            msg = str(e)
+        self.alcor_connect_finished.emit(success, msg)
+
     def _apply_power_change(self, laser_name: str, value: float):
         laser_name = str(laser_name)
 
@@ -132,12 +144,15 @@ class LaserManager(QObject):
     rep_rate_finished = Signal(str, float)
     rep_rate_failed = Signal(str, float, str)
 
+    alcor_connect_finished = Signal(bool, str)
+
     _enqueue_requested = Signal(str, float)
     _stop_requested = Signal()
     _enabled_requested = Signal(str, bool)
 
     _gdd_requested = Signal(str, float)
     _rep_rate_requested = Signal(str, float)
+    _alcor_connect_requested = Signal()
 
     def __init__(self, hardware_manager, laser_manager, settings_manager, parent=None):
         super().__init__(parent)
@@ -163,6 +178,7 @@ class LaserManager(QObject):
 
         self._gdd_requested.connect(self._worker.set_gdd, Qt.QueuedConnection)
         self._rep_rate_requested.connect(self._worker.set_rep_rate, Qt.QueuedConnection)
+        self._alcor_connect_requested.connect(self._worker.connect_alcor, Qt.QueuedConnection)
 
         self._worker.enabled_finished.connect(self.enabled_finished)
         self._worker.enabled_failed.connect(self.enabled_failed)
@@ -172,6 +188,8 @@ class LaserManager(QObject):
 
         self._worker.rep_rate_finished.connect(self.rep_rate_finished)
         self._worker.rep_rate_failed.connect(self.rep_rate_failed)
+
+        self._worker.alcor_connect_finished.connect(self.alcor_connect_finished)
 
         self._thread.start()
 
@@ -191,7 +209,11 @@ class LaserManager(QObject):
     @Slot(str, float)
     def enqueue_rep_rate(self, laser_name: str, rep_rate_khz: float):
         self._rep_rate_requested.emit(str(laser_name), float(rep_rate_khz))
-    
+
+    @Slot()
+    def request_alcor_connect(self):
+        self._alcor_connect_requested.emit()
+
     def close(self):
         try:
             self._stop_requested.emit()
