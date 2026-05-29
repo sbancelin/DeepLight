@@ -276,7 +276,7 @@ class Ui_MainWindowDesign:
         self.spectro_panel = CollapsiblePanel(
             "Spectro",
             self.spectro_panel_widget,
-            collapsed=False,
+            collapsed=True,
             settings_callback=self.spectro_panel_widget.open_settings_dialog,
             parent=self.left_panel_dock.container
         )
@@ -881,11 +881,15 @@ class Ui_MainWindowDesign:
             grid.addWidget(container, row, col)
 
         # --- LineProfileDock: mise à jour des canaux / ImageView ---
+        _im_with_cam = dict(self.im_widgets)
+        if hasattr(self, "camera_widget") and self.camera_widget is not None:
+            _im_with_cam["Camera"] = self.camera_widget.image_view
+
         if hasattr(self, "line_profile_widget") and self.line_profile_widget is not None:
-            self.line_profile_widget.set_im_widgets(dict(self.im_widgets))
+            self.line_profile_widget.set_im_widgets(_im_with_cam)
 
         if hasattr(self, "histogram_widget") and self.histogram_widget is not None:
-            self.histogram_widget.set_im_widgets(dict(self.im_widgets))
+            self.histogram_widget.set_im_widgets(_im_with_cam)
         
         # Ajouter au splitter
         self.splitter.addWidget(grid_host)

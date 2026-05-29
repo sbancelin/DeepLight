@@ -18,7 +18,7 @@ from ..Hardware_Manager import (
     NI_CI_DEFAULT_START_TRIGGER,
 )
 
-from ..Scan_Types import ExecutionPlan, FrameReconstructionPlan, SampleFramePlan
+from ..Scan_Types import ExecutionPlan, FrameReconstructionPlan, SampleFramePlan, infer_image_axes
 from ..Frame_Builder import FrameBuilder
 from ..Sample_Scan_Manager import SampleScanManager
 from ..PMT_Digital_Manager import PMTDigitalManager
@@ -252,9 +252,11 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
             self.dim_fast = max(1, int(self.pixel_values[row_fast]))
             self.dim_slow = max(1, int(self.pixel_values[row_slow]))
-            self.dim_image_x = self.dim_fast
-            self.dim_image_y = self.dim_slow
-            self.fast_axis_is_image_x = True
+
+            image_x_axis, image_y_axis = infer_image_axes(fast_axis, slow_axis)
+            self.fast_axis_is_image_x = (fast_axis == image_x_axis)
+            self.dim_image_x = max(1, int(self.pixel_values[axis_row_map[image_x_axis]]))
+            self.dim_image_y = max(1, int(self.pixel_values[axis_row_map[image_y_axis]]))
 
             self.leading_skip_px = int(round(self.overscan_fraction * self.dim_fast))
             self.trailing_skip_px = int(round(self.overscan_fraction * self.dim_fast))
@@ -963,21 +965,24 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 0.0,
             )
 
-        dwell_s = max(0.0, float(self.sample_scan_manager.dwell_time_s))
+        dwell_s = max(1e-4, float(self.sample_scan_manager.dwell_time_s))
         settle_s = max(0.0, float(self.sample_scan_manager.sample_settle_time_s))
         spp = max(1, int(self.sample_scan_manager.samples_per_pixel))
+
+        # Nombre de samples hardware par pixel (déterminé par le dwell time et la fréquence DAQ)
+        hw_spp = max(2, int(np.ceil(dwell_s * DAQ_SAMPLE_RATE_HZ - 1e-12)))
+        ai_count = self._active_ai_count()
+        read_timeout = max(1.0, dwell_s * 5.0)
 
         progress_accum = 0
         flush_accum = 0
         flush_chunk = 16
         pixel_done = 0
 
-        # ---- cache local pour limiter le coût Python dans la boucle pixel ----
         channels = self.channels
         emit_status = self.sample_status_updated.emit
         emit_progress = self.samples_progress.emit
         emit_flush = self.sample_image_flush_requested.emit
-        read_pixel = self._read_single_pixel_from_ai
         stop_event = self.acquisition_stop_event
         iter_events = self.sample_scan_manager.iter_pixel_events
 
@@ -1000,104 +1005,200 @@ class NidaqMicroscope(MicroscopeBackendBase):
         if pm is not None and not callable(move_xy_blocking):
             fallback_wait_xy = True
 
-        for event in iter_events():
-            if stop_event.is_set():
-                break
+        # --- Pré-créer UNE tâche AI pour toute la frame ---
+        # Évite ~15-50 ms d'overhead NI-DAQ par pixel (création/destruction de tâche).
+        # On utilise le pattern start/stop sur la même tâche configurée.
+        ai_task = None
+        ai_reader = None
+        ai_result_buf = None
 
-            x_target = float(event.x_target_rel_um)
-            y_target = float(event.y_target_rel_um)
-            iy = int(event.iy)
-            ix = int(event.ix)
+        if _HAS_NIDAQ and ai_count > 0:
+            try:
+                ai_task = nidaqmx.Task("DL_AI_SampleFrame")
+                for ch in self._ordered_analog_channels_for_ni():
+                    if ch == "PMT-Vis":
+                        physical_ai = NI_AI_VIS
+                    elif ch == "PMT-IR":
+                        physical_ai = NI_AI_IR
+                    else:
+                        raise ValueError(f"Unknown analog channel mapping for {ch!r}")
+                    ai_task.ai_channels.add_ai_voltage_chan(
+                        physical_ai,
+                        min_val=NI_AI_MIN_V,
+                        max_val=NI_AI_MAX_V,
+                        terminal_config=self._terminal_config(),
+                    )
+                ai_task.timing.cfg_samp_clk_timing(
+                    rate=DAQ_SAMPLE_RATE_HZ,
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=hw_spp,
+                )
+                ai_reader = AnalogMultiChannelReader(ai_task.in_stream)
+                ai_result_buf = np.zeros((ai_count, hw_spp), dtype=np.float64)
+            except Exception as e:
+                self._log(f"Échec pré-création tâche AI sample: {e} — fallback par pixel")
+                if ai_task is not None:
+                    try:
+                        ai_task.close()
+                    except Exception:
+                        pass
+                ai_task = None
+                ai_reader = None
+                ai_result_buf = None
 
-            # Pré-positionnement backlash : déplacer sans acquérir
-            if event.is_backlash:
+        try:
+            for event in iter_events():
+                if stop_event.is_set():
+                    break
+
+                x_target = float(event.x_target_rel_um)
+                y_target = float(event.y_target_rel_um)
+                iy = int(event.iy)
+                ix = int(event.ix)
+
+                # Pré-positionnement backlash : déplacer sans acquérir
+                if event.is_backlash:
+                    if callable(move_xy_blocking):
+                        move_xy_blocking(x_target, y_target, float(speed_x), float(speed_y), timeout_s=5.0)
+                    else:
+                        self._emit_sample_axis_move(event.x_axis_name, x_target, "sample_pixel_x", 0.0)
+                        self._emit_sample_axis_move(event.y_axis_name, y_target, "sample_pixel_y", 0.0)
+                    continue
+
+                t_sched_ms = ((dwell_s + settle_s) * float(pixel_done)) * 1e3
+
+                emit_status({
+                    "mode": "sample",
+                    "line_index": iy,
+                    "line_count": int(ny),
+                    "x_index_start": ix,
+                    "x_index_stop": ix,
+                    "x_um": x_target,
+                    "y_um": y_target,
+                    "scheduled_ms": float(t_sched_ms),
+                })
+
                 if callable(move_xy_blocking):
-                    move_xy_blocking(x_target, y_target, float(speed_x), float(speed_y), timeout_s=5.0)
+                    move_xy_blocking(
+                        x_target,
+                        y_target,
+                        float(speed_x),
+                        float(speed_y),
+                        timeout_s=max(5.0, dwell_s + settle_s + 5.0),
+                    )
                 else:
-                    self._emit_sample_axis_move(event.x_axis_name, x_target, "sample_pixel_x", 0.0)
-                    self._emit_sample_axis_move(event.y_axis_name, y_target, "sample_pixel_y", 0.0)
-                continue
+                    self._emit_sample_axis_move(
+                        event.x_axis_name,
+                        x_target,
+                        "sample_pixel_x",
+                        float(t_sched_ms),
+                    )
+                    self._emit_sample_axis_move(
+                        event.y_axis_name,
+                        y_target,
+                        "sample_pixel_y",
+                        float(t_sched_ms),
+                    )
 
-            t_sched_ms = ((dwell_s + settle_s) * float(pixel_done)) * 1e3
+                    if fallback_wait_xy:
+                        axis_x = pm.axis_from_scan_name(event.x_axis_name)
+                        axis_y = pm.axis_from_scan_name(event.y_axis_name)
 
-            emit_status({
-                "mode": "sample",
-                "line_index": iy,
-                "line_count": int(ny),
-                "x_index_start": ix,
-                "x_index_stop": ix,
-                "x_um": x_target,
-                "y_um": y_target,
-                "scheduled_ms": float(t_sched_ms),
-            })
+                        tol_x = pm.get_tolerance(axis_x)
+                        tol_y = pm.get_tolerance(axis_y)
 
-            if callable(move_xy_blocking):
-                move_xy_blocking(
-                    x_target,
-                    y_target,
-                    float(speed_x),
-                    float(speed_y),
-                    timeout_s=max(5.0, dwell_s + settle_s + 5.0),
-                )
-            else:
-                # fallback ancien comportement
-                self._emit_sample_axis_move(
-                    event.x_axis_name,
-                    x_target,
-                    "sample_pixel_x",
-                    float(t_sched_ms),
-                )
-                self._emit_sample_axis_move(
-                    event.y_axis_name,
-                    y_target,
-                    "sample_pixel_y",
-                    float(t_sched_ms),
-                )
+                        while True:
+                            cur_x = pm.get_rel_pos(axis_x)
+                            cur_y = pm.get_rel_pos(axis_y)
 
-                if fallback_wait_xy:
-                    axis_x = pm.axis_from_scan_name(event.x_axis_name)
-                    axis_y = pm.axis_from_scan_name(event.y_axis_name)
+                            if (
+                                abs(cur_x - x_target) <= tol_x
+                                and abs(cur_y - y_target) <= tol_y
+                            ):
+                                break
 
-                    tol_x = pm.get_tolerance(axis_x)
-                    tol_y = pm.get_tolerance(axis_y)
+                            if stop_event.is_set():
+                                break
 
-                    while True:
-                        cur_x = pm.get_rel_pos(axis_x)
-                        cur_y = pm.get_rel_pos(axis_y)
+                            time.sleep(0.001)
 
-                        if (
-                            abs(cur_x - x_target) <= tol_x
-                            and abs(cur_y - y_target) <= tol_y
-                        ):
-                            break
+                if settle_s > 0:
+                    time.sleep(settle_s)
 
-                        if stop_event.is_set():
-                            break
+                # --- Acquisition pixel ---
+                pixel_values = {}
 
-                        time.sleep(0.001)
+                if ai_task is not None:
+                    # Tâche pré-créée : start/stop sans recréer (économise ~20-50 ms/pixel)
+                    ai_result_buf.fill(0.0)
+                    try:
+                        ai_task.start()
+                        ai_reader.read_many_sample(
+                            ai_result_buf,
+                            number_of_samples_per_channel=hw_spp,
+                            timeout=read_timeout,
+                        )
+                        ai_task.stop()
+                    except DaqWarning as w:
+                        try:
+                            ai_task.stop()
+                        except Exception:
+                            pass
+                        if not (stop_event.is_set() and getattr(w, "error_code", None) == 200010):
+                            raise
+                    except DaqError:
+                        try:
+                            ai_task.stop()
+                        except Exception:
+                            pass
+                        if not stop_event.is_set():
+                            raise
+                        break
 
-            if settle_s > 0:
-                time.sleep(settle_s)
+                    analog_mapped = self._map_ai_to_analog_channels(ai_result_buf, hw_spp)
+                    for ch in self.analog_channels:
+                        arr = analog_mapped.get(ch)
+                        pixel_values[ch] = float(np.mean(arr) * dwell_s * 1e6) if arr is not None and arr.size > 0 else 0.0
 
-            pixel_values = read_pixel(
-                dwell_s=dwell_s if dwell_s > 0 else 1e-4,
-                samples_per_pixel=spp,
-            )
+                elif ai_count > 0:
+                    # Fallback : la pré-création a échoué, on recrée par pixel
+                    fallback = self._read_single_pixel_from_ai(dwell_s=dwell_s, samples_per_pixel=spp)
+                    pixel_values.update(fallback)
 
-            for ch in channels:
-                arrays[ch][iy, ix] = float(pixel_values.get(ch, 0.0))
+                if self.digital_channels:
+                    digital_values = self.digital_manager.acquire_software_timed_counts(
+                        n_gates=1,
+                        dwell_time_s=dwell_s,
+                    )
+                    for ch in self.digital_channels:
+                        arr = digital_values.get(ch)
+                        pixel_values[ch] = float(arr[0]) if arr is not None and arr.size > 0 else 0.0
 
-            progress_accum += spp
-            flush_accum += 1
-            pixel_done += 1
+                for ch in channels:
+                    arrays[ch][iy, ix] = float(pixel_values.get(ch, 0.0))
 
-            if progress_accum > 0:
-                emit_progress(int(progress_accum))
-                progress_accum = 0
+                progress_accum += spp
+                flush_accum += 1
+                pixel_done += 1
 
-            if flush_accum >= flush_chunk:
-                emit_flush()
-                flush_accum = 0
+                if progress_accum > 0:
+                    emit_progress(int(progress_accum))
+                    progress_accum = 0
+
+                if flush_accum >= flush_chunk:
+                    emit_flush()
+                    flush_accum = 0
+
+        finally:
+            if ai_task is not None:
+                try:
+                    ai_task.stop()
+                except Exception:
+                    pass
+                try:
+                    ai_task.close()
+                except Exception:
+                    pass
 
         emit_flush()
         return {ch: arr.copy() for ch, arr in arrays.items()}

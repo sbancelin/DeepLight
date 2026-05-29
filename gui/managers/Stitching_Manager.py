@@ -395,6 +395,13 @@ class StitchingManager(QObject):
         ix, iy = self._tile_sequence[self._tile_index]
         x0 = ix * (self._cfg.tile_width_px - self._cfg.overlap_px)
         y0 = iy * (self._cfg.tile_height_px - self._cfg.overlap_px)
+
+        # Corriger la position par cross-corrélation sur la zone de recouvrement
+        if self._cfg.overlap_px > 0 and (ix > 0 or iy > 0):
+            dy, dx = self._estimate_tile_registration(arr, x0, y0, ix, iy)
+            x0 = max(0, min(x0 + dx, self._mosaic.shape[1] - self._cfg.tile_width_px))
+            y0 = max(0, min(y0 + dy, self._mosaic.shape[0] - self._cfg.tile_height_px))
+
         x1 = x0 + self._cfg.tile_width_px
         y1 = y0 + self._cfg.tile_height_px
 
@@ -424,6 +431,78 @@ class StitchingManager(QObject):
 
         self._mosaic[y0:y1, x0:x1] = blended
         self._mosaic_weight[y0:y1, x0:x1] = new_weight
+
+    def _estimate_tile_registration(self, arr, x0_nom, y0_nom, ix, iy):
+        """
+        Estime la correction (dy, dx) à appliquer à la position nominale
+        par cross-corrélation dans la zone de recouvrement avec les tuiles voisines.
+        """
+        ov = self._cfg.overlap_px
+        max_shift = max(2, ov // 3)
+        th = self._cfg.tile_height_px
+        tw = self._cfg.tile_width_px
+        mh, mw = self._mosaic.shape
+
+        shifts_y, shifts_x = [], []
+
+        # Voisin gauche (horizontal)
+        if ix > 0 and x0_nom > 0:
+            x_ov_start = x0_nom
+            x_ov_end = min(x_ov_start + ov, mw)
+            y_end = min(y0_nom + th, mh)
+            if x_ov_end > x_ov_start and y_end > y0_nom:
+                ref = self._mosaic[y0_nom:y_end, x_ov_start:x_ov_end]
+                mov = arr[:y_end - y0_nom, :x_ov_end - x_ov_start]
+                if (self._mosaic_weight[y0_nom:y_end, x_ov_start:x_ov_end].sum() > 0
+                        and ref.shape == mov.shape):
+                    dy, dx = self._cross_correlate(ref, mov, max_shift)
+                    shifts_y.append(dy)
+                    shifts_x.append(dx)
+
+        # Voisin du dessus (vertical)
+        if iy > 0 and y0_nom > 0:
+            y_ov_start = y0_nom
+            y_ov_end = min(y_ov_start + ov, mh)
+            x_end = min(x0_nom + tw, mw)
+            if y_ov_end > y_ov_start and x_end > x0_nom:
+                ref = self._mosaic[y_ov_start:y_ov_end, x0_nom:x_end]
+                mov = arr[:y_ov_end - y_ov_start, :x_end - x0_nom]
+                if (self._mosaic_weight[y_ov_start:y_ov_end, x0_nom:x_end].sum() > 0
+                        and ref.shape == mov.shape):
+                    dy, dx = self._cross_correlate(ref, mov, max_shift)
+                    shifts_y.append(dy)
+                    shifts_x.append(dx)
+
+        dy = int(round(float(np.mean(shifts_y)))) if shifts_y else 0
+        dx = int(round(float(np.mean(shifts_x)))) if shifts_x else 0
+        return dy, dx
+
+    @staticmethod
+    def _cross_correlate(ref, mov, max_shift):
+        """
+        Phase cross-corrélation normalisée entre deux strips de même taille.
+        Retourne (dy, dx) entiers bornés à ±max_shift.
+        """
+        r_std = float(ref.std())
+        m_std = float(mov.std())
+        if r_std < 1e-6 or m_std < 1e-6:
+            return 0, 0
+
+        ref_n = (ref.astype(np.float32) - ref.mean()) / r_std
+        mov_n = (mov.astype(np.float32) - mov.mean()) / m_std
+
+        R = np.fft.rfft2(ref_n) * np.conj(np.fft.rfft2(mov_n))
+        cc = np.fft.irfft2(R, s=ref_n.shape)
+
+        H, W = cc.shape
+        y_peak, x_peak = np.unravel_index(int(np.argmax(cc)), cc.shape)
+
+        dy = y_peak if y_peak <= H // 2 else y_peak - H
+        dx = x_peak if x_peak <= W // 2 else x_peak - W
+
+        dy = max(-max_shift, min(max_shift, dy))
+        dx = max(-max_shift, min(max_shift, dx))
+        return int(dy), int(dx)
 
     def _build_tile_weight(self, tile_h, tile_w, overlap, ix, iy, max_ix, max_iy):
         """

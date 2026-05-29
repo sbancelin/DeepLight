@@ -158,6 +158,7 @@ def ask_levels_min_max(parent=None, title="LUT Levels", lo0=0.0, hi0=255.0):
 class CameraWidget(QWidget):
     sigReconnectRequested = Signal()
     sigSaveRequested = Signal()
+    sigRoiParamsChanged = Signal()   # émis quand l'utilisateur déplace/redimensionne la ROI
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -223,6 +224,19 @@ class CameraWidget(QWidget):
         row_1.addWidget(self.label_status_run)
 
         row_1.addStretch(1)
+
+        row_1.addWidget(QLabel("Scale"))
+        self.spin_scale_um_per_px = QDoubleSpinBox()
+        self.spin_scale_um_per_px.setDecimals(4)
+        self.spin_scale_um_per_px.setRange(0.0001, 1000.0)
+        self.spin_scale_um_per_px.setSingleStep(0.1)
+        self.spin_scale_um_per_px.setValue(0.74)
+        self.spin_scale_um_per_px.setFixedWidth(72)
+        _apply_spinbox_palette(self.spin_scale_um_per_px)
+        row_1.addWidget(self.spin_scale_um_per_px)
+        _scale_unit = QLabel("µm/px")
+        _scale_unit.setStyleSheet(_STATUS_VALUE_STYLE)
+        row_1.addWidget(_scale_unit)
 
         # ---- Row 2: Exposure / Auto / Binning / ROI / Reset
         row_2 = QHBoxLayout()
@@ -310,7 +324,7 @@ class CameraWidget(QWidget):
             autoHistogramRange=False
         )
         self.image_view.getView().setAspectLocked(True)
-        self.image_view.getView().autoRange()
+        self._camera_view_initialized = False   # autoRange au premier vrai frame
 
         # ROI rectangle overlay
         self.roi_item = pg.RectROI(
@@ -330,6 +344,14 @@ class CameraWidget(QWidget):
             self.roi_item.addScaleHandle(handle_pos, (1 - handle_pos[0], 1 - handle_pos[1]))
         self.plot_item.addItem(self.roi_item)
         self.roi_item.setVisible(False)
+
+        # Contour pointillé du champ de vue complet (toujours visible)
+        self._full_frame_outline = pg.PlotDataItem(
+            x=[0, 0], y=[0, 0],
+            pen=pg.mkPen(color='#FF7700', style=Qt.PenStyle.DashLine, width=2),
+        )
+        self._full_frame_outline.setZValue(5)
+        self.plot_item.addItem(self._full_frame_outline)
 
         main_layout.addWidget(self.image_view, stretch=1)
 
@@ -378,6 +400,7 @@ class CameraWidget(QWidget):
         # ==========================================================
         self.button_reconnect.clicked.connect(self.sigReconnectRequested.emit)
         self.button_save.clicked.connect(self.sigSaveRequested.emit)
+        self.spin_scale_um_per_px.valueChanged.connect(self._on_scale_changed)
         self.cb_autoscale.toggled.connect(self._on_autoscale_toggled)
         self.cb_lock.toggled.connect(self._on_lock_toggled)
         self.cb_grid.toggled.connect(self._on_grid_toggled)
@@ -516,29 +539,42 @@ class CameraWidget(QWidget):
             autoHistogramRange=False
         )
 
+        view = self.image_view.getView()
+        view.disableAutoRange()   # empêche setPos de déclencher un saut de vue
+
         img_item = self.image_view.getImageItem()
+        h, w = self.current_image.shape[:2]
+        scale = self._get_scale_um_per_px()
 
         if width_um is not None and height_um is not None:
-            h, w = self.current_image.shape[:2]
-            sx = float(width_um) / float(w) if w > 0 else 1.0
-            sy = float(height_um) / float(h) if h > 0 else 1.0
-            img_item.setTransform(QTransform.fromScale(sx, sy))
-            img_item.setPos(0, 0)
-            self.plot_item.setLabel("left", "y (um)")
-            self.plot_item.setLabel("bottom", "x (um)")
+            sx = float(width_um) / float(w) if w > 0 else scale
+            sy = float(height_um) / float(h) if h > 0 else scale
         else:
-            img_item.setTransform(QTransform())
-            img_item.setPos(0, 0)
-            self.plot_item.setLabel("left", "y (px)")
-            self.plot_item.setLabel("bottom", "x (px)")
+            sx = scale
+            sy = scale
 
-        self.image_view.getView().setAspectLocked(self.lock_enabled)
+        img_item.setTransform(QTransform.fromScale(sx, sy))
+        if self.cb_roi_enabled.isChecked():
+            img_item.setPos(int(self.spin_roi_x.value()) * sx,
+                            int(self.spin_roi_y.value()) * sy)
+        else:
+            img_item.setPos(0, 0)
+
+        self.plot_item.setLabel("left", "y (µm)")
+        self.plot_item.setLabel("bottom", "x (µm)")
+        self._update_full_frame_outline(sx, sy)
+        view.setAspectLocked(self.lock_enabled)
+
+        if not self._camera_view_initialized:
+            # Premier vrai frame : fitter la vue sur l'image réelle
+            self._camera_view_initialized = True
+            view.autoRange()
 
         if self.autoscale_enabled:
             lo, hi = self._get_image_minmax()
             self._apply_levels(lo, hi)
 
-        self.image_view.getView().showGrid(self.grid_enabled, self.grid_enabled)
+        view.showGrid(self.grid_enabled, self.grid_enabled)
 
     def reset_controls(self):
         self._saved_exposure_ms = 250.0
@@ -568,6 +604,41 @@ class CameraWidget(QWidget):
     # Private helpers
     # ==========================================================
 
+    def _set_view_range_to_full_frame_context(self):
+        """
+        Lorsque le ROI est actif, positionne la vue pour montrer le capteur complet.
+        L'image croppée (à l'origine (0,0) en coords data) apparaît visuellement
+        à sa vraie position dans le champ total.
+        Les widgets d'analyse restent alignés sur l'image (leurs coords data
+        correspondent directement aux pixels du crop).
+        """
+        scale = self._get_scale_um_per_px()
+        roi_x = int(self.spin_roi_x.value())
+        roi_y = int(self.spin_roi_y.value())
+        full_h, full_w = self._camera_full_shape
+        margin_x = full_w * scale * 0.04
+        margin_y = full_h * scale * 0.04
+        self.image_view.getView().setRange(
+            xRange=(-roi_x * scale - margin_x, (full_w - roi_x) * scale + margin_x),
+            yRange=(-roi_y * scale - margin_y, (full_h - roi_y) * scale + margin_y),
+            padding=0,
+        )
+
+    def _get_scale_um_per_px(self) -> float:
+        return max(1e-6, float(self.spin_scale_um_per_px.value()))
+
+    def _update_full_frame_outline(self, sx: float, sy: float):
+        full_h, full_w = self._camera_full_shape
+        self._full_frame_outline.setData(
+            x=[0, full_w * sx, full_w * sx, 0, 0],
+            y=[0, 0, full_h * sy, full_h * sy, 0],
+        )
+
+    def _on_scale_changed(self):
+        scale = self._get_scale_um_per_px()
+        self._sync_roi_rect_from_controls()
+        self._update_full_frame_outline(scale, scale)
+
     def _update_roi_controls_enabled(self):
         enabled = self.cb_roi_enabled.isChecked()
         for sp in (self.spin_roi_x, self.spin_roi_y,
@@ -580,14 +651,15 @@ class CameraWidget(QWidget):
             return
         self._roi_updating_from_ui = True
         try:
+            scale = self._get_scale_um_per_px()
             full_h, full_w = self._camera_full_shape
             x = max(0, min(int(self.spin_roi_x.value()), full_w - 1))
             y = max(0, min(int(self.spin_roi_y.value()), full_h - 1))
             w = max(1, min(int(self.spin_roi_width.value()), full_w - x))
             h = max(1, min(int(self.spin_roi_height.value()), full_h - y))
             self.roi_item.blockSignals(True)
-            self.roi_item.setPos((x, y))
-            self.roi_item.setSize((w, h))
+            self.roi_item.setPos((x * scale, y * scale))
+            self.roi_item.setSize((w * scale, h * scale))
             self.roi_item.blockSignals(False)
         finally:
             self._roi_updating_from_ui = False
@@ -626,11 +698,12 @@ class CameraWidget(QWidget):
     # ==========================================================
 
     def _on_roi_enabled_toggled(self, checked):
-        if checked:
+        if checked and not getattr(self, '_roi_ever_enabled', False):
+            # Valeurs par défaut uniquement à la première activation
             full_h, full_w = self._camera_full_shape
-            w_def, h_def = 640, 480
-            x_def = max(0, (full_w - w_def) // 2)
-            y_def = max(0, (full_h - h_def) // 2)
+            w_def, h_def = full_w // 2, full_h // 2
+            x_def = (full_w - w_def) // 2
+            y_def = (full_h - h_def) // 2
             for sp in (self.spin_roi_x, self.spin_roi_y,
                        self.spin_roi_width, self.spin_roi_height):
                 sp.blockSignals(True)
@@ -641,6 +714,7 @@ class CameraWidget(QWidget):
             for sp in (self.spin_roi_x, self.spin_roi_y,
                        self.spin_roi_width, self.spin_roi_height):
                 sp.blockSignals(False)
+            self._roi_ever_enabled = True
         self._update_roi_controls_enabled()
         self._sync_roi_rect_from_controls()
 
@@ -654,13 +728,14 @@ class CameraWidget(QWidget):
             return
         self._roi_updating_from_graphics = True
         try:
+            scale = self._get_scale_um_per_px()
             full_h, full_w = self._camera_full_shape
             pos = self.roi_item.pos()
             size = self.roi_item.size()
-            x = max(0, min(int(round(pos.x())), full_w - 1))
-            y = max(0, min(int(round(pos.y())), full_h - 1))
-            w = max(1, min(int(round(size.x())), full_w - x))
-            h = max(1, min(int(round(size.y())), full_h - y))
+            x = max(0, min(int(round(pos.x() / scale)), full_w - 1))
+            y = max(0, min(int(round(pos.y() / scale)), full_h - 1))
+            w = max(1, min(int(round(size.x() / scale)), full_w - x))
+            h = max(1, min(int(round(size.y() / scale)), full_h - y))
             self.spin_roi_x.setValue(x)
             self.spin_roi_y.setValue(y)
             self.spin_roi_width.setValue(w)
@@ -668,6 +743,8 @@ class CameraWidget(QWidget):
         finally:
             self._roi_updating_from_graphics = False
         self._sync_roi_rect_from_controls()
+        if self.cb_roi_enabled.isChecked():
+            self.sigRoiParamsChanged.emit()
 
     def _on_autoscale_toggled(self, checked):
         self.autoscale_enabled = bool(checked)

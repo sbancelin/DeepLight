@@ -232,6 +232,8 @@ class MainWindow(QMainWindow):
         sw.sigBrillouinRoiChanged.connect(sp.set_brillouin_roi_state)
         sp.sigAcquireClicked.connect(self._on_spectro_acquire_clicked)
         sp.sigStopClicked.connect(self._on_spectro_stop_clicked)
+        sp.settleTimeChanged.connect(self.ui.scan_widget.set_settle_ms)
+        self.ui.scan_widget.set_settle_ms(float(sp._settle_ms))
 
         # --- Manager spectro ---
         sm.sigImageUpdate.connect(self._on_spectro_image_update)
@@ -557,6 +559,7 @@ class MainWindow(QMainWindow):
         cw.button_reset.clicked.connect(self._on_camera_reset_clicked)
         cw.sigReconnectRequested.connect(self._on_camera_reconnect_clicked)
         cw.sigSaveRequested.connect(self._on_camera_save_clicked)
+        cw.sigRoiParamsChanged.connect(self._push_camera_parameters)
 
         # paramètres — pushés au controller à chaque changement
         cw.spin_exposure_ms.valueChanged.connect(self._push_camera_parameters)
@@ -664,8 +667,26 @@ class MainWindow(QMainWindow):
                 if roi_off and binning_off:
                     cw.set_camera_full_shape(h, w)
             cw.set_image(img)
+            self._refresh_analysis_widgets_for_channel("Camera")
         except Exception as e:
             self.ui.camera_widget.set_status(f"Display failed: {e}")
+
+    def _refresh_analysis_widgets_for_channel(self, channel: str):
+        try:
+            lpw = self.ui.line_profile_widget
+            if lpw.toggle_btn.isChecked() and lpw.channel_combo.currentText() == channel:
+                lpw.update_profile()
+        except Exception:
+            pass
+        try:
+            hw = self.ui.histogram_widget
+            if (hw.toggle_btn.isChecked()
+                    and hw.rect_roi is not None
+                    and hw.rect_roi.isVisible()
+                    and hw.channel_combo.currentText() == channel):
+                hw.update_histogram()
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         try:
@@ -698,6 +719,11 @@ class MainWindow(QMainWindow):
             logger.info("[MainWindow] XY stage returned to origin.")
         except Exception as e:
             logger.warning(f"[MainWindow] XY return to origin at close failed: {e}")
+
+        try:
+            self.acquisition_manager.close()
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.hardware.close()
@@ -1367,7 +1393,9 @@ class MainWindow(QMainWindow):
             self.save_manager.finish_rec_session()
             self._rec_saving_active = False
 
-        self._return_xy_to_pre_scan_position()
+        # Don't return to pre-scan XY position when stitching is managing the stage.
+        if not self.stitching_manager.is_running():
+            self._return_xy_to_pre_scan_position()
 
     def _return_xy_to_pre_scan_position(self):
         x0 = self._stepper_return_targets_rel.get("x")

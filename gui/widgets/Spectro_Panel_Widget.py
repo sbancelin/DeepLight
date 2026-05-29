@@ -124,6 +124,7 @@ class SpectroPanelWidget(QWidget):
     sigSpectroModeChanged = Signal(bool, bool)   # brillouin, raman
     sigAcquireClicked = Signal()
     sigStopClicked = Signal()
+    settleTimeChanged = Signal(float)            # settle_ms
 
     _BRILLOUIN_IMG_H = 1200
     _BRILLOUIN_IMG_W = 1200
@@ -463,6 +464,7 @@ class SpectroPanelWidget(QWidget):
             except Exception:
                 pass
             self._update_derived_values()
+            self.settleTimeChanged.emit(float(self._settle_ms))
 
         dialog.accepted.connect(_on_accepted)
         dialog.exec()

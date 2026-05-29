@@ -162,7 +162,14 @@ class FrameBuilder:
         else:
             image_fast_idx = acquired_fast_idx
 
-        valid = (image_fast_idx >= 0) & (image_fast_idx < self.useful_fast_pixels)
+        # Borne les deux types de lignes au même nombre de colonnes valides
+        # pour éviter l'alternance d'une ligne sur deux aux bords.
+        _bidir_width = (
+            max(1, self.useful_fast_pixels - abs(self.bidirectional_shift_px))
+            if self.bidirectional and self.bidirectional_shift_px != 0
+            else self.useful_fast_pixels
+        )
+        valid = (image_fast_idx >= 0) & (image_fast_idx < _bidir_width)
 
         if np.any(valid):
             valid_img_fast = image_fast_idx[valid]

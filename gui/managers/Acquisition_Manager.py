@@ -28,6 +28,7 @@ class AcquisitionManager(QObject):
         self.lock = Lock()
         self.acquisition_thread = QThread()
         self.microscope.moveToThread(self.acquisition_thread)
+        self.acquisition_thread.start()   # thread persistant — ne jamais le tuer entre acquisitions
         self.is_running = False
 
         self.update_timer = QTimer(self)
@@ -95,7 +96,6 @@ class AcquisitionManager(QObject):
         self.mode = "single"
         self.acquisition_started.emit()
         self.shutter_requested.emit(True)   # Shutter ON
-        self.acquisition_thread.start()
         self._invoke("run_single")
         self.update_timer.start()  # Démarre le timer pour la mise à jour de l'image
 
@@ -109,7 +109,6 @@ class AcquisitionManager(QObject):
         self.mode = "continuous"
         self.acquisition_started.emit()
         self.shutter_requested.emit(True)       # shutter ON
-        self.acquisition_thread.start()
         self._invoke("run_continuous")
         self.update_timer.start()
 
@@ -120,18 +119,20 @@ class AcquisitionManager(QObject):
             return
 
         self.microscope.stop()
-        self.acquisition_thread.quit()
-        self.acquisition_thread.wait()
-        try:
-            if hasattr(self.microscope, "_write_ao_idle_offset") and getattr(self.microscope, "scan_kind", None) == "laser":
-                self.microscope._write_ao_idle_offset()
-        except Exception as e:
-            logger.error(f"[AcquisitionManager] AO idle zero failed after thread stop: {e}")
-        self.update_timer.stop()  # Arrête le timer de mise à jour
-        self.shutter_requested.emit(False) # Shutter OFF
+        # _write_ao_idle_offset is already called in run_single/run_acquisition finally blocks.
+
+        self.update_timer.stop()
+        self.shutter_requested.emit(False)
         self.is_running = False
         self.mode = None
         self.acquisition_stopped.emit()
+
+    def close(self):
+        """Fermeture propre : arrête l'acquisition puis tue le thread."""
+        if self.is_running:
+            self.stop_acquisition()
+        self.acquisition_thread.quit()
+        self.acquisition_thread.wait(3000)
 
     @Slot(dict)
     def start_acquisition(self, scan_parameters: dict):
@@ -145,7 +146,6 @@ class AcquisitionManager(QObject):
         self.microscope.configure(scan_parameters)
         self.acquisition_started.emit()
         self.shutter_requested.emit(True)       # shutter open au début de l'acquisition
-        self.acquisition_thread.start()
         self._invoke("run_acquisition")
         self.update_timer.start()       # option: refresh UI en continu
 

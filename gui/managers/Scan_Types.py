@@ -161,7 +161,9 @@ class ExecutionPlan:
 # ---------------------------------------------------------
 SCAN_AXIS_DEFAULTS = {
     "X-Galvo": {
-        "conv_um_per_v": 72.0,
+        # Physically scans in the stage Y direction (fast mirror, up-down).
+        "sample_direction": "Y",
+        "conv_um_per_v": 77.0,
         "vmin": -10.0,
         "vmax": 10.0,
         "overscan_fraction": 0.10,
@@ -169,14 +171,39 @@ SCAN_AXIS_DEFAULTS = {
         "vel_max": 1000.0,
     },
     "Y-Galvo": {
+        # Physically scans in the stage X direction (slow mirror, left-right).
+        "sample_direction": "X",
         "conv_um_per_v": 70.0,
         "vmin": -10.0,
         "vmax": 10.0,
-        "overscan_fraction": 0.0,
+        "overscan_fraction": 0.10,
         "frame_flyback_time_s": 0.001,
         "vel_max": 1000.0,
     },
 }
+
+
+def infer_image_axes(fast_axis: str, slow_axis: str) -> tuple[str, str]:
+    """
+    Returns (image_x_axis, image_y_axis) from a fast/slow galvo pair.
+
+    Uses sample_direction from SCAN_AXIS_DEFAULTS when available,
+    falls back to name prefix (X-* → X direction, Y-* → Y direction).
+    """
+    axes = [fast_axis, slow_axis]
+
+    def _sample_dir(ax: str) -> str:
+        d = SCAN_AXIS_DEFAULTS.get(ax, {}).get("sample_direction")
+        if d:
+            return str(d).upper()
+        return "X" if ax.startswith("X-") else "Y"
+
+    dirs = {ax: _sample_dir(ax) for ax in axes}
+
+    image_x_axis = next((ax for ax in axes if dirs[ax] == "X"), fast_axis)
+    image_y_axis = next((ax for ax in axes if dirs[ax] == "Y"), slow_axis)
+
+    return image_x_axis, image_y_axis
 
 STEPPER_AXIS_DEFAULTS = {
     "X-Stage": {

@@ -5,7 +5,7 @@ import math
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .Scan_Types import ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan, DetectorChannelSpec
+from .Scan_Types import ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan, DetectorChannelSpec, infer_image_axes
 from ..widgets.Log_Widget import logger
 
 DAQ_SAMPLE_RATE_HZ = 500_000.0
@@ -580,25 +580,7 @@ class ScanManager(QObject):
     # ------------------------------------------------------------------
 
     def _infer_image_axes(self, fast_axis: str, slow_axis: str) -> tuple[str, str]:
-        """
-        Déduit quels axes correspondent aux axes image X et Y.
-
-        Cas visé ici :
-        - X-Galvo / Y-Galvo
-        - Y-Galvo / X-Galvo
-        - X-Stage / Y-Stage
-        - Y-Stage / X-Stage
-
-        L'idée:
-        - l'axe dont le nom commence par 'X-' devient l'axe image X
-        - l'axe dont le nom commence par 'Y-' devient l'axe image Y
-        """
-        axes = [fast_axis, slow_axis]
-
-        image_x_axis = next((ax for ax in axes if ax.startswith("X-")), fast_axis)
-        image_y_axis = next((ax for ax in axes if ax.startswith("Y-")), slow_axis)
-
-        return image_x_axis, image_y_axis
+        return infer_image_axes(fast_axis, slow_axis)
     
     def _get_axis_row_map(self, sp: ScanParams) -> dict[str, int]:
         """

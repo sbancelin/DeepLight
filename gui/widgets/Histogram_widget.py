@@ -476,9 +476,16 @@ class HistogramWidget(QWidget):
         if image_data is None:
             return
 
-        h, w = image_data.shape[:2]
-        x = max(0.0, min(x, w - 1))
-        y = max(0.0, min(y, h - 1))
+        try:
+            img_item = self.image_view.getImageItem()
+            h, w = image_data.shape[:2]
+            local = img_item.mapFromParent(pg.Point(x, y))
+            px = max(0.0, min(float(local.x()), w - 1))
+            py = max(0.0, min(float(local.y()), h - 1))
+            data_pt = img_item.mapToParent(pg.Point(px, py))
+            x, y = float(data_pt.x()), float(data_pt.y())
+        except Exception:
+            pass
 
         x0, y0 = self._start_point
 
@@ -518,9 +525,17 @@ class HistogramWidget(QWidget):
         if image_data is None:
             return
 
-        h, w = image_data.shape[:2]
-        x = max(0.0, min(x, w - 1))
-        y = max(0.0, min(y, h - 1))
+        # Convertir DATA → pixel image (gère setPos + scale), clipper, puis revenir en DATA
+        try:
+            img_item = self.image_view.getImageItem()
+            h, w = image_data.shape[:2]
+            local = img_item.mapFromParent(pg.Point(x, y))
+            px = max(0.0, min(float(local.x()), w - 1))
+            py = max(0.0, min(float(local.y()), h - 1))
+            data_pt = img_item.mapToParent(pg.Point(px, py))
+            x, y = float(data_pt.x()), float(data_pt.y())
+        except Exception:
+            pass
 
         if self._click_stage == 0:
             self._start_point = (x, y)

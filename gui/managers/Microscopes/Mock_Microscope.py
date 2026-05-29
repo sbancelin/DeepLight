@@ -4,7 +4,7 @@ from multiprocessing.shared_memory import SharedMemory
 from PySide6.QtCore import Slot
 from .Microscope_Backend_Base import MicroscopeBackendBase
 
-from ..Scan_Types import ExecutionPlan, FrameReconstructionPlan, SampleFramePlan
+from ..Scan_Types import ExecutionPlan, FrameReconstructionPlan, SampleFramePlan, infer_image_axes
 from ..Detector_Manager import MockDetectorManager
 from ..Frame_Builder import FrameBuilder
 from ..Sample_Scan_Manager import SampleScanManager
@@ -81,10 +81,10 @@ class MockMicroscope(MicroscopeBackendBase):
             self.dim_fast = max(1, int(self.pixel_values[row_fast]))
             self.dim_slow = max(1, int(self.pixel_values[row_slow]))
 
-            # les deux premiers axes actifs définissent simplement l'image 2D affichée, sans restriction XY/XZ/YZ-only.
-            self.dim_image_x = self.dim_fast
-            self.dim_image_y = self.dim_slow
-            self.fast_axis_is_image_x = True
+            image_x_axis, image_y_axis = infer_image_axes(fast_axis, slow_axis)
+            self.fast_axis_is_image_x = (fast_axis == image_x_axis)
+            self.dim_image_x = max(1, int(self.pixel_values[axis_row_map[image_x_axis]]))
+            self.dim_image_y = max(1, int(self.pixel_values[axis_row_map[image_y_axis]]))
 
         else:
             self.dim_fast = max(1, int(self.pixel_values[0]))

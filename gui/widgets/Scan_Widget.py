@@ -397,6 +397,7 @@ class ScanWidget(QWidget):
         }
 
         self.scan_kind = "laser"
+        self._settle_ms = 0.0
 
         # =========================
         # Scan mode group
@@ -588,22 +589,33 @@ class ScanWidget(QWidget):
         self.bidirectional_shift_edit.setEnabled(False)
         self._set_disabled_lineedit_style(self.bidirectional_shift_edit)
         self.bidirectional_shift_edit.setProperty("last_valid_text", "0")
-        self.bidirectional_shift_edit.setToolTip("Integer pixel shift applied only on reverse lines.")
+        self.bidirectional_shift_edit.setToolTip(
+            "Integer pixel shift applied on reverse lines.\n"
+            "Once calibrated, the delay (µs) is stored and the shift\n"
+            "adapts automatically when dwell time changes."
+        )
         self.bidirectional_shift_edit.setMinimumWidth(0)
         self.bidirectional_shift_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         grid_layout.addWidget(self.bidirectional_shift_edit, 5, 2)
+
+        self.bidir_delay_label = QLabel("—")
+        self.bidir_delay_label.setStyleSheet("color: #888; font-size: 9px;")
+        self.bidir_delay_label.setMinimumWidth(0)
+        self.bidir_delay_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.bidir_delay_label.setToolTip("Calibrated galvo delay (τ). Auto-updates shift when dwell changes.")
+        grid_layout.addWidget(self.bidir_delay_label, 5, 3)
 
         self.apply_button = QPushButton("Update")
         self.apply_button.setStyleSheet(BUTTON_STYLE)
         self.apply_button.setMinimumWidth(0)
         self.apply_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        grid_layout.addWidget(self.apply_button, 5, 3)
+        grid_layout.addWidget(self.apply_button, 5, 4)
 
         self.reset_button = QPushButton("Reset")
         self.reset_button.setStyleSheet(BUTTON_STYLE)
         self.reset_button.setMinimumWidth(0)
         self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        grid_layout.addWidget(self.reset_button, 5, 4)
+        grid_layout.addWidget(self.reset_button, 5, 5)
 
         spatial_layout.addLayout(grid_layout)
 
@@ -736,6 +748,23 @@ class ScanWidget(QWidget):
         self.laser_checkbox.setStyleSheet(CHECKBOX_STYLE)
         temporal_layout.addWidget(self.laser_checkbox, 3, 3, Qt.AlignCenter)
 
+        # Settle time (sample mode only — shared with spectro settings)
+        self.settle_label = QLabel("Settle T. (ms)")
+        self.settle_label.setStyleSheet("color: #888;")
+        self.settle_label.setMinimumWidth(0)
+        self.settle_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.settle_label.setVisible(False)
+        temporal_layout.addWidget(self.settle_label, 4, 0)
+
+        self.settle_ms_display = QLineEdit("0")
+        self.settle_ms_display.setReadOnly(True)
+        self._set_disabled_lineedit_style(self.settle_ms_display)
+        self.settle_ms_display.setMinimumWidth(0)
+        self.settle_ms_display.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.settle_ms_display.setToolTip("Settling time shared with Spectro settings (configurable in Spectro → Settings).")
+        self.settle_ms_display.setVisible(False)
+        temporal_layout.addWidget(self.settle_ms_display, 4, 1)
+
         # Ajout des deux group box au layout principal du widget
         self.main_layout.addWidget(spatial_group)
         self.main_layout.addWidget(temporal_group)
@@ -849,6 +878,15 @@ class ScanWidget(QWidget):
 
         self.axis_settings = self.axis_settings_manager.get_all_axis_settings()
     
+    def _update_bidir_delay_label(self):
+        delay = getattr(self, "_bidir_calibrated_delay_samples", 0.0)
+        if delay > 0:
+            from ..managers.Scan_manager import DAQ_SAMPLE_RATE_HZ
+            delay_us = delay / DAQ_SAMPLE_RATE_HZ * 1e6
+            self.bidir_delay_label.setText(f"τ≈{delay_us:.1f} µs")
+        else:
+            self.bidir_delay_label.setText("—")
+
     def _on_bidirectional_shift_return_pressed(self):
         value = self._read_int_edit(self.bidirectional_shift_edit, 0)
 
@@ -868,8 +906,14 @@ class ScanWidget(QWidget):
 
         self.bidirectional_shift_edit.setText(str(value))
         self.bidirectional_shift_edit.setProperty("last_valid_text", str(value))
+
+        # Stocker le délai physique calibré (τ en samples = shift_px × spp)
+        spp = self._compute_daq_samples_per_pixel_from_dwell()
+        self._bidir_calibrated_delay_samples = float(abs(value) * spp)
+        self._update_bidir_delay_label()
+
         self._on_param_changed()
-    
+
     def _count_active_scan_dimensions_except(self, excluded_combo: QComboBox) -> int:
         count = 0
         for cb in self.scan_dim_combos:
@@ -1009,6 +1053,12 @@ class ScanWidget(QWidget):
         self.laser_mode_button.blockSignals(False)
         self.sample_mode_button.blockSignals(False)
     
+    def set_settle_ms(self, ms: float):
+        """Reçoit le settle time partagé depuis le widget Spectro."""
+        self._settle_ms = max(0.0, float(ms))
+        self.settle_ms_display.setText(f"{self._settle_ms:.1f}")
+        self._update_scan_duration()
+
     def _set_scan_kind(self, scan_kind: str, apply_defaults: bool = False):
         self.scan_kind = "sample" if str(scan_kind) == "sample" else "laser"
 
@@ -1017,6 +1067,10 @@ class ScanWidget(QWidget):
                 self._apply_sample_mode_defaults()
             else:
                 self._apply_laser_mode_defaults()
+
+        is_sample = (self.scan_kind == "sample")
+        self.settle_label.setVisible(is_sample)
+        self.settle_ms_display.setVisible(is_sample)
 
         self._refresh_scan_axis_combos()
         self._update_scan_mode_buttons()
@@ -1287,20 +1341,51 @@ class ScanWidget(QWidget):
                 trail_px = lead_px
                 pix_fast_scanned = pix_fast + lead_px + trail_px
                 scanned_pixels_total = pix_fast_scanned * pix_slow
+
+                extra_factor = 1
+                for i in active_rows[2:]:
+                    px = int(float(self.pixel_edits[i].text() or "1"))
+                    extra_factor *= max(1, px)
+                scanned_pixels_total *= extra_factor
+
+                base_duration = (
+                    dwell_us * scanned_pixels_total / 1_000_000
+                ) + (frame_flyback_time_s * extra_factor)
+
             else:
-                scanned_pixels_total = pix_fast * pix_slow
+                # Sample scanning : inclure le temps de déplacement de platine + settling par pixel
+                settle_s = self._settle_ms / 1000.0
 
-            # Les axes supplémentaires (Z / P) multiplient le nombre de frames XY
-            extra_factor = 1
-            for i in active_rows[2:]:
-                px = int(float(self.pixel_edits[i].text() or "1"))
-                extra_factor *= max(1, px)
+                fast_axis = self.scan_dim_combos[row_fast].currentText()
+                slow_axis = self.scan_dim_combos[row_slow].currentText()
+                step_fast_um = max(0.0, self._read_float_edit(self.step_edits[row_fast], 0.0))
+                step_slow_um = max(0.0, self._read_float_edit(self.step_edits[row_slow], 0.0))
 
-            scanned_pixels_total *= extra_factor
+                vel_fast_um_s = 4000.0
+                vel_slow_um_s = 4000.0
+                if self.axis_settings_manager is not None:
+                    s = self.axis_settings_manager.get_axis_settings(fast_axis) or {}
+                    dflt = STEPPER_AXIS_DEFAULTS.get(fast_axis, {})
+                    vel_fast_um_s = max(1.0, float(s.get("vel_max", dflt.get("vel_max", 4.0)))) * 1000.0
+                    s = self.axis_settings_manager.get_axis_settings(slow_axis) or {}
+                    dflt = STEPPER_AXIS_DEFAULTS.get(slow_axis, {})
+                    vel_slow_um_s = max(1.0, float(s.get("vel_max", dflt.get("vel_max", 4.0)))) * 1000.0
 
-            base_duration = (
-                dwell_us * scanned_pixels_total / 1_000_000
-            ) + (frame_flyback_time_s * extra_factor)
+                # X se déplace à chaque pixel ; Y se déplace une fois par ligne (amorti sur pix_fast)
+                move_s = 0.0
+                if step_fast_um > 0 and vel_fast_um_s > 0:
+                    move_s += step_fast_um / vel_fast_um_s
+                if step_slow_um > 0 and vel_slow_um_s > 0 and pix_fast > 0:
+                    move_s += (step_slow_um / vel_slow_um_s) / pix_fast
+
+                time_per_pixel_s = dwell_us * 1e-6 + settle_s + move_s
+
+                extra_factor = 1
+                for i in active_rows[2:]:
+                    px = int(float(self.pixel_edits[i].text() or "1"))
+                    extra_factor *= max(1, px)
+
+                base_duration = time_per_pixel_s * pix_fast * pix_slow * extra_factor
 
             if self.rep_checkbox.isChecked():
                 repetitions = self._read_int_edit(self.rep_edit, 1)
@@ -1416,9 +1501,16 @@ class ScanWidget(QWidget):
     
     def _get_frame_flyback_time_s(self) -> float:
         """
-        Retourne le frame flyback du Y-Galvo depuis les settings.
+        Retourne le frame flyback de l'axe lent (2ème axe actif) depuis les settings.
         """
-        axis_name = "Y-Galvo"
+        _, iy = self._get_xy_row_indices()
+        if iy is None:
+            return 0.0
+
+        axis_name = self.scan_dim_combos[iy].currentText()
+        if axis_name == "None":
+            return 0.0
+
         defaults = SCAN_AXIS_DEFAULTS.get(axis_name, {})
         default_value = float(defaults.get("frame_flyback_time_s", 0.0))
 
@@ -1796,7 +1888,7 @@ class ScanWidget(QWidget):
             "samples_per_pixel": samples_per_pixel,
             "scan_kind": self.scan_kind,
             "pixel_source_kind": "analog_integrating",
-            "sample_settle_time_s": 0.0,
+            "sample_settle_time_s": self._settle_ms / 1000.0,
             "active_axes": active_axes,
             "axis_order": axis_order,
             "conversion_factors": conversion_factors,
@@ -1806,7 +1898,7 @@ class ScanWidget(QWidget):
             "overscan_fraction": overscan_fraction,
             "frame_flyback_time_s": frame_flyback_time_s,
             "bidirectional_scan": bidirectional_scan,
-            "bidirectional_shift_px": bidirectional_shift_px,
+            "bidirectional_shift_px": int(bidirectional_shift_px),
             "backlash_x_um": backlash_x_um,
             "repetitions": repetitions,
             "delay_between_rep": delay_between_rep,

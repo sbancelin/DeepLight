@@ -403,8 +403,16 @@ class LineProfileWidget(QWidget):
         if image_data is None or not hasattr(image_data, "shape"):
             return
 
-        x = np.clip(float(p.x()), 0, image_data.shape[1] - 1)
-        y = np.clip(float(p.y()), 0, image_data.shape[0] - 1)
+        try:
+            img_item = self.image_view.getImageItem()
+            local = img_item.mapFromParent(p)
+            px = np.clip(float(local.x()), 0, image_data.shape[1] - 1)
+            py = np.clip(float(local.y()), 0, image_data.shape[0] - 1)
+            pt = img_item.mapToParent(pg.Point(px, py))
+            x, y = float(pt.x()), float(pt.y())
+        except Exception:
+            x = np.clip(float(p.x()), 0, image_data.shape[1] - 1)
+            y = np.clip(float(p.y()), 0, image_data.shape[0] - 1)
 
         if not self._waiting_for_end_point:
             # Si une ancienne ligne existe déjà, on l'efface immédiatement
@@ -458,8 +466,16 @@ class LineProfileWidget(QWidget):
         if image_data is None or image_data.ndim < 2:
             return
 
-        x = np.clip(float(p.x()), 0, image_data.shape[1] - 1)
-        y = np.clip(float(p.y()), 0, image_data.shape[0] - 1)
+        try:
+            img_item = self.image_view.getImageItem()
+            local = img_item.mapFromParent(p)
+            px = np.clip(float(local.x()), 0, image_data.shape[1] - 1)
+            py = np.clip(float(local.y()), 0, image_data.shape[0] - 1)
+            pt = img_item.mapToParent(pg.Point(px, py))
+            x, y = float(pt.x()), float(pt.y())
+        except Exception:
+            x = np.clip(float(p.x()), 0, image_data.shape[1] - 1)
+            y = np.clip(float(p.y()), 0, image_data.shape[0] - 1)
         x0, y0 = self._start_point
         self._current_temp_end_point = (x, y)
 
@@ -586,14 +602,12 @@ class LineProfileWidget(QWidget):
     def extract_line_profile(self, image_data, start_pos, end_pos):
         img_item = self.image_view.getImageItem()
 
-        tr = img_item.transform()
-        scale_x = tr.m11() if tr.m11() != 0 else 1.0
-        scale_y = tr.m22() if tr.m22() != 0 else 1.0
-
-        x0 = start_pos.x() / scale_x
-        y0 = start_pos.y() / scale_y
-        x1 = end_pos.x() / scale_x
-        y1 = end_pos.y() / scale_y
+        # Convertir les coordonnées DATA vers les indices pixel de l'image,
+        # en tenant compte de setPos() ET setTransform() (scale).
+        local0 = img_item.mapFromParent(start_pos)
+        local1 = img_item.mapFromParent(end_pos)
+        x0, y0 = float(local0.x()), float(local0.y())
+        x1, y1 = float(local1.x()), float(local1.y())
 
         num_points = max(2, int(np.ceil(np.hypot(x1 - x0, y1 - y0))) + 1)
 

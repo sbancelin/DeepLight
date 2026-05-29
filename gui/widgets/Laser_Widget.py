@@ -85,7 +85,7 @@ LASER_DEFAULTS = {
         # mais ne sont pas utilisés par l'ELL14.
         "speed": 1,
         "steps_per_degree": 398.222222,
-        "offset_deg": 0.0,
+        "offset_deg": 24.3,
     },
 }
 
