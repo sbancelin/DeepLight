@@ -138,6 +138,7 @@ class SpectroPanelWidget(QWidget):
 
         # Paramètres de settings (non exposés dans l'UI principale)
         self._settle_ms = 10.0
+        self._backlash_x_um = 0.0
         self._brillouin_exposure_ms = 100.0
         self._raman_exposure_ms = 100.0
 
@@ -458,9 +459,25 @@ class SpectroPanelWidget(QWidget):
         row.addWidget(settle_edit)
         dialog.add_layout(row)
 
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Backlash X (µm):"))
+        backlash_edit = QLineEdit(str(self._backlash_x_um))
+        backlash_edit.setToolTip(
+            "Correction de jeu mécanique en X (µm).\n"
+            "Le stage dépasse de cette valeur le premier pixel\n"
+            "de chaque ligne inversée avant de revenir.\n"
+            "Valeur positive = dépasse vers les X+ ; négative = vers les X−."
+        )
+        row2.addWidget(backlash_edit)
+        dialog.add_layout(row2)
+
         def _on_accepted():
             try:
                 self._settle_ms = max(0.0, float(settle_edit.text().replace(",", ".")))
+            except Exception:
+                pass
+            try:
+                self._backlash_x_um = float(backlash_edit.text().replace(",", "."))
             except Exception:
                 pass
             self._update_derived_values()
@@ -666,6 +683,7 @@ class SpectroPanelWidget(QWidget):
 
         return {
             "settle_ms": self._settle_ms,
+            "backlash_x_um": self._backlash_x_um,
             "size_x_um": size_x,
             "size_y_um": size_y,
             "size_z_um": size_z,

@@ -152,7 +152,7 @@ def setup_positioner_settings_dialog(dialog):
 
             if has_backlash:
                 backlash_edit_w = dialog.findChild(QLineEdit, f"backlash_edit_{axis_key}")
-                backlash_um = max(0.0, float(backlash_edit_w.text().replace(",", "."))) if backlash_edit_w else 1.2
+                backlash_um = float(backlash_edit_w.text().replace(",", ".")) if backlash_edit_w else 0.0
 
                 if positioner_widget.axis_settings_manager is not None:
                     positioner_widget.axis_settings_manager.update_axis_settings(

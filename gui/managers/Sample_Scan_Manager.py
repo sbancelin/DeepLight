@@ -115,7 +115,7 @@ class SampleScanManager:
         self.samples_per_pixel = max(1, int(self.scan_parameters.get("samples_per_pixel", 1) or 1))
         self.sample_settle_time_s = max(0.0, float(self.scan_parameters.get("sample_settle_time_s", 0.0) or 0.0))
         self.bidirectional = bool(self.scan_parameters.get("bidirectional_scan", False))
-        self.backlash_x_um = max(0.0, float(self.scan_parameters.get("backlash_x_um", 0.0) or 0.0))
+        self.backlash_x_um = float(self.scan_parameters.get("backlash_x_um", 0.0) or 0.0)
 
     def _find_axis_row(self, preferred: Iterable[str], exclude_axis: Optional[str] = None) -> Optional[Dict]:
         for axis in preferred:
@@ -191,7 +191,7 @@ class SampleScanManager:
             if self.bidirectional and (iy % 2 == 1):
                 x_iter = range(self.nx - 1, -1, -1)
                 # pré-positionnement backlash: dépasser le premier pixel (le plus à droite)
-                if self.backlash_x_um > 0.0:
+                if self.backlash_x_um != 0.0:
                     x_first = x0 + (self.nx - 1) * self.step_x_um if self.nx > 1 else self.offset_x_um
                     yield SamplePixelEvent(
                         ix=self.nx - 1,

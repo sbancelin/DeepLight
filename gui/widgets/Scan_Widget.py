@@ -1802,10 +1802,10 @@ class ScanWidget(QWidget):
             velocity_max[axis_name] = float(s.get("vel_max", defaults.get("vel_max", 1.0)))
 
         # Backlash X pour le mode sample serpentin (lu depuis les settings X-Stage)
-        backlash_x_um = 1.2
+        backlash_x_um = 0.0
         if self.axis_settings_manager is not None:
             x_stage_cfg = self.axis_settings_manager.get_axis_settings("X-Stage")
-            backlash_x_um = max(0.0, float(x_stage_cfg.get("backlash_um", 1.2)))
+            backlash_x_um = float(x_stage_cfg.get("backlash_um", 0.0))
 
         # Récupérer les autres paramètres
         bidirectional_scan = self.bidirectional_button.isChecked()

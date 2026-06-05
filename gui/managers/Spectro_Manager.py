@@ -294,19 +294,28 @@ class _SpectroMappingWorker(QObject):
     def run(self):
         self._running = True
         try:
-            total = len(self.pixel_list)
+            total = sum(1 for p in self.pixel_list if not p.get("is_backlash", False))
+            backlash_x_um = float(self.scan_parameters.get("backlash_x_um", 0.0) or 0.0)
             n_repeats = max(1, int(self.scan_parameters.get("n_repeats", 1) or 1))
             repeat_delay_s = max(0.0, float(self.scan_parameters.get("repeat_delay_s", 0.0) or 0.0))
+            pixel_done = 0
 
-            for idx, info in enumerate(self.pixel_list):
+            for info in self.pixel_list:
                 if not self._running:
                     break
 
                 t = int(info.get("t_index", 0))
-                lin = int(info["linear_index"])
                 x = int(info["x_index"])
                 y = int(info["y_index"])
                 z = int(info["z_index"])
+
+                if info.get("is_backlash", False):
+                    pos_um = self.dataset["positions_um"][t, z, y, x]
+                    x_overshoot = float(pos_um[0]) + backlash_x_um
+                    self._move_stage_to_pixel_blocking(x_overshoot, float(pos_um[1]), float(pos_um[2]))
+                    continue
+
+                lin = int(info["linear_index"])
 
                 if info.get("is_repeat_start", False) and repeat_delay_s > 0:
                     self.sigStatusMessage.emit(
@@ -369,7 +378,8 @@ class _SpectroMappingWorker(QObject):
                     self.sigSpectrumUpdate.emit(spectrum)
 
                 self.dataset["pixel_valid"][t, z, y, x] = True
-                self.sigProgress.emit(idx + 1, total)
+                pixel_done += 1
+                self.sigProgress.emit(pixel_done, total)
 
                 exposure_ms = float(self.scan_parameters.get("exposure_ms", 0.0) or 0.0)
                 elapsed_acq_s = time.perf_counter() - acq_t0
@@ -652,7 +662,8 @@ class SpectroManager(QObject):
         pz = max(1, int(self._scan_parameters.get("pixels_z", 1) or 1))
         pt = max(1, int(self._scan_parameters.get("n_repeats", 1) or 1))
 
-        self.pixel_list = self._build_serpentine_grid(px, py, pz, n_repeats=pt)
+        backlash_x_um = float(self._scan_parameters.get("backlash_x_um", 0.0) or 0.0)
+        self.pixel_list = self._build_serpentine_grid(px, py, pz, n_repeats=pt, backlash_x_um=backlash_x_um)
         self.current_pixel_index = 0
         self.dataset = self._create_dataset(
             self._scan_parameters,
@@ -661,7 +672,8 @@ class SpectroManager(QObject):
             self._raman_params,
             self._save_parameters,
         )
-        
+
+        real_pixels = sum(1 for p in self.pixel_list if not p.get("is_backlash", False))
         now = time.perf_counter()
         self._last_brillouin_ui_emit_t = now - self._ui_update_period_s
         self._last_raman_ui_emit_t = now - self._ui_update_period_s
@@ -669,7 +681,7 @@ class SpectroManager(QObject):
         self._mapping_started_t0 = time.perf_counter()
 
         self.sigStatusMessage.emit("Spectro acquisition started")
-        self.sigProgress.emit(0, len(self.pixel_list))
+        self.sigProgress.emit(0, real_pixels)
 
         self._mapping_thread = QThread(self)
         self._mapping_worker = _SpectroMappingWorker(
@@ -874,7 +886,7 @@ class SpectroManager(QObject):
     # ==========================================================
     # Grid / ordre serpentin
     # ==========================================================
-    def _build_serpentine_grid(self, pixels_x, pixels_y, pixels_z=1, n_repeats=1):
+    def _build_serpentine_grid(self, pixels_x, pixels_y, pixels_z=1, n_repeats=1, backlash_x_um=0.0):
         grid = []
         linear = 0
         for t in range(max(1, int(n_repeats))):
@@ -883,6 +895,16 @@ class SpectroManager(QObject):
                     xs = list(range(int(pixels_x)))
                     if y % 2 == 1:
                         xs.reverse()
+                        if backlash_x_um != 0.0 and pixels_x > 1:
+                            grid.append({
+                                "linear_index": -1,
+                                "t_index": int(t),
+                                "x_index": int(pixels_x - 1),
+                                "y_index": int(y),
+                                "z_index": int(z),
+                                "is_backlash": True,
+                                "is_repeat_start": False,
+                            })
                     for x in xs:
                         grid.append({
                             "linear_index": int(linear),
@@ -890,7 +912,8 @@ class SpectroManager(QObject):
                             "x_index": int(x),
                             "y_index": int(y),
                             "z_index": int(z),
-                            "is_repeat_start": bool(t > 0 and z == 0 and y == 0 and x == 0),
+                            "is_backlash": False,
+                            "is_repeat_start": bool(t > 0 and z == 0 and y == 0 and x == xs[0]),
                         })
                         linear += 1
         return grid
@@ -1044,10 +1067,22 @@ class SpectroManager(QObject):
 
         try:
             info = self.pixel_list[self.current_pixel_index]
-            lin = int(info["linear_index"])
             x = int(info["x_index"])
             y = int(info["y_index"])
             z = int(info["z_index"])
+
+            if info.get("is_backlash", False):
+                pos_um = self.dataset["positions_um"][z, y, x]
+                backlash_x_um = float(self._scan_parameters.get("backlash_x_um", 0.0) or 0.0)
+                x_overshoot = float(pos_um[0]) + backlash_x_um
+                self._move_stage_to_pixel_blocking(x_overshoot, float(pos_um[1]), float(pos_um[2]))
+                self.current_pixel_index += 1
+                self._schedule_next_pixel(delay_ms=0)
+                return
+
+            lin = int(info["linear_index"])
+
+            real_total = sum(1 for p in self.pixel_list if not p.get("is_backlash", False))
 
             pos_um = self.dataset["positions_um"][z, y, x]
             x_um = float(pos_um[0])
@@ -1065,9 +1100,8 @@ class SpectroManager(QObject):
 
             acq_t0 = time.perf_counter()
 
-            total = len(self.pixel_list)
             self.sigStatusMessage.emit(
-                f"Spectro {lin + 1}/{total} | X={x + 1}/{self._scan_parameters.get('pixels_x', 1)} "
+                f"Spectro {lin + 1}/{real_total} | X={x + 1}/{self._scan_parameters.get('pixels_x', 1)} "
                 f"Y={y + 1}/{self._scan_parameters.get('pixels_y', 1)} "
                 f"Z={z + 1}/{self._scan_parameters.get('pixels_z', 1)}"
             )
@@ -1115,7 +1149,7 @@ class SpectroManager(QObject):
             self.dataset["pixel_valid"][z, y, x] = True
 
             self.current_pixel_index += 1
-            self.sigProgress.emit(self.current_pixel_index, total)
+            self.sigProgress.emit(lin + 1, real_total)
 
             # cadence point par point :
             # move -> settle -> acquisition
