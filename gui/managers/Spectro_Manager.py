@@ -82,6 +82,12 @@ class _SpectroMappingWorker(QObject):
         self._BRILLOUIN_SHAPE = (1200, 1200)
         self._RAMAN_POINTS = 1024
 
+        # throttling des updates UI (l'émission de chaque image 1200x1200
+        # float32 à chaque pixel charge inutilement le thread GUI)
+        self._ui_period_s = 0.5
+        self._last_img_emit_t = 0.0
+        self._last_spec_emit_t = 0.0
+
     def stop(self):
         self._running = False
 
@@ -108,7 +114,8 @@ class _SpectroMappingWorker(QObject):
 
         raise RuntimeError("Spectro mapping stopped.")
 
-    def _move_stage_to_pixel_blocking(self, x_um: float, y_um: float, z_um: float):
+    def _move_stage_to_pixel_blocking(self, x_um: float, y_um: float, z_um: float,
+                                      tolerance_um: float | None = None):
         pm = self.positioner_manager
         if pm is None:
             return
@@ -117,13 +124,24 @@ class _SpectroMappingWorker(QObject):
         if callable(move_xy_blocking):
             speed_x = max(0.01, float(pm.get_max_speed("x")))
             speed_y = max(0.01, float(pm.get_max_speed("y")))
-            move_xy_blocking(
-                float(x_um),
-                float(y_um),
-                float(speed_x),
-                float(speed_y),
-                timeout_s=30.0,
-            )
+            try:
+                move_xy_blocking(
+                    float(x_um),
+                    float(y_um),
+                    float(speed_x),
+                    float(speed_y),
+                    timeout_s=30.0,
+                    tolerance_um=tolerance_um,
+                )
+            except TypeError:
+                # implémentation legacy sans tolerance_um
+                move_xy_blocking(
+                    float(x_um),
+                    float(y_um),
+                    float(speed_x),
+                    float(speed_y),
+                    timeout_s=30.0,
+                )
         else:
             speed_x = max(0.01, float(pm.get_max_speed("x")))
             speed_y = max(0.01, float(pm.get_max_speed("y")))
@@ -322,7 +340,14 @@ class _SpectroMappingWorker(QObject):
                     pos_um = self.dataset["positions_um"][t, z, y, x]
                     offset = backlash_x_um if y % 2 == 1 else backlash_x_forward_um
                     x_overshoot = float(pos_um[0]) + offset
-                    self._move_stage_to_pixel_blocking(x_overshoot, float(pos_um[1]), float(pos_um[2]))
+                    # Le waypoint ne sert qu'à fixer la direction d'approche :
+                    # sa précision est sans importance, on attend avec une
+                    # tolérance relâchée pour ne pas perdre de temps.
+                    way_tol_um = max(0.3 * abs(offset), 0.5)
+                    self._move_stage_to_pixel_blocking(
+                        x_overshoot, float(pos_um[1]), float(pos_um[2]),
+                        tolerance_um=way_tol_um,
+                    )
                     continue
 
                 lin = int(info["linear_index"])
@@ -368,6 +393,8 @@ class _SpectroMappingWorker(QObject):
                     if self.mapping_started_t0 is not None else np.nan
                 )
 
+                is_last_pixel = (lin + 1 >= total)
+
                 if "brillouin_images" in self.dataset:
                     image = self._try_acquire_brillouin_from_hardware(self.brillouin_params)
                     if image is None:
@@ -375,7 +402,11 @@ class _SpectroMappingWorker(QObject):
                             x_idx=x, y_idx=y, z_idx=z, t_index=lin, params=self.brillouin_params
                         )
                     self.dataset["brillouin_images"][t, z, y, x] = image
-                    self.sigImageUpdate.emit(image)
+
+                    now = time.perf_counter()
+                    if is_last_pixel or now - self._last_img_emit_t >= self._ui_period_s:
+                        self._last_img_emit_t = now
+                        self.sigImageUpdate.emit(image)
 
                 if "raman_spectra" in self.dataset:
                     wavelengths = self.dataset["raman_wavelengths"]
@@ -384,7 +415,11 @@ class _SpectroMappingWorker(QObject):
                         params=self.raman_params, wavelengths=wavelengths
                     )
                     self.dataset["raman_spectra"][t, z, y, x] = spectrum
-                    self.sigSpectrumUpdate.emit(spectrum)
+
+                    now = time.perf_counter()
+                    if is_last_pixel or now - self._last_spec_emit_t >= self._ui_period_s:
+                        self._last_spec_emit_t = now
+                        self.sigSpectrumUpdate.emit(spectrum)
 
                 self.dataset["pixel_valid"][t, z, y, x] = True
                 pixel_done += 1

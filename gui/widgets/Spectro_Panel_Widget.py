@@ -133,6 +133,11 @@ class SpectroPanelWidget(QWidget):
     _RAMAN_POINTS = 1024
     _RAMAN_BYTES_PER_POINT = 4
 
+    # Overhead fixe par pixel (arm/readout caméra, transactions série,
+    # détection d'arrivée platine). Valeur à recaler après mesure réelle
+    # (cf. logs [PICam] snap: acquire=...).
+    _PIXEL_OVERHEAD_S = 0.20
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -428,6 +433,9 @@ class SpectroPanelWidget(QWidget):
         self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
         self.progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         acq_layout.addWidget(self.progress_bar, 1, 0, 1, 2)
+        # La progression spectro est affichée dans la barre globale en bas
+        # du GUI (GlobalProgressWidget) ; la barre locale est masquée.
+        self.progress_bar.hide()
 
         content_layout.addWidget(acq_frame)
 
@@ -614,7 +622,11 @@ class SpectroPanelWidget(QWidget):
         move_time_s = avg_xy_um / stage_speed_um_s if stage_speed_um_s > 0 else 0.0
 
         n_pix = n_xy * pix_z
-        t_per_pix_s = max(0.0, exposure_ms + self._settle_ms) / 1000.0 + move_time_s
+        t_per_pix_s = (
+            max(0.0, exposure_ms + self._settle_ms) / 1000.0
+            + move_time_s
+            + self._PIXEL_OVERHEAD_S
+        )
         scan_s = n_pix * t_per_pix_s
         total_acq_s = pix_t * scan_s + max(0, pix_t - 1) * step_t_s
         self.estimated_time_edit.setText(self._format_duration(total_acq_s))
@@ -757,11 +769,6 @@ class SpectroPanelWidget(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(percent)
         self.progress_bar.setFormat(f"{done}/{total} ({percent}%)")
-
-    def update_eta(self, elapsed_s: float, remaining_s: float):
-        elapsed_str = self._format_duration(elapsed_s)
-        remaining_str = self._format_duration(remaining_s)
-        self.estimated_time_edit.setText(f"écoulé {elapsed_str} / restant {remaining_str}")
 
     def get_save_parameters(self):
         return {

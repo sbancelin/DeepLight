@@ -18,11 +18,13 @@ class PanelDock(QDockWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Scrollbar horizontale si le dock devient plus étroit que son contenu :
+        # tout reste accessible (ex: bouton Settings) même sur petit écran.
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
 
-        MIN_DOCK_WIDTH = 400
-        MAX_DOCK_WIDTH = 1000
+        MIN_DOCK_WIDTH = 220
+        MAX_DOCK_WIDTH = 1400
         self.setMinimumWidth(MIN_DOCK_WIDTH)
         self.setMaximumWidth(MAX_DOCK_WIDTH)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import ctypes
 from pathlib import Path
 from ctypes import POINTER, byref
@@ -91,6 +92,7 @@ class PiCamKuroManager:
         self._last_dtype = np.uint16
         self._applied_params = None
         self._cached_sensor_shape = None
+        self._cached_frame_size_bytes = None
 
     # ------------------------------------------------------------------
     # low-level helpers
@@ -325,6 +327,7 @@ class PiCamKuroManager:
                 self.camera = PicamHandle()
                 self._applied_params = None
                 self._cached_sensor_shape = None
+                self._cached_frame_size_bytes = None
 
                 if self._dll_dir_handle is not None:
                     try:
@@ -460,11 +463,18 @@ class PiCamKuroManager:
     def apply_parameters(self, params: dict | None):
         params = dict(params or {})
         self.connect()
+        t0 = time.perf_counter()
         self._set_exposure(float(params.get("exposure_ms", 10.0) or 10.0))
         self._set_pixel_format(params)
         self._set_roi_and_binning(params)
         self._commit()
+        # FrameSize ne change qu'avec ROI/binning : on le met en cache ici
+        # pour éviter un appel DLL à chaque snap.
+        self._cached_frame_size_bytes = self._get_integer_parameter(PicamParameter_FrameSize)
         self._applied_params = params
+        logger.debug(
+            f"[PICam] apply_parameters done in {(time.perf_counter() - t0) * 1000.0:.1f} ms"
+        )
 
     # ------------------------------------------------------------------
     # acquisition
@@ -473,16 +483,19 @@ class PiCamKuroManager:
     def snap(self, params: dict | None = None) -> np.ndarray:
         normalized = dict(params or {})
         if normalized != self._applied_params:
+            logger.debug("[PICam] snap: parameters changed, re-applying (slow path)")
             self.apply_parameters(normalized)
 
         available = PicamAvailableData()
         errors = piint(0)
 
+        exposure_ms = float(normalized.get("exposure_ms", 10.0) or 10.0)
         timeout_ms = max(
             1000,
-            int(round(float(normalized.get("exposure_ms", 10.0) or 10.0) * 5.0 + 2000.0))
+            int(round(exposure_ms * 5.0 + 2000.0))
         )
 
+        t0 = time.perf_counter()
         self._check(
             self.lib.Picam_Acquire(
                 self.camera,
@@ -493,8 +506,16 @@ class PiCamKuroManager:
             ),
             "Picam_Acquire",
         )
+        acquire_ms = (time.perf_counter() - t0) * 1000.0
+        logger.debug(
+            f"[PICam] snap: acquire={acquire_ms:.1f} ms (exposure={exposure_ms:.1f} ms, "
+            f"overhead={acquire_ms - exposure_ms:.1f} ms)"
+        )
 
-        frame_size_bytes = self._get_integer_parameter(PicamParameter_FrameSize)
+        frame_size_bytes = self._cached_frame_size_bytes
+        if not frame_size_bytes:
+            frame_size_bytes = self._get_integer_parameter(PicamParameter_FrameSize)
+            self._cached_frame_size_bytes = frame_size_bytes
 
         if frame_size_bytes <= 0:
             raise RuntimeError("PICam returned an invalid frame size")

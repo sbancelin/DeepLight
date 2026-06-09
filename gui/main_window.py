@@ -348,6 +348,11 @@ class MainWindow(QMainWindow):
                 raman_params=raman_params,
                 save_params=save_params,
             )
+
+            try:
+                self.ui.global_progress_widget.start_task("Spectro")
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
         except Exception as e:
             self._on_spectro_status_changed(f"Spectro start failed: {e}")
             self.ui.spectro_panel_widget.set_running(False)
@@ -375,6 +380,11 @@ class MainWindow(QMainWindow):
         try:
             self.ui.spectro_panel_widget.set_running(False)
             self.ui.spectro_widget.set_running(False)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        try:
+            self.ui.global_progress_widget.finish_task("Stopped")
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
@@ -487,8 +497,11 @@ class MainWindow(QMainWindow):
 
     @Slot(float, float)
     def _on_spectro_eta_changed(self, elapsed_s: float, remaining_s: float):
+        # Le champ "Estimated time" du panneau spectro reste figé sur la valeur
+        # calculée ; l'écoulé/restant temps réel est affiché dans la barre
+        # de progression globale en bas du GUI.
         try:
-            self.ui.spectro_panel_widget.update_eta(elapsed_s, remaining_s)
+            self.ui.global_progress_widget.set_eta(elapsed_s, remaining_s)
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
@@ -496,6 +509,11 @@ class MainWindow(QMainWindow):
     def _on_spectro_progress_changed(self, done: int, total: int):
         try:
             self.ui.spectro_panel_widget.set_progress(done, total)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        try:
+            self.ui.global_progress_widget.set_progress(done, total, source="Spectro")
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
@@ -512,6 +530,11 @@ class MainWindow(QMainWindow):
         try:
             total = len(self.spectro_manager.pixel_list)
             self.ui.spectro_panel_widget.set_progress(total, total)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        try:
+            self.ui.global_progress_widget.finish_task("Done")
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
@@ -548,6 +571,11 @@ class MainWindow(QMainWindow):
 
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
+
+        try:
+            self.ui.global_progress_widget.finish_task("Failed")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
         logger.error(f"[Spectro] {message}")
         self._on_spectro_status_changed("Error")
@@ -1071,6 +1099,20 @@ class MainWindow(QMainWindow):
             self.scan_manager.consume_samples(int(delta_samples))
         except Exception as e:
             logger.warning(f"[MainWindow] consume_samples error: {e}")
+
+        # Progression globale (bas du GUI) pour les scans laser
+        try:
+            self._scan_samples_done = int(getattr(self, "_scan_samples_done", 0)) + int(delta_samples)
+            total = int(getattr(self, "_scan_samples_total", 0))
+            if total > 0:
+                # en preview continu, les samples dépassent le total d'une
+                # frame : on affiche la progression de la frame courante
+                done = self._scan_samples_done
+                if done > total:
+                    done = done % total or total
+                self.ui.global_progress_widget.set_progress(done, total, source="Scan")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
     
     @Slot(dict)
     def on_sample_status_updated(self, info: dict):
@@ -1086,6 +1128,12 @@ class MainWindow(QMainWindow):
                 px_s = float(info.get("pixels_per_s", 0.0) or 0.0)
                 total_px = int(info.get("pixel_total", 0) or 0)
 
+                try:
+                    self.ui.global_progress_widget.set_progress(total_px, total_px, source="Scan")
+                    self.ui.global_progress_widget.finish_task("Done")
+                except Exception as e:
+                    logger.debug(f"[MainWindow] ignored exception: {e}")
+
                 self.statusBar().showMessage(
                     f"Sample scan done - {total_px} px in {elapsed_s:.2f} s ({px_s:.1f} px/s)",
                     5000
@@ -1100,6 +1148,11 @@ class MainWindow(QMainWindow):
             y_um = float(info.get("y_um", 0.0) or 0.0)
 
             if pixel_total > 0:
+                try:
+                    self.ui.global_progress_widget.set_progress(pixel_done, pixel_total, source="Scan")
+                except Exception as e:
+                    logger.debug(f"[MainWindow] ignored exception: {e}")
+
                 msg = (
                     f"Sample scan - line {line_index + 1}/{line_count} | "
                     f"{pixel_done}/{pixel_total} px | "
@@ -1355,12 +1408,32 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
+        # Barre de progression globale (bas du GUI)
+        self._scan_samples_done = 0
+        self._scan_samples_total = 0
+        try:
+            plan = self.scan_manager.get_last_execution_plan()
+            if plan is not None:
+                self._scan_samples_total = int(plan.total_samples)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        try:
+            self.ui.global_progress_widget.start_task("Scan", total=self._scan_samples_total)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
         self.user_shutter_override = None
         self._update_controls_enabled(True)
 
     @Slot()
     def on_acquisition_stopped(self):
         """Gère l'arrêt de l'acquisition."""
+        try:
+            self.ui.global_progress_widget.finish_task("Stopped")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
         try:
             self.scan_manager.flush_pending_buffers()
         except Exception as e:

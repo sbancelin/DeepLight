@@ -1894,6 +1894,17 @@ class _ScientificaMotion8XYController:
 # REAL POSITIONER MANAGER
 # =============================================================================
 
+class _XYStallError(RuntimeError):
+    """
+    La platine XY s'est arrêtée hors tolérance (jeu mécanique, deadband
+    contrôleur). err_um = erreur résiduelle max sur X/Y.
+    """
+
+    def __init__(self, message: str, err_um: float):
+        super().__init__(message)
+        self.err_um = float(err_um)
+
+
 class RealHardwarePositionerManager(PositionerManager):
     """
     Real V1 hardware positioner manager.
@@ -1920,6 +1931,10 @@ class RealHardwarePositionerManager(PositionerManager):
         self._p = p_controller
         self._pending_targets_abs = {}
         self._pending_sample_xy_rel = {"x": None, "y": None}
+
+        # True pendant un move XY bloquant (worker scan/spectro) :
+        # le poll GUI ne touche alors pas au port série XY.
+        self._xy_blocking_busy = False
 
         # Initialize abs positions from hardware when possible
         self._refresh_from_hardware("x")
@@ -1963,41 +1978,65 @@ class RealHardwarePositionerManager(PositionerManager):
 
     @Slot()
     def _poll_hardware_positions(self):
-        for axis in ("x", "y", "z", "p"):
-            if axis not in self._state:
-                continue
+        # --- XY : une seule transaction série pour les deux axes.
+        # Pendant un move XY bloquant (worker scan/spectro), on ne touche pas
+        # au bus : la boucle d'attente du worker met déjà le cache à jour et
+        # on évite de saturer le port série.
+        if (
+            self._xy is not None
+            and not self._xy_blocking_busy
+            and ("x" in self._state or "y" in self._state)
+        ):
+            try:
+                x_um, y_um = self._xy.get_xy_abs_um()
+            except Exception:
+                x_um = y_um = None
 
-            st = self._state[axis]
-
-            # Toujours relire la position réelle
-            self._refresh_from_hardware(axis, force_emit=False)
-
-            if axis in ("x", "y") and st.moving and self._xy is not None:
-                target = self._pending_targets_abs.get(axis, None)
-                cur = float(st.abs_pos)
-                tol = max(float(st.tolerance), 1.0)
-
-                arrived = False
-                if target is not None and abs(cur - float(target)) <= tol:
-                    arrived = True
+            if x_um is not None:
+                for axis, new_abs in (("x", float(x_um)), ("y", float(y_um))):
+                    if axis not in self._state:
+                        continue
+                    st = self._state[axis]
+                    changed = abs(float(st.abs_pos) - new_abs) > max(float(st.tolerance), 1e-6)
+                    st.abs_pos = new_abs
+                    if changed:
+                        self._emit_positions(axis)
 
                 # IMPORTANT:
                 # on ne se fie plus à self._xy.is_moving() pour la Scientifica,
                 # car ce retour peut être faux trop tôt selon le contrôleur / protocole.
                 # La seule source de vérité ici est la position réellement relue.
-                if arrived:
-                    for ax_name in ("x", "y"):
-                        if ax_name in self._state:
-                            st_ax = self._state[ax_name]
-                            st_ax.moving = False
-                            st_ax.target_abs = None
-                            self._pending_targets_abs.pop(ax_name, None)
-                            self.movingChanged.emit(ax_name, False)
-                            self._emit_positions(ax_name)
-                    continue
+                moving_axes = [
+                    a for a in ("x", "y")
+                    if a in self._state and self._state[a].moving
+                ]
+                if moving_axes:
+                    arrived = True
+                    for axis in moving_axes:
+                        st = self._state[axis]
+                        target = self._pending_targets_abs.get(axis, None)
+                        tol = max(float(st.tolerance), 1.0)
+                        if target is None or abs(float(st.abs_pos) - float(target)) > tol:
+                            arrived = False
+                            break
 
-            if axis == "z" and st.moving and self._z is not None:
-                target = self._pending_targets_abs.get(axis, None)
+                    if arrived:
+                        for ax_name in ("x", "y"):
+                            if ax_name in self._state:
+                                st_ax = self._state[ax_name]
+                                st_ax.moving = False
+                                st_ax.target_abs = None
+                                self._pending_targets_abs.pop(ax_name, None)
+                                self.movingChanged.emit(ax_name, False)
+                                self._emit_positions(ax_name)
+
+        # --- Z
+        if "z" in self._state:
+            st = self._state["z"]
+            self._refresh_from_hardware("z", force_emit=False)
+
+            if st.moving and self._z is not None:
+                target = self._pending_targets_abs.get("z", None)
                 cur = float(st.abs_pos)
                 tol = max(float(st.tolerance), 0.5)
 
@@ -2008,9 +2047,13 @@ class RealHardwarePositionerManager(PositionerManager):
                 if arrived or (not self._z.is_moving()):
                     st.moving = False
                     st.target_abs = None
-                    self._pending_targets_abs.pop(axis, None)
-                    self.movingChanged.emit(axis, False)
-                    self._emit_positions(axis)
+                    self._pending_targets_abs.pop("z", None)
+                    self.movingChanged.emit("z", False)
+                    self._emit_positions("z")
+
+        # --- P
+        if "p" in self._state:
+            self._refresh_from_hardware("p", force_emit=False)
     
     def validate_scan_targets(self, scan_parameters: dict):
         """
@@ -2199,11 +2242,23 @@ class RealHardwarePositionerManager(PositionerManager):
                 self.movingChanged.emit(ax_name, False)
             raise
     
-    def wait_until_xy_reached(self, x_rel_target: float, y_rel_target: float, timeout_s: float = 30.0):
+    def wait_until_xy_reached(
+        self,
+        x_rel_target: float,
+        y_rel_target: float,
+        timeout_s: float = 30.0,
+        tolerance_um: float | None = None,
+        stall_window_s: float = 0.7,
+    ):
         """
         Attend que la platine XY atteigne la cible relative demandée.
         Source de vérité = position réellement relue sur le hardware.
         Une seule transaction série par itération (lecture XY atomique).
+
+        tolerance_um : tolérance d'arrivée optionnelle (>= tolérance des axes).
+        Détection de blocage : si la position n'évolue plus pendant
+        stall_window_s alors qu'on est hors tolérance, lève _XYStallError
+        immédiatement au lieu d'attendre le timeout complet.
         """
         if self._xy is None:
             raise RuntimeError("XY controller is not available.")
@@ -2211,8 +2266,15 @@ class RealHardwarePositionerManager(PositionerManager):
         t0 = time.time()
         tol_x = max(float(self.get_tolerance("x")), 0.1)
         tol_y = max(float(self.get_tolerance("y")), 0.1)
+        if tolerance_um is not None:
+            tol_x = max(tol_x, float(tolerance_um))
+            tol_y = max(tol_y, float(tolerance_um))
         zero_x = float(self._state["x"].zero_offset)
         zero_y = float(self._state["y"].zero_offset)
+
+        stall_eps_um = 0.05
+        last_x = last_y = None
+        stall_t0 = None
 
         while True:
             try:
@@ -2230,14 +2292,34 @@ class RealHardwarePositionerManager(PositionerManager):
             self._state["y"].abs_pos = y_abs
             cur_x = x_abs - zero_x
             cur_y = y_abs - zero_y
+            err_x = abs(cur_x - float(x_rel_target))
+            err_y = abs(cur_y - float(y_rel_target))
 
-            if (
-                abs(cur_x - float(x_rel_target)) <= tol_x
-                and abs(cur_y - float(y_rel_target)) <= tol_y
-            ):
+            if err_x <= tol_x and err_y <= tol_y:
                 break
 
-            if time.time() - t0 > float(timeout_s):
+            now = time.time()
+
+            if (
+                last_x is not None
+                and abs(cur_x - last_x) <= stall_eps_um
+                and abs(cur_y - last_y) <= stall_eps_um
+            ):
+                if stall_t0 is None:
+                    stall_t0 = now
+                elif now - stall_t0 >= float(stall_window_s):
+                    raise _XYStallError(
+                        f"XY stage stalled off target: "
+                        f"target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f}) "
+                        f"current=({cur_x:.3f}, {cur_y:.3f})",
+                        err_um=max(err_x, err_y),
+                    )
+            else:
+                stall_t0 = None
+
+            last_x, last_y = cur_x, cur_y
+
+            if now - t0 > float(timeout_s):
                 raise RuntimeError(
                     f"Timeout while waiting for XY target: "
                     f"target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f}) "
@@ -2246,6 +2328,12 @@ class RealHardwarePositionerManager(PositionerManager):
 
             time.sleep(0.01)
 
+    # Réémissions max de la commande XY quand la platine se bloque hors
+    # tolérance (typiquement traversée du jeu mécanique après inversion).
+    _XY_MAX_RESENDS = 4
+    # Erreur résiduelle max acceptée (avec warning) plutôt que d'avorter un scan.
+    _XY_FINAL_ACCEPT_UM = 2.0
+
     def move_xy_to_rel_blocking(
         self,
         x_rel_target: float,
@@ -2253,73 +2341,76 @@ class RealHardwarePositionerManager(PositionerManager):
         speed_x: float,
         speed_y: float,
         timeout_s: float = 30.0,
+        tolerance_um: float | None = None,
     ):
         """
         Déplacement XY atomique + attente de la cible.
         Utilisé pour le sample scan point par point.
 
         Robustesse:
-        - 1er envoi du move
-        - attente de la cible
-        - si timeout: relire la position, réémettre UNE fois la même commande
-        - si nouvel échec: lever l'erreur
+        - envoi du move puis attente de la cible
+        - si la platine se bloque hors tolérance (jeu mécanique / deadband),
+          réémission immédiate de la commande (nouveau profil de mouvement,
+          consigne franche) jusqu'à _XY_MAX_RESENDS fois au lieu d'attendre
+          le timeout complet
+        - en dernier recours, une erreur résiduelle <= _XY_FINAL_ACCEPT_UM
+          est acceptée avec warning pour ne pas avorter le scan
         """
-        self.move_xy_to_rel(
-            float(x_rel_target),
-            float(y_rel_target),
-            float(speed_x),
-            float(speed_y),
-        )
-
+        self._xy_blocking_busy = True
         try:
-            self.wait_until_xy_reached(
-                float(x_rel_target),
-                float(y_rel_target),
-                timeout_s=float(timeout_s),
-            )
-            return
-        except RuntimeError as first_error:
-            # lecture fraîche avant retry (une seule transaction série)
-            try:
-                x_abs, y_abs = self._xy.get_xy_abs_um()
-                self._state["x"].abs_pos = x_abs
-                self._state["y"].abs_pos = y_abs
-                cur_x = x_abs - float(self._state["x"].zero_offset)
-                cur_y = y_abs - float(self._state["y"].zero_offset)
-                tol_x = max(float(self.get_tolerance("x")), 0.1)
-                tol_y = max(float(self.get_tolerance("y")), 0.1)
-                if (
-                    abs(cur_x - float(x_rel_target)) <= tol_x
-                    and abs(cur_y - float(y_rel_target)) <= tol_y
-                ):
-                    return
-            except Exception:
-                pass
+            deadline = time.time() + float(timeout_s)
+            attempts = 0
 
-            self._log(
-                "[XY MOVE BLOCKING] first wait timed out, retrying once "
-                f"target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f})"
-            )
-
-            # petit délai avant réémission
-            time.sleep(0.05)
-
-            self.move_xy_to_rel(
-                float(x_rel_target),
-                float(y_rel_target),
-                float(speed_x),
-                float(speed_y),
-            )
-
-            try:
-                self.wait_until_xy_reached(
+            while True:
+                self.move_xy_to_rel(
                     float(x_rel_target),
                     float(y_rel_target),
-                    timeout_s=max(float(timeout_s), 5.0),
+                    float(speed_x),
+                    float(speed_y),
                 )
-                return
-            except RuntimeError:
-                raise first_error
+
+                try:
+                    remaining_s = max(1.0, deadline - time.time())
+                    self.wait_until_xy_reached(
+                        float(x_rel_target),
+                        float(y_rel_target),
+                        timeout_s=remaining_s,
+                        tolerance_um=tolerance_um,
+                    )
+                    return
+                except _XYStallError as stall:
+                    attempts += 1
+                    if attempts <= self._XY_MAX_RESENDS and time.time() < deadline:
+                        self._log(
+                            f"[XY MOVE BLOCKING] stalled off target "
+                            f"(err={stall.err_um:.3f} µm), resending move "
+                            f"({attempts}/{self._XY_MAX_RESENDS})"
+                        )
+                        continue
+
+                    if stall.err_um <= self._XY_FINAL_ACCEPT_UM:
+                        logger.warning(
+                            f"[RealHardwarePositioner] XY target accepted with "
+                            f"residual error {stall.err_um:.3f} µm after "
+                            f"{attempts} attempt(s) "
+                            f"(target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f}))"
+                        )
+                        return
+
+                    raise RuntimeError(str(stall))
+        finally:
+            self._xy_blocking_busy = False
+            # États cohérents pour la GUI même si on a accepté une erreur
+            # résiduelle (sinon le flag moving resterait actif).
+            for ax_name in ("x", "y"):
+                if ax_name in self._state:
+                    st_ax = self._state[ax_name]
+                    if st_ax.moving:
+                        st_ax.moving = False
+                        self.movingChanged.emit(ax_name, False)
+                    st_ax.target_abs = None
+                    self._pending_targets_abs.pop(ax_name, None)
+                    self._emit_positions(ax_name)
     
     @Slot(str, float, float)
     def move_relative(self, axis: str, delta: float, speed: float):

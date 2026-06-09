@@ -32,17 +32,20 @@ POWER_BUTTON_ON_STYLE = """
     }
 """
 
+# En OFF, le bouton reprend le style du bouton "Connect" (SMALL_BUTTON_STYLE)
 POWER_BUTTON_OFF_STYLE = """
     QPushButton {
-        border: none;
-        background-color: transparent;
+        background-color: #333;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 3px;
+        padding: 0px;
     }
     QPushButton:disabled {
         qproperty-iconOpacity: 0.05;
     }
     QPushButton:hover {
         background-color: #444;
-        border-radius: 6px;
     }
 """
 
@@ -390,7 +393,7 @@ class LaserWidget(QWidget):
             power_button.setCheckable(True)
             power_button.setChecked(False)
             power_button.setFixedSize(30, 25)
-            power_button.setStyleSheet(POWER_BUTTON_STYLE)
+            power_button.setStyleSheet(POWER_BUTTON_OFF_STYLE)
 
         laser_layout.addWidget(power_label, 0, 0)
         laser_layout.addWidget(setpoint_spin, 0, 1)

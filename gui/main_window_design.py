@@ -20,6 +20,7 @@ from .widgets.Spectro_Panel_Widget import SpectroPanelWidget
 from .widgets.Panel_Dock import PanelDock
 from .widgets.Collapsible_Panel import CollapsiblePanel
 from .widgets.Log_Widget import LogWidget
+from .widgets.Global_Progress_Widget import GlobalProgressWidget
 
 import numpy as np
 import pyqtgraph as pg
@@ -411,7 +412,11 @@ class Ui_MainWindowDesign:
         ################# Onglet Spectro ######################
         self.spectro_widget = SpectroWidget(self.centralwidget)
         self.tabWidget.addTab(self.spectro_widget, "Spectro")
-                
+
+        ################# Barre de progression globale (bas du GUI) ######################
+        self.global_progress_widget = GlobalProgressWidget(MainWindowDesign)
+        MainWindowDesign.statusBar().addPermanentWidget(self.global_progress_widget, 1)
+
         ##################  Helpers   ##################
         self.retranslateUi(MainWindowDesign)
 
