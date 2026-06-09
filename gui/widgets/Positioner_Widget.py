@@ -97,13 +97,28 @@ def setup_positioner_settings_dialog(dialog):
             backlash_edit = QLineEdit(str(cur_backlash))
             backlash_edit.setObjectName(f"backlash_edit_{axis_key}")
             backlash_edit.setToolTip(
-                "Correction de jeu mécanique (µm).\n"
-                "En mode serpentin, le stage dépasse de cette valeur\n"
-                "le premier pixel de chaque ligne inversée avant de revenir."
+                "Backlash retour (µm) — lignes impaires (droite→gauche).\n"
+                "Le stage dépasse de cette valeur le premier pixel\n"
+                "de chaque ligne inversée avant de revenir.\n"
+                "Valeur positive = dépasse vers X+ ; négative = vers X−."
             )
-            backlash_layout.addWidget(QLabel(f"Backlash ({pos_unit}):"))
+            backlash_layout.addWidget(QLabel(f"Backlash retour ({pos_unit}):"))
             backlash_layout.addWidget(backlash_edit)
             dialog.add_layout(backlash_layout)
+
+            cur_backlash_fwd = float(axis_cfg.get("backlash_forward_um", defaults.get("backlash_forward_um", 0.0)))
+            backlash_fwd_layout = QHBoxLayout()
+            backlash_fwd_edit = QLineEdit(str(cur_backlash_fwd))
+            backlash_fwd_edit.setObjectName(f"backlash_fwd_edit_{axis_key}")
+            backlash_fwd_edit.setToolTip(
+                "Backlash aller (µm) — lignes paires (gauche→droite).\n"
+                "Le stage dépasse de cette valeur le premier pixel\n"
+                "de chaque ligne directe avant de revenir.\n"
+                "Valeur positive = dépasse vers X+ ; négative = vers X−."
+            )
+            backlash_fwd_layout.addWidget(QLabel(f"Backlash aller ({pos_unit}):"))
+            backlash_fwd_layout.addWidget(backlash_fwd_edit)
+            dialog.add_layout(backlash_fwd_layout)
         else:
             cur_tol = float(axis_cfg.get("tolerance", defaults.get("tolerance", 0.1)))
             tol_layout = QHBoxLayout()
@@ -154,6 +169,9 @@ def setup_positioner_settings_dialog(dialog):
                 backlash_edit_w = dialog.findChild(QLineEdit, f"backlash_edit_{axis_key}")
                 backlash_um = float(backlash_edit_w.text().replace(",", ".")) if backlash_edit_w else 0.0
 
+                backlash_fwd_edit_w = dialog.findChild(QLineEdit, f"backlash_fwd_edit_{axis_key}")
+                backlash_forward_um = float(backlash_fwd_edit_w.text().replace(",", ".")) if backlash_fwd_edit_w else 0.0
+
                 if positioner_widget.axis_settings_manager is not None:
                     positioner_widget.axis_settings_manager.update_axis_settings(
                         shared_axis_name,
@@ -161,6 +179,7 @@ def setup_positioner_settings_dialog(dialog):
                         max_um=max_position,
                         vel_max=velocity_limit,
                         backlash_um=backlash_um,
+                        backlash_forward_um=backlash_forward_um,
                     )
 
                 if positioner_widget.manager:

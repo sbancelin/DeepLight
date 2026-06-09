@@ -211,6 +211,7 @@ STEPPER_AXIS_DEFAULTS = {
         "max_um": 25000.0,
         "vel_max": 4.0,
         "backlash_um": 1.2,
+        "backlash_forward_um": 0.0,
         "ums_scaling": 0.635,
     },
     "Y-Stage": {
@@ -218,6 +219,7 @@ STEPPER_AXIS_DEFAULTS = {
         "max_um": 25000.0,
         "vel_max": 4.0,
         "backlash_um": 1.2,
+        "backlash_forward_um": 0.0,
         "ums_scaling": 0.635,
     },
     "Z-Vcoil": {

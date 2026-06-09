@@ -1803,9 +1803,11 @@ class ScanWidget(QWidget):
 
         # Backlash X pour le mode sample serpentin (lu depuis les settings X-Stage)
         backlash_x_um = 0.0
+        backlash_x_forward_um = 0.0
         if self.axis_settings_manager is not None:
             x_stage_cfg = self.axis_settings_manager.get_axis_settings("X-Stage")
             backlash_x_um = float(x_stage_cfg.get("backlash_um", 0.0))
+            backlash_x_forward_um = float(x_stage_cfg.get("backlash_forward_um", 0.0))
 
         # Récupérer les autres paramètres
         bidirectional_scan = self.bidirectional_button.isChecked()
@@ -1900,6 +1902,7 @@ class ScanWidget(QWidget):
             "bidirectional_scan": bidirectional_scan,
             "bidirectional_shift_px": int(bidirectional_shift_px),
             "backlash_x_um": backlash_x_um,
+            "backlash_x_forward_um": backlash_x_forward_um,
             "repetitions": repetitions,
             "delay_between_rep": delay_between_rep,
             "laser_off_between_rep": laser_off_between_rep,

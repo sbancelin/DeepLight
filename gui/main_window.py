@@ -241,6 +241,7 @@ class MainWindow(QMainWindow):
         sm.sigStatusMessage.connect(self._on_spectro_status_changed)
         sm.sigFinished.connect(self._on_spectro_acquisition_finished)
         sm.sigProgress.connect(self._on_spectro_progress_changed)
+        sm.sigEta.connect(self._on_spectro_eta_changed)
         sm.sigFailed.connect(self._on_spectro_acquisition_failed)
         sm.sigBrillouinLiveRunningChanged.connect(sw.set_brillouin_live_button_state)
         sm.sigRamanLiveRunningChanged.connect(sw.set_raman_live_button_state)
@@ -483,6 +484,13 @@ class MainWindow(QMainWindow):
             self.ui.spectro_widget.set_raman_spectrum(wavelengths, spectrum)
         except Exception as e:
             self._on_spectro_status_changed(f"Raman display failed: {e}")
+
+    @Slot(float, float)
+    def _on_spectro_eta_changed(self, elapsed_s: float, remaining_s: float):
+        try:
+            self.ui.spectro_panel_widget.update_eta(elapsed_s, remaining_s)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot(int, int)
     def _on_spectro_progress_changed(self, done: int, total: int):

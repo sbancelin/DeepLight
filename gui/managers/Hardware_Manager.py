@@ -2171,16 +2171,11 @@ class RealHardwarePositionerManager(PositionerManager):
         if self._xy is None:
             raise RuntimeError("XY controller is not available.")
 
-        self._refresh_from_hardware("x", force_emit=False)
-        self._refresh_from_hardware("y", force_emit=False)
-
         st_x = self._state["x"]
         st_y = self._state["y"]
 
         x_target_abs = float(st_x.zero_offset) + float(x_rel_target)
         y_target_abs = float(st_y.zero_offset) + float(y_rel_target)
-
-        speed = max(float(speed_x), float(speed_y), 0.01)
 
         for ax_name, ax_target in (("x", x_target_abs), ("y", y_target_abs)):
             st_ax = self._state[ax_name]
@@ -2203,29 +2198,38 @@ class RealHardwarePositionerManager(PositionerManager):
                 self._pending_targets_abs.pop(ax_name, None)
                 self.movingChanged.emit(ax_name, False)
             raise
-
-        self._refresh_from_hardware("x", force_emit=True)
-        self._refresh_from_hardware("y", force_emit=True)
     
     def wait_until_xy_reached(self, x_rel_target: float, y_rel_target: float, timeout_s: float = 30.0):
         """
         Attend que la platine XY atteigne la cible relative demandée.
         Source de vérité = position réellement relue sur le hardware.
+        Une seule transaction série par itération (lecture XY atomique).
         """
         if self._xy is None:
             raise RuntimeError("XY controller is not available.")
 
         t0 = time.time()
+        tol_x = max(float(self.get_tolerance("x")), 0.1)
+        tol_y = max(float(self.get_tolerance("y")), 0.1)
+        zero_x = float(self._state["x"].zero_offset)
+        zero_y = float(self._state["y"].zero_offset)
 
         while True:
-            self._refresh_from_hardware("x", force_emit=False)
-            self._refresh_from_hardware("y", force_emit=False)
+            try:
+                x_abs, y_abs = self._xy.get_xy_abs_um()
+            except Exception:
+                if time.time() - t0 > float(timeout_s):
+                    raise RuntimeError(
+                        f"Timeout (serial error) while waiting for XY target: "
+                        f"target=({float(x_rel_target):.3f}, {float(y_rel_target):.3f})"
+                    )
+                time.sleep(0.01)
+                continue
 
-            cur_x = float(self.get_rel_pos("x"))
-            cur_y = float(self.get_rel_pos("y"))
-
-            tol_x = max(float(self.get_tolerance("x")), 0.1)
-            tol_y = max(float(self.get_tolerance("y")), 0.1)
+            self._state["x"].abs_pos = x_abs
+            self._state["y"].abs_pos = y_abs
+            cur_x = x_abs - zero_x
+            cur_y = y_abs - zero_y
 
             if (
                 abs(cur_x - float(x_rel_target)) <= tol_x
@@ -2275,17 +2279,15 @@ class RealHardwarePositionerManager(PositionerManager):
             )
             return
         except RuntimeError as first_error:
-            # lecture fraîche avant retry
+            # lecture fraîche avant retry (une seule transaction série)
             try:
-                self._refresh_from_hardware("x", force_emit=False)
-                self._refresh_from_hardware("y", force_emit=False)
-
-                cur_x = float(self.get_rel_pos("x"))
-                cur_y = float(self.get_rel_pos("y"))
-
+                x_abs, y_abs = self._xy.get_xy_abs_um()
+                self._state["x"].abs_pos = x_abs
+                self._state["y"].abs_pos = y_abs
+                cur_x = x_abs - float(self._state["x"].zero_offset)
+                cur_y = y_abs - float(self._state["y"].zero_offset)
                 tol_x = max(float(self.get_tolerance("x")), 0.1)
                 tol_y = max(float(self.get_tolerance("y")), 0.1)
-
                 if (
                     abs(cur_x - float(x_rel_target)) <= tol_x
                     and abs(cur_y - float(y_rel_target)) <= tol_y
@@ -2842,6 +2844,16 @@ class HardwareManager(QObject):
         cam = self._get_brillouin_camera()
         return cam
     
+    def prepare_brillouin_for_scan(self, params: dict | None = None):
+        """
+        Pré-initialise la caméra Brillouin et applique les paramètres une fois avant
+        le début de la boucle de scan pour éviter de les ré-appliquer à chaque pixel.
+        """
+        if self.backend_name == "mock":
+            return
+        cam = self._get_brillouin_camera()
+        cam.apply_parameters(params or {})
+
     def acquire_brillouin_image(self, params=None):
         """
         Acquire a single Brillouin image.

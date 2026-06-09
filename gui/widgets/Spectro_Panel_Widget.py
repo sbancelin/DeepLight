@@ -139,8 +139,10 @@ class SpectroPanelWidget(QWidget):
         # Paramètres de settings (non exposés dans l'UI principale)
         self._settle_ms = 10.0
         self._backlash_x_um = 0.0
+        self._backlash_x_forward_um = 0.0
         self._brillouin_exposure_ms = 100.0
         self._raman_exposure_ms = 100.0
+        self._stage_speed_mm_s = 4.0
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
@@ -460,16 +462,38 @@ class SpectroPanelWidget(QWidget):
         dialog.add_layout(row)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Backlash X (µm):"))
+        row2.addWidget(QLabel("Backlash retour X (µm):"))
         backlash_edit = QLineEdit(str(self._backlash_x_um))
         backlash_edit.setToolTip(
-            "Correction de jeu mécanique en X (µm).\n"
+            "Backlash retour (µm) — lignes impaires (droite→gauche).\n"
             "Le stage dépasse de cette valeur le premier pixel\n"
             "de chaque ligne inversée avant de revenir.\n"
-            "Valeur positive = dépasse vers les X+ ; négative = vers les X−."
+            "Valeur positive = dépasse vers X+ ; négative = vers X−."
         )
         row2.addWidget(backlash_edit)
         dialog.add_layout(row2)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Backlash aller X (µm):"))
+        backlash_fwd_edit = QLineEdit(str(self._backlash_x_forward_um))
+        backlash_fwd_edit.setToolTip(
+            "Backlash aller (µm) — lignes paires (gauche→droite).\n"
+            "Le stage dépasse de cette valeur le premier pixel\n"
+            "de chaque ligne directe avant de revenir.\n"
+            "Valeur positive = dépasse vers X+ ; négative = vers X−."
+        )
+        row3.addWidget(backlash_fwd_edit)
+        dialog.add_layout(row3)
+
+        row4 = QHBoxLayout()
+        row4.addWidget(QLabel("Vitesse platine XY (mm/s):"))
+        speed_edit = QLineEdit(str(self._stage_speed_mm_s))
+        speed_edit.setToolTip(
+            "Vitesse de déplacement de la platine XY.\n"
+            "Utilisée uniquement pour estimer le temps d'acquisition."
+        )
+        row4.addWidget(speed_edit)
+        dialog.add_layout(row4)
 
         def _on_accepted():
             try:
@@ -478,6 +502,14 @@ class SpectroPanelWidget(QWidget):
                 pass
             try:
                 self._backlash_x_um = float(backlash_edit.text().replace(",", "."))
+            except Exception:
+                pass
+            try:
+                self._backlash_x_forward_um = float(backlash_fwd_edit.text().replace(",", "."))
+            except Exception:
+                pass
+            try:
+                self._stage_speed_mm_s = max(0.001, float(speed_edit.text().replace(",", ".")))
             except Exception:
                 pass
             self._update_derived_values()
@@ -569,8 +601,20 @@ class SpectroPanelWidget(QWidget):
         if not self.button_brillouin.isChecked() and not self.button_raman.isChecked():
             exposure_ms = max(self._brillouin_exposure_ms, self._raman_exposure_ms)
 
-        n_pix = pix_x * pix_y * pix_z
-        t_per_pix_s = max(0.0, exposure_ms + self._settle_ms) / 1000.0
+        n_xy = pix_x * pix_y
+        step_x = self._compute_step(size_x, pix_x)
+        step_y = self._compute_step(size_y, pix_y)
+        if n_xy > 1:
+            total_x_um = pix_y * max(0, pix_x - 1) * step_x
+            total_y_um = max(0, pix_y - 1) * step_y
+            avg_xy_um = (total_x_um + total_y_um) / n_xy
+        else:
+            avg_xy_um = 0.0
+        stage_speed_um_s = self._stage_speed_mm_s * 1000.0
+        move_time_s = avg_xy_um / stage_speed_um_s if stage_speed_um_s > 0 else 0.0
+
+        n_pix = n_xy * pix_z
+        t_per_pix_s = max(0.0, exposure_ms + self._settle_ms) / 1000.0 + move_time_s
         scan_s = n_pix * t_per_pix_s
         total_acq_s = pix_t * scan_s + max(0, pix_t - 1) * step_t_s
         self.estimated_time_edit.setText(self._format_duration(total_acq_s))
@@ -684,6 +728,7 @@ class SpectroPanelWidget(QWidget):
         return {
             "settle_ms": self._settle_ms,
             "backlash_x_um": self._backlash_x_um,
+            "backlash_x_forward_um": self._backlash_x_forward_um,
             "size_x_um": size_x,
             "size_y_um": size_y,
             "size_z_um": size_z,
@@ -703,6 +748,7 @@ class SpectroPanelWidget(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("Idle")
+        self._update_derived_values()
 
     def set_progress(self, done: int, total: int):
         total = max(1, int(total))
@@ -711,6 +757,11 @@ class SpectroPanelWidget(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(percent)
         self.progress_bar.setFormat(f"{done}/{total} ({percent}%)")
+
+    def update_eta(self, elapsed_s: float, remaining_s: float):
+        elapsed_str = self._format_duration(elapsed_s)
+        remaining_str = self._format_duration(remaining_s)
+        self.estimated_time_edit.setText(f"écoulé {elapsed_str} / restant {remaining_str}")
 
     def get_save_parameters(self):
         return {

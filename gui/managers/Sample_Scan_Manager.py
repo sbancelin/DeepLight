@@ -57,6 +57,7 @@ class SampleScanManager:
         self.sample_settle_time_s: float = 0.0
         self.bidirectional: bool = False
         self.backlash_x_um: float = 0.0
+        self.backlash_x_forward_um: float = 0.0
 
     def configure(self, scan_parameters: Dict):
         self.scan_parameters = dict(scan_parameters or {})
@@ -116,6 +117,7 @@ class SampleScanManager:
         self.sample_settle_time_s = max(0.0, float(self.scan_parameters.get("sample_settle_time_s", 0.0) or 0.0))
         self.bidirectional = bool(self.scan_parameters.get("bidirectional_scan", False))
         self.backlash_x_um = float(self.scan_parameters.get("backlash_x_um", 0.0) or 0.0)
+        self.backlash_x_forward_um = float(self.scan_parameters.get("backlash_x_forward_um", 0.0) or 0.0)
 
     def _find_axis_row(self, preferred: Iterable[str], exclude_axis: Optional[str] = None) -> Optional[Dict]:
         for axis in preferred:
@@ -190,7 +192,7 @@ class SampleScanManager:
 
             if self.bidirectional and (iy % 2 == 1):
                 x_iter = range(self.nx - 1, -1, -1)
-                # pré-positionnement backlash: dépasser le premier pixel (le plus à droite)
+                # pré-positionnement backlash retour: dépasser le premier pixel (le plus à droite)
                 if self.backlash_x_um != 0.0:
                     x_first = x0 + (self.nx - 1) * self.step_x_um if self.nx > 1 else self.offset_x_um
                     yield SamplePixelEvent(
@@ -204,6 +206,18 @@ class SampleScanManager:
                     )
             else:
                 x_iter = range(self.nx)
+                # pré-positionnement backlash aller: dépasser le premier pixel (le plus à gauche)
+                if self.bidirectional and self.backlash_x_forward_um != 0.0:
+                    x_first = x0
+                    yield SamplePixelEvent(
+                        ix=0,
+                        iy=iy,
+                        x_axis_name=self.x_axis_name,
+                        y_axis_name=self.y_axis_name,
+                        x_target_rel_um=float(x_first + self.backlash_x_forward_um),
+                        y_target_rel_um=float(y_um),
+                        is_backlash=True,
+                    )
 
             for ix in x_iter:
                 x_um = x0 + ix * self.step_x_um if self.nx > 1 else self.offset_x_um

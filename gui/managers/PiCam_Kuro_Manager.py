@@ -89,6 +89,8 @@ class PiCamKuroManager:
         self._last_shape = (1200, 1200)
         self._last_binning = 1
         self._last_dtype = np.uint16
+        self._applied_params = None
+        self._cached_sensor_shape = None
 
     # ------------------------------------------------------------------
     # low-level helpers
@@ -321,6 +323,8 @@ class PiCamKuroManager:
             finally:
                 self.connected = False
                 self.camera = PicamHandle()
+                self._applied_params = None
+                self._cached_sensor_shape = None
 
                 if self._dll_dir_handle is not None:
                     try:
@@ -392,7 +396,9 @@ class PiCamKuroManager:
             logger.debug(f"[PICam] PixelFormat read-only or unsupported ({e})")
 
     def _set_roi_and_binning(self, params: dict):
-        sensor_h, sensor_w = self._get_sensor_shape()
+        if self._cached_sensor_shape is None:
+            self._cached_sensor_shape = self._get_sensor_shape()
+        sensor_h, sensor_w = self._cached_sensor_shape
         binning = self._parse_binning_factor(params)
         roi_enabled = bool((params or {}).get("roi_enabled", False))
 
@@ -458,20 +464,23 @@ class PiCamKuroManager:
         self._set_pixel_format(params)
         self._set_roi_and_binning(params)
         self._commit()
+        self._applied_params = params
 
     # ------------------------------------------------------------------
     # acquisition
     # ------------------------------------------------------------------
 
     def snap(self, params: dict | None = None) -> np.ndarray:
-        self.apply_parameters(params)
+        normalized = dict(params or {})
+        if normalized != self._applied_params:
+            self.apply_parameters(normalized)
 
         available = PicamAvailableData()
         errors = piint(0)
 
         timeout_ms = max(
             1000,
-            int(round(float((params or {}).get("exposure_ms", 10.0) or 10.0) * 5.0 + 2000.0))
+            int(round(float(normalized.get("exposure_ms", 10.0) or 10.0) * 5.0 + 2000.0))
         )
 
         self._check(
