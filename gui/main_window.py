@@ -183,6 +183,12 @@ class MainWindow(QMainWindow):
         self.ui.stitch_widget.spin_tile_y.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.spin_overlap.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.cb_show_layout.toggled.connect(self.refresh_stitching_preview_grid)
+        # Le layout doit suivre les paramètres du ScanWidget (taille/pixels des
+        # tuiles), sinon la grille reste basée sur d'anciennes valeurs et
+        # apparaît décalée par rapport à la mosaïque réellement acquise.
+        self.ui.scan_widget.view_update_requested.connect(
+            lambda _params: self.refresh_stitching_preview_grid()
+        )
 
         QTimer.singleShot(0, self.refresh_stitching_preview_grid)
         QTimer.singleShot(50, self.refresh_stitching_preview_grid)
@@ -811,6 +817,10 @@ class MainWindow(QMainWindow):
             tile_h_um * overlap_px / float(tile_h_px)
         )
         self._stitching_geom_um = (mosaic_w_um, mosaic_h_um)
+
+        # Resynchronise la grille du layout sur les paramètres réellement
+        # utilisés pour cette acquisition.
+        self.refresh_stitching_preview_grid()
 
         self.stitching_manager.start_run(mosaic_params, scan_params)
 

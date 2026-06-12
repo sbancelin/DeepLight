@@ -64,6 +64,7 @@ class StitchingManager(QObject):
         self._scan_params: dict | None = None
 
         self._mosaic = None
+        self._reg_margin_px = 0
         self._tile_sequence: list[tuple[int, int]] = []
         self._tile_index = -1
 
@@ -103,11 +104,18 @@ class StitchingManager(QObject):
         self._waiting_for_acq = False
         self._returning_home = False
 
+        # Marge interne pour absorber les corrections de recalage des tuiles
+        # de bord (sinon les corrections y sont écrêtées par le canvas).
+        # La mosaïque émise vers l'UI reste à la taille nominale.
+        self._reg_margin_px = max(2, cfg.overlap_px // 3) if cfg.overlap_px > 0 else 0
+
         try:
             self._mosaic = np.zeros(
                 (
-                    cfg.tiles_y * cfg.tile_height_px - max(0, cfg.tiles_y - 1) * cfg.overlap_px,
-                    cfg.tiles_x * cfg.tile_width_px - max(0, cfg.tiles_x - 1) * cfg.overlap_px,
+                    cfg.tiles_y * cfg.tile_height_px - max(0, cfg.tiles_y - 1) * cfg.overlap_px
+                    + 2 * self._reg_margin_px,
+                    cfg.tiles_x * cfg.tile_width_px - max(0, cfg.tiles_x - 1) * cfg.overlap_px
+                    + 2 * self._reg_margin_px,
                 ),
                 dtype=np.float32
             )
@@ -124,7 +132,7 @@ class StitchingManager(QObject):
         self.status_changed.emit(
             f"Start mosaic {cfg.tiles_x}x{cfg.tiles_y} on channel '{cfg.channel}'"
         )
-        self.mosaic_updated.emit(self._mosaic.copy())
+        self.mosaic_updated.emit(self._mosaic_nominal_view().copy())
         self.run_started.emit()
 
         self._advance_to_next_tile()
@@ -341,7 +349,7 @@ class StitchingManager(QObject):
             self._fail_and_stop(f"Unable to paste tile into mosaic: {e}")
             return
 
-        self.mosaic_updated.emit(self._mosaic.copy())
+        self.mosaic_updated.emit(self._mosaic_nominal_view().copy())
         self.run_progress.emit(self._tile_index + 1, len(self._tile_sequence))
         self._advance_to_next_tile()
 
@@ -378,6 +386,16 @@ class StitchingManager(QObject):
 
         return None
     
+    def _mosaic_nominal_view(self):
+        """
+        Vue de la mosaïque à la taille nominale (sans la marge interne
+        de recalage), telle qu'affichée par l'UI.
+        """
+        m = int(getattr(self, "_reg_margin_px", 0) or 0)
+        if m <= 0:
+            return self._mosaic
+        return self._mosaic[m:-m, m:-m]
+
     def _paste_tile(self, img):
         if self._cfg is None or self._mosaic is None:
             return
@@ -392,9 +410,10 @@ class StitchingManager(QObject):
                 f"({self._cfg.tile_height_px}, {self._cfg.tile_width_px})"
             )
 
+        margin = int(getattr(self, "_reg_margin_px", 0) or 0)
         ix, iy = self._tile_sequence[self._tile_index]
-        x0 = ix * (self._cfg.tile_width_px - self._cfg.overlap_px)
-        y0 = iy * (self._cfg.tile_height_px - self._cfg.overlap_px)
+        x0 = margin + ix * (self._cfg.tile_width_px - self._cfg.overlap_px)
+        y0 = margin + iy * (self._cfg.tile_height_px - self._cfg.overlap_px)
 
         # Corriger la position par cross-corrélation sur la zone de recouvrement
         if self._cfg.overlap_px > 0 and (ix > 0 or iy > 0):
@@ -432,6 +451,39 @@ class StitchingManager(QObject):
         self._mosaic[y0:y1, x0:x1] = blended
         self._mosaic_weight[y0:y1, x0:x1] = new_weight
 
+    def _correlate_covered_strip(self, y0, y1, x0, x1, mov, max_shift):
+        """
+        Corrèle la strip mosaïque [y0:y1, x0:x1] avec `mov` en se limitant à
+        la sous-zone réellement couverte (poids non nul). Les bandes vides
+        (tuile voisine décalée ou pas encore posée) corrompent la corrélation
+        si on les laisse dans la strip.
+
+        Retourne (dy, dx) ou None si la zone couverte est insuffisante.
+        """
+        ref = self._mosaic[y0:y1, x0:x1]
+        w = self._mosaic_weight[y0:y1, x0:x1]
+        if ref.size == 0 or ref.shape != mov.shape:
+            return None
+
+        cov = w > 1e-3
+
+        # rogner d'abord les lignes mal couvertes (pied du fondu, zone vide),
+        # puis évaluer les colonnes dans les lignes restantes
+        rows = np.where(cov.mean(axis=1) >= 0.9)[0]
+        if rows.size < 8:
+            return None
+        r0, r1 = int(rows[0]), int(rows[-1]) + 1
+
+        cols = np.where(cov[r0:r1].mean(axis=0) >= 0.9)[0]
+        if cols.size < 8:
+            return None
+        c0, c1 = int(cols[0]), int(cols[-1]) + 1
+
+        if cov[r0:r1, c0:c1].mean() < 0.95:
+            return None
+
+        return self._cross_correlate(ref[r0:r1, c0:c1], mov[r0:r1, c0:c1], max_shift)
+
     def _estimate_tile_registration(self, arr, x0_nom, y0_nom, ix, iy):
         """
         Estime la correction (dy, dx) à appliquer à la position nominale
@@ -445,19 +497,34 @@ class StitchingManager(QObject):
 
         shifts_y, shifts_x = [], []
 
-        # Voisin gauche (horizontal)
+        # Voisin gauche (lignes paires du serpentin : acquisition de gauche à droite)
         if ix > 0 and x0_nom > 0:
             x_ov_start = x0_nom
             x_ov_end = min(x_ov_start + ov, mw)
             y_end = min(y0_nom + th, mh)
             if x_ov_end > x_ov_start and y_end > y0_nom:
-                ref = self._mosaic[y0_nom:y_end, x_ov_start:x_ov_end]
                 mov = arr[:y_end - y0_nom, :x_ov_end - x_ov_start]
-                if (self._mosaic_weight[y0_nom:y_end, x_ov_start:x_ov_end].sum() > 0
-                        and ref.shape == mov.shape):
-                    dy, dx = self._cross_correlate(ref, mov, max_shift)
-                    shifts_y.append(dy)
-                    shifts_x.append(dx)
+                shift = self._correlate_covered_strip(
+                    y0_nom, y_end, x_ov_start, x_ov_end, mov, max_shift
+                )
+                if shift is not None:
+                    shifts_y.append(shift[0])
+                    shifts_x.append(shift[1])
+
+        # Voisin droit (lignes impaires du serpentin : acquisition de droite à
+        # gauche, la tuile déjà posée est à droite)
+        if ix < self._cfg.tiles_x - 1:
+            x_ov_start = x0_nom + tw - ov
+            x_ov_end = min(x0_nom + tw, mw)
+            y_end = min(y0_nom + th, mh)
+            if 0 <= x_ov_start < x_ov_end and y_end > y0_nom:
+                mov = arr[:y_end - y0_nom, (x_ov_start - x0_nom):(x_ov_end - x0_nom)]
+                shift = self._correlate_covered_strip(
+                    y0_nom, y_end, x_ov_start, x_ov_end, mov, max_shift
+                )
+                if shift is not None:
+                    shifts_y.append(shift[0])
+                    shifts_x.append(shift[1])
 
         # Voisin du dessus (vertical)
         if iy > 0 and y0_nom > 0:
@@ -465,13 +532,13 @@ class StitchingManager(QObject):
             y_ov_end = min(y_ov_start + ov, mh)
             x_end = min(x0_nom + tw, mw)
             if y_ov_end > y_ov_start and x_end > x0_nom:
-                ref = self._mosaic[y_ov_start:y_ov_end, x0_nom:x_end]
                 mov = arr[:y_ov_end - y_ov_start, :x_end - x0_nom]
-                if (self._mosaic_weight[y_ov_start:y_ov_end, x0_nom:x_end].sum() > 0
-                        and ref.shape == mov.shape):
-                    dy, dx = self._cross_correlate(ref, mov, max_shift)
-                    shifts_y.append(dy)
-                    shifts_x.append(dx)
+                shift = self._correlate_covered_strip(
+                    y_ov_start, y_ov_end, x0_nom, x_end, mov, max_shift
+                )
+                if shift is not None:
+                    shifts_y.append(shift[0])
+                    shifts_x.append(shift[1])
 
         dy = int(round(float(np.mean(shifts_y)))) if shifts_y else 0
         dx = int(round(float(np.mean(shifts_x)))) if shifts_x else 0
@@ -480,8 +547,14 @@ class StitchingManager(QObject):
     @staticmethod
     def _cross_correlate(ref, mov, max_shift):
         """
-        Phase cross-corrélation normalisée entre deux strips de même taille.
+        Cross-corrélation normalisée entre deux strips de même taille.
         Retourne (dy, dx) entiers bornés à ±max_shift.
+
+        La recherche du pic est restreinte à la fenêtre ±max_shift AVANT
+        l'argmax : auparavant un pic lointain (texture périodique, bruit)
+        était écrêté à ±max_shift, ce qui produisait des décalages
+        systématiques faisant dériver les tuiles. Un pic trop faible
+        (corrélation non fiable) est également rejeté.
         """
         r_std = float(ref.std())
         m_std = float(mov.std())
@@ -495,7 +568,28 @@ class StitchingManager(QObject):
         cc = np.fft.irfft2(R, s=ref_n.shape)
 
         H, W = cc.shape
-        y_peak, x_peak = np.unravel_index(int(np.argmax(cc)), cc.shape)
+        ms_y = int(min(max_shift, H // 2))
+        ms_x = int(min(max_shift, W // 2))
+
+        # fenêtre de décalages plausibles (coins de la carte, wrap-around FFT)
+        mask = np.zeros((H, W), dtype=bool)
+        mask[:ms_y + 1, :ms_x + 1] = True
+        if ms_x > 0:
+            mask[:ms_y + 1, W - ms_x:] = True
+        if ms_y > 0:
+            mask[H - ms_y:, :ms_x + 1] = True
+        if ms_y > 0 and ms_x > 0:
+            mask[H - ms_y:, W - ms_x:] = True
+
+        cc_search = np.where(mask, cc, -np.inf)
+        y_peak, x_peak = np.unravel_index(int(np.argmax(cc_search)), cc.shape)
+
+        # corrélation normalisée du pic (≈ coefficient de Pearson) :
+        # en dessous de ce seuil l'estimation n'est pas fiable, on garde
+        # la position nominale.
+        peak_corr = float(cc[y_peak, x_peak]) / float(ref_n.size)
+        if peak_corr < 0.25:
+            return 0, 0
 
         dy = y_peak if y_peak <= H // 2 else y_peak - H
         dx = x_peak if x_peak <= W // 2 else x_peak - W
