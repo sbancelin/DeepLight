@@ -143,8 +143,7 @@ class SpectroPanelWidget(QWidget):
 
         # Paramètres de settings (non exposés dans l'UI principale)
         self._settle_ms = 10.0
-        self._backlash_x_um = 0.0
-        self._backlash_x_forward_um = 0.0
+        self._line_offset_x_um = 1.2
         self._brillouin_exposure_ms = 100.0
         self._raman_exposure_ms = 100.0
         self._stage_speed_mm_s = 4.0
@@ -470,28 +469,18 @@ class SpectroPanelWidget(QWidget):
         dialog.add_layout(row)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Backlash retour X (µm):"))
-        backlash_edit = QLineEdit(str(self._backlash_x_um))
-        backlash_edit.setToolTip(
-            "Backlash retour (µm) — lignes impaires (droite→gauche).\n"
-            "Le stage dépasse de cette valeur le premier pixel\n"
-            "de chaque ligne inversée avant de revenir.\n"
-            "Valeur positive = dépasse vers X+ ; négative = vers X−."
+        row2.addWidget(QLabel("Offset backlash X (µm):"))
+        line_offset_edit = QLineEdit(str(self._line_offset_x_um))
+        line_offset_edit.setToolTip(
+            "Compensation directionnelle du jeu mécanique (backlash) en X.\n"
+            "Décalage signé appliqué à la position commandée des lignes\n"
+            "retour (impaires, droite→gauche) pour les faire coïncider\n"
+            "physiquement avec les lignes aller. La position enregistrée\n"
+            "reste nominale.\n"
+            "Valeur positive = décale vers X+ ; négative = vers X−."
         )
-        row2.addWidget(backlash_edit)
+        row2.addWidget(line_offset_edit)
         dialog.add_layout(row2)
-
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Backlash aller X (µm):"))
-        backlash_fwd_edit = QLineEdit(str(self._backlash_x_forward_um))
-        backlash_fwd_edit.setToolTip(
-            "Backlash aller (µm) — lignes paires (gauche→droite).\n"
-            "Le stage dépasse de cette valeur le premier pixel\n"
-            "de chaque ligne directe avant de revenir.\n"
-            "Valeur positive = dépasse vers X+ ; négative = vers X−."
-        )
-        row3.addWidget(backlash_fwd_edit)
-        dialog.add_layout(row3)
 
         row4 = QHBoxLayout()
         row4.addWidget(QLabel("Vitesse platine XY (mm/s):"))
@@ -509,11 +498,7 @@ class SpectroPanelWidget(QWidget):
             except Exception:
                 pass
             try:
-                self._backlash_x_um = float(backlash_edit.text().replace(",", "."))
-            except Exception:
-                pass
-            try:
-                self._backlash_x_forward_um = float(backlash_fwd_edit.text().replace(",", "."))
+                self._line_offset_x_um = float(line_offset_edit.text().replace(",", "."))
             except Exception:
                 pass
             try:
@@ -739,8 +724,7 @@ class SpectroPanelWidget(QWidget):
 
         return {
             "settle_ms": self._settle_ms,
-            "backlash_x_um": self._backlash_x_um,
-            "backlash_x_forward_um": self._backlash_x_forward_um,
+            "line_offset_x_um": self._line_offset_x_um,
             "size_x_um": size_x,
             "size_y_um": size_y,
             "size_z_um": size_z,

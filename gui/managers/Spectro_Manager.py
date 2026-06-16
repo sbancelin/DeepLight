@@ -313,9 +313,12 @@ class _SpectroMappingWorker(QObject):
     def run(self):
         self._running = True
         try:
-            total = sum(1 for p in self.pixel_list if not p.get("is_backlash", False))
-            backlash_x_um = float(self.scan_parameters.get("backlash_x_um", 0.0) or 0.0)
-            backlash_x_forward_um = float(self.scan_parameters.get("backlash_x_forward_um", 0.0) or 0.0)
+            total = len(self.pixel_list)
+            # Compensation directionnelle du jeu mécanique (backlash) de la
+            # platine X : sur les lignes retour (y impair, droite->gauche) la
+            # position réelle est décalée du jeu. On commande donc un X corrigé
+            # de cet offset signé, tout en enregistrant la position nominale.
+            line_offset_x_um = float(self.scan_parameters.get("line_offset_x_um", 0.0) or 0.0)
             n_repeats = max(1, int(self.scan_parameters.get("n_repeats", 1) or 1))
             repeat_delay_s = max(0.0, float(self.scan_parameters.get("repeat_delay_s", 0.0) or 0.0))
             settle_ms = float(self.scan_parameters.get("settle_ms", 0.0) or 0.0)
@@ -336,20 +339,6 @@ class _SpectroMappingWorker(QObject):
                 y = int(info["y_index"])
                 z = int(info["z_index"])
 
-                if info.get("is_backlash", False):
-                    pos_um = self.dataset["positions_um"][t, z, y, x]
-                    offset = backlash_x_um if y % 2 == 1 else backlash_x_forward_um
-                    x_overshoot = float(pos_um[0]) + offset
-                    # Le waypoint ne sert qu'à fixer la direction d'approche :
-                    # sa précision est sans importance, on attend avec une
-                    # tolérance relâchée pour ne pas perdre de temps.
-                    way_tol_um = max(0.3 * abs(offset), 0.5)
-                    self._move_stage_to_pixel_blocking(
-                        x_overshoot, float(pos_um[1]), float(pos_um[2]),
-                        tolerance_um=way_tol_um,
-                    )
-                    continue
-
                 lin = int(info["linear_index"])
 
                 if info.get("is_repeat_start", False) and repeat_delay_s > 0:
@@ -367,6 +356,10 @@ class _SpectroMappingWorker(QObject):
                 y_um = float(pos_um[1])
                 z_um = float(pos_um[2])
 
+                # X commandée = nominale + offset de backlash sur les lignes
+                # retour (y impair). La position enregistrée reste nominale.
+                x_cmd = x_um + line_offset_x_um if (y % 2 == 1) else x_um
+
                 repeat_str = f"T={t + 1}/{n_repeats} | " if n_repeats > 1 else ""
                 self.sigStatusMessage.emit(
                     f"{repeat_str}Spectro {lin + 1}/{total} | "
@@ -375,7 +368,7 @@ class _SpectroMappingWorker(QObject):
                     f"Z={z + 1}/{self.scan_parameters.get('pixels_z', 1)}"
                 )
 
-                self._move_stage_to_pixel_blocking(x_um, y_um, z_um)
+                self._move_stage_to_pixel_blocking(x_cmd, y_um, z_um)
 
                 if settle_ms > 0:
                     t_end = time.perf_counter() + settle_ms / 1000.0
@@ -712,13 +705,7 @@ class SpectroManager(QObject):
         pz = max(1, int(self._scan_parameters.get("pixels_z", 1) or 1))
         pt = max(1, int(self._scan_parameters.get("n_repeats", 1) or 1))
 
-        backlash_x_um = float(self._scan_parameters.get("backlash_x_um", 0.0) or 0.0)
-        backlash_x_forward_um = float(self._scan_parameters.get("backlash_x_forward_um", 0.0) or 0.0)
-        self.pixel_list = self._build_serpentine_grid(
-            px, py, pz, n_repeats=pt,
-            backlash_x_um=backlash_x_um,
-            backlash_x_forward_um=backlash_x_forward_um,
-        )
+        self.pixel_list = self._build_serpentine_grid(px, py, pz, n_repeats=pt)
         self.current_pixel_index = 0
         self.dataset = self._create_dataset(
             self._scan_parameters,
@@ -728,7 +715,7 @@ class SpectroManager(QObject):
             self._save_parameters,
         )
 
-        real_pixels = sum(1 for p in self.pixel_list if not p.get("is_backlash", False))
+        real_pixels = len(self.pixel_list)
         now = time.perf_counter()
         self._last_brillouin_ui_emit_t = now - self._ui_update_period_s
         self._last_raman_ui_emit_t = now - self._ui_update_period_s
@@ -942,8 +929,7 @@ class SpectroManager(QObject):
     # ==========================================================
     # Grid / ordre serpentin
     # ==========================================================
-    def _build_serpentine_grid(self, pixels_x, pixels_y, pixels_z=1, n_repeats=1,
-                               backlash_x_um=0.0, backlash_x_forward_um=0.0):
+    def _build_serpentine_grid(self, pixels_x, pixels_y, pixels_z=1, n_repeats=1):
         grid = []
         linear = 0
         for t in range(max(1, int(n_repeats))):
@@ -952,27 +938,6 @@ class SpectroManager(QObject):
                     xs = list(range(int(pixels_x)))
                     if y % 2 == 1:
                         xs.reverse()
-                        if backlash_x_um != 0.0 and pixels_x > 1:
-                            grid.append({
-                                "linear_index": -1,
-                                "t_index": int(t),
-                                "x_index": int(pixels_x - 1),
-                                "y_index": int(y),
-                                "z_index": int(z),
-                                "is_backlash": True,
-                                "is_repeat_start": False,
-                            })
-                    else:
-                        if backlash_x_forward_um != 0.0 and pixels_x > 1:
-                            grid.append({
-                                "linear_index": -1,
-                                "t_index": int(t),
-                                "x_index": 0,
-                                "y_index": int(y),
-                                "z_index": int(z),
-                                "is_backlash": True,
-                                "is_repeat_start": False,
-                            })
                     for x in xs:
                         grid.append({
                             "linear_index": int(linear),
@@ -980,7 +945,6 @@ class SpectroManager(QObject):
                             "x_index": int(x),
                             "y_index": int(y),
                             "z_index": int(z),
-                            "is_backlash": False,
                             "is_repeat_start": bool(t > 0 and z == 0 and y == 0 and x == xs[0]),
                         })
                         linear += 1
