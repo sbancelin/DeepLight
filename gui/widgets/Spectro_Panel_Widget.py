@@ -143,7 +143,7 @@ class SpectroPanelWidget(QWidget):
 
         # Paramètres de settings (non exposés dans l'UI principale)
         self._settle_ms = 10.0
-        self._line_offset_x_um = 1.2
+        self._line_offset_x_um = -1.2
         self._brillouin_exposure_ms = 100.0
         self._raman_exposure_ms = 100.0
         self._stage_speed_mm_s = 4.0
