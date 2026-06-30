@@ -144,6 +144,7 @@ class SpectroPanelWidget(QWidget):
         # Paramètres de settings (non exposés dans l'UI principale)
         self._settle_ms = 10.0
         self._line_offset_x_um = -1.2
+        self._origin_overshoot_um = 10.0
         self._brillouin_exposure_ms = 100.0
         self._raman_exposure_ms = 100.0
         self._stage_speed_mm_s = 4.0
@@ -482,6 +483,22 @@ class SpectroPanelWidget(QWidget):
         row2.addWidget(line_offset_edit)
         dialog.add_layout(row2)
 
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Overshoot retour origine (µm):"))
+        origin_overshoot_edit = QLineEdit(str(self._origin_overshoot_um))
+        origin_overshoot_edit.setToolTip(
+            "Anti-backlash du retour à l'origine en fin de scan (axe X).\n"
+            "L'origine est toujours abordée en venant de la gauche\n"
+            "(déplacement final en +X) pour rattraper le jeu mécanique.\n"
+            "Si la platine est à droite du centre (cas normal), elle passe\n"
+            "d'abord à gauche de cette distance puis approche ; si elle est\n"
+            "déjà à gauche, approche directe (pas de move en plus).\n"
+            "Au plus un seul déplacement supplémentaire par scan.\n"
+            "0 = désactivé. Doit être > au jeu mécanique (~2 µm)."
+        )
+        row3.addWidget(origin_overshoot_edit)
+        dialog.add_layout(row3)
+
         row4 = QHBoxLayout()
         row4.addWidget(QLabel("Vitesse platine XY (mm/s):"))
         speed_edit = QLineEdit(str(self._stage_speed_mm_s))
@@ -499,6 +516,10 @@ class SpectroPanelWidget(QWidget):
                 pass
             try:
                 self._line_offset_x_um = float(line_offset_edit.text().replace(",", "."))
+            except Exception:
+                pass
+            try:
+                self._origin_overshoot_um = float(origin_overshoot_edit.text().replace(",", "."))
             except Exception:
                 pass
             try:
@@ -725,6 +746,7 @@ class SpectroPanelWidget(QWidget):
         return {
             "settle_ms": self._settle_ms,
             "line_offset_x_um": self._line_offset_x_um,
+            "origin_overshoot_um": self._origin_overshoot_um,
             "size_x_um": size_x,
             "size_y_um": size_y,
             "size_z_um": size_z,

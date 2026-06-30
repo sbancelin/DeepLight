@@ -314,10 +314,17 @@ class _SpectroMappingWorker(QObject):
         self._running = True
         try:
             total = len(self.pixel_list)
-            # Compensation directionnelle du jeu mécanique (backlash) de la
-            # platine X : sur les lignes retour (y impair, droite->gauche) la
-            # position réelle est décalée du jeu. On commande donc un X corrigé
-            # de cet offset signé, tout en enregistrant la position nominale.
+            # --- Compensation backlash inter-lignes (mécanisme 1/2) ---
+            # Dans un serpentin, les lignes aller sont parcourues en +X et les
+            # lignes retour en -X. Avec des consignes identiques, la position
+            # *réelle* diffère du jeu mécanique B (~1.2 µm) entre les deux sens
+            # -> décalage constant d'une ligne sur deux dans l'image.
+            # Correction (stratégie "offset de consigne", sans mouvement en
+            # plus) : sur les lignes retour (y impair) on commande X + offset,
+            # tout en enregistrant la position NOMINALE dans le dataset, de
+            # sorte que les positions physiques des deux sens coïncident.
+            # Offset signé, calibré (cf. origin_overshoot_um pour le mécanisme
+            # 2/2 = retour à l'origine, dans le bloc finally).
             line_offset_x_um = float(self.scan_parameters.get("line_offset_x_um", 0.0) or 0.0)
             n_repeats = max(1, int(self.scan_parameters.get("n_repeats", 1) or 1))
             repeat_delay_s = max(0.0, float(self.scan_parameters.get("repeat_delay_s", 0.0) or 0.0))
@@ -357,7 +364,9 @@ class _SpectroMappingWorker(QObject):
                 z_um = float(pos_um[2])
 
                 # X commandée = nominale + offset de backlash sur les lignes
-                # retour (y impair). La position enregistrée reste nominale.
+                # retour (y impair), nominale sur les lignes aller. La position
+                # enregistrée plus bas (dataset) reste toujours nominale.
+                # Précédence Python : (x_um + line_offset_x_um) if ... else x_um.
                 x_cmd = x_um + line_offset_x_um if (y % 2 == 1) else x_um
 
                 repeat_str = f"T={t + 1}/{n_repeats} | " if n_repeats > 1 else ""
@@ -442,9 +451,38 @@ class _SpectroMappingWorker(QObject):
                 try:
                     self.sigStatusMessage.emit("Retour à la position initiale...")
                     self._running = True
-                    self._move_stage_to_pixel_blocking(
-                        float(origin["x"]), float(origin["y"]), float(origin["z"])
-                    )
+                    ox = float(origin["x"])
+                    oy = float(origin["y"])
+                    oz = float(origin["z"])
+                    # --- Anti-backlash du retour à l'origine (mécanisme 2/2) ---
+                    # Symptôme : une image galvo prise AVANT puis APRÈS un scan
+                    # platine est décalée de ~2 µm. Cause : le retour direct à
+                    # l'origine inverse le sens, la platine cale dans son jeu
+                    # mécanique, et move_xy_to_rel_blocking accepte une erreur
+                    # résiduelle jusqu'à _XY_FINAL_ACCEPT_UM (2 µm) au lieu de
+                    # forcer la cible -> la platine se gare hors origine.
+                    # Correctif : aborder TOUJOURS le centre en venant de la
+                    # gauche (déplacement final en +X), ce qui rattrape le jeu
+                    # de façon déterministe et atteint la vraie origine.
+                    #   - déjà à gauche du centre : approche directe ;
+                    #   - à droite (cas normal, fin de scan en bas à droite) :
+                    #     passer d'abord à gauche (overshoot) puis approcher.
+                    # Au plus UN déplacement supplémentaire, sur X uniquement
+                    # (Y/Z amenés directement). Valeur en abs : c'est une
+                    # distance à gauche du centre, le sens est fixe.
+                    overshoot = abs(float(
+                        self.scan_parameters.get("origin_overshoot_um", 0.0) or 0.0
+                    ))
+                    pm = self.positioner_manager
+                    cur_x = None
+                    if pm is not None and pm.has_axis("x"):
+                        try:
+                            cur_x = float(pm.get_rel_pos("x"))
+                        except Exception:
+                            cur_x = None
+                    if overshoot > 0.0 and (cur_x is None or cur_x > ox):
+                        self._move_stage_to_pixel_blocking(ox - overshoot, oy, oz)
+                    self._move_stage_to_pixel_blocking(ox, oy, oz)
                 except Exception:
                     pass
                 finally:
@@ -930,6 +968,12 @@ class SpectroManager(QObject):
     # Grid / ordre serpentin
     # ==========================================================
     def _build_serpentine_grid(self, pixels_x, pixels_y, pixels_z=1, n_repeats=1):
+        # Ordre serpentin pur : lignes paires gauche->droite, impaires
+        # droite->gauche. Un seul déplacement par pixel, vers des pixels
+        # adjacents. Aucun waypoint d'overshoot n'est inséré ici : la
+        # compensation du jeu mécanique inter-lignes se fait par décalage de
+        # la X commandée dans run() (cf. line_offset_x_um), pas par un
+        # mouvement supplémentaire.
         grid = []
         linear = 0
         for t in range(max(1, int(n_repeats))):
