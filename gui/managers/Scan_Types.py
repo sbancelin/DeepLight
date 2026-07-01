@@ -50,6 +50,10 @@ class ScanParams:
     active_channels: List[str] = field(default_factory=list)
     detector_channels: List[DetectorChannelSpec] = field(default_factory=list)
     initial_relative_positions: Dict[str, float] = field(default_factory=dict)
+    # Mode de balayage par axe pour les axes "stack" (Z-Vcoil, Polarization) :
+    #   "around" -> ±size/2 autour de la position courante (défaut)
+    #   "from"   -> taille complète À PARTIR de la position courante
+    scan_modes: Dict[str, str] = field(default_factory=dict)
     samples_per_pixel: int = 1
     scan_kind: str = "laser"
     pixel_source_kind: str = "analog_integrating"

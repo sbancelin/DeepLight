@@ -347,6 +347,8 @@ class MainWindow(QMainWindow):
             self.ui.spectro_panel_widget.set_running(True)
             self.ui.spectro_panel_widget.reset_progress()
 
+            self._open_shutter_for_spectro()
+
             self.spectro_manager.start_mapping(
                 scan_parameters=acquisition_params,
                 modes=modes,
@@ -382,6 +384,8 @@ class MainWindow(QMainWindow):
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self._clear_spectro_ui_buffers()
+
+        self._close_shutter_after_spectro()
 
         try:
             self.ui.spectro_panel_widget.set_running(False)
@@ -526,12 +530,49 @@ class MainWindow(QMainWindow):
         self._on_spectro_status_changed(f"Spectro {done}/{total}")
 
     @Slot(object)
+    def _open_shutter_for_spectro(self):
+        """Ouvre le shutter (laser) au lancement d'une acquisition spectro.
+
+        Symetrique de _close_shutter_after_spectro : le chemin spectro gere
+        lui-meme le shutter (le scan laser passe, lui, par l'Acquisition_Manager).
+        No-op cote hardware si backend non-nidaq.
+        """
+        try:
+            self.user_shutter_override = None
+            self.hardware.set_shutter(True)
+        except Exception as e:
+            logger.debug(f"[MainWindow] spectro shutter open failed: {e}")
+        try:
+            self.set_shutter_state(True)
+        except Exception as e:
+            logger.debug(f"[MainWindow] spectro shutter UI update failed: {e}")
+
+    def _close_shutter_after_spectro(self):
+        """Ferme le shutter (laser) en fin d'acquisition spectro/Brillouin.
+
+        Contrairement au scan laser (Acquisition_Manager), le chemin spectro
+        n'ouvre/ferme pas le shutter automatiquement : on force donc la
+        fermeture ici pour ne pas laisser le laser sur l'échantillon après
+        l'acquisition. No-op côté hardware si backend non-nidaq.
+        """
+        try:
+            self.user_shutter_override = None
+            self.hardware.set_shutter(False)
+        except Exception as e:
+            logger.debug(f"[MainWindow] spectro shutter close failed: {e}")
+        try:
+            self.set_shutter_state(False)
+        except Exception as e:
+            logger.debug(f"[MainWindow] spectro shutter UI update failed: {e}")
+
     def _on_spectro_acquisition_finished(self, dataset):
         self._flush_pending_brillouin_image()
         self._flush_pending_raman_spectrum()
 
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
+
+        self._close_shutter_after_spectro()
 
         try:
             total = len(self.spectro_manager.pixel_list)
@@ -577,6 +618,8 @@ class MainWindow(QMainWindow):
 
         self.ui.spectro_panel_widget.set_running(False)
         self.ui.spectro_widget.set_running(False)
+
+        self._close_shutter_after_spectro()
 
         try:
             self.ui.global_progress_widget.finish_task("Failed")

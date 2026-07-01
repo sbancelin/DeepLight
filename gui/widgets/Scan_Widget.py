@@ -37,6 +37,33 @@ READONLY_LINEEDIT_STYLE = """
     }
 """
 
+SCAN_COMBO_STYLE = """
+    QComboBox {
+        background-color: #333;
+        color: white;
+        border: 1px solid #555;
+        border-radius: 3px;
+        padding: 2px;
+        min-height: 20px;
+    }
+"""
+
+SCAN_COMBO_DISABLED_STYLE = """
+    QComboBox {
+        background-color: #252525;
+        color: #888;
+        border: 1px solid #444;
+        border-radius: 3px;
+        padding: 2px;
+        min-height: 20px;
+    }
+    QComboBox:disabled {
+        background-color: #252525;
+        color: #888;
+        border: 1px solid #444;
+    }
+"""
+
 HEADER_LABEL_STYLE = "color: white; font-weight: bold; padding-bottom: 5px;"
 
 BUTTON_STYLE = """
@@ -450,14 +477,17 @@ class ScanWidget(QWidget):
         grid_layout.setColumnMinimumWidth(3, 10)   # Step
         grid_layout.setColumnMinimumWidth(4, 10)   # Offset
 
+        grid_layout.setColumnMinimumWidth(5, 10)   # Mode
+
         grid_layout.setColumnStretch(0, 0)
         grid_layout.setColumnStretch(1, 1)
         grid_layout.setColumnStretch(2, 1)
         grid_layout.setColumnStretch(3, 1)
         grid_layout.setColumnStretch(4, 1)
+        grid_layout.setColumnStretch(5, 1)
 
         # En-têtes
-        headers = ["Axis", "Size (µm)", "# Pix", "Step (µm)", "Offset (µm)"]
+        headers = ["Axis", "Size (µm)", "# Pix", "Step (µm)", "Offset (µm)", "Scan"]
         for col, header in enumerate(headers):
             label = QLabel(header)
             label.setStyleSheet(HEADER_LABEL_STYLE)
@@ -476,6 +506,7 @@ class ScanWidget(QWidget):
         self.size_edits = []
         self.step_edits = []
         self.offset_edits = []
+        self.scan_mode_combos = []
 
         for row, pos in enumerate(defaut_axes, 1):
             # Colonne 0: Scan dim
@@ -539,6 +570,24 @@ class ScanWidget(QWidget):
             offset_edit.setProperty("last_valid_text", offset_edit.text())
             self.offset_edits.append(offset_edit)
 
+            # Colonne 5: Mode de balayage (stack) — Around / From.
+            # Pertinent uniquement pour les axes platine stack (Z-Vcoil,
+            # Polarization) ; désactivé sinon.
+            mode_combo = QComboBox()
+            mode_combo.addItems(["Around", "From"])
+            mode_combo.setCurrentText("Around")
+            mode_combo.setToolTip(
+                "Around : ±size/2 autour de la position relative courante.\n"
+                "From : taille complète À PARTIR de la position relative\n"
+                "courante (départ = position actuelle)."
+            )
+            mode_combo.setStyleSheet(SCAN_COMBO_STYLE)
+            mode_combo.setMinimumWidth(0)
+            mode_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            grid_layout.addWidget(mode_combo, row, 5)
+            setattr(self, f"scan_mode_combo_{pos.replace('-', '_')}", mode_combo)
+            self.scan_mode_combos.append(mode_combo)
+
             self._update_steps(size_edit, pixel_edit, step_edit)
 
             i = row - 1
@@ -568,6 +617,12 @@ class ScanWidget(QWidget):
             size_edit.returnPressed.connect(lambda idx=i: self._validate_row_and_revert_if_needed(idx))
             pixel_edit.returnPressed.connect(lambda idx=i: self._validate_row_and_revert_if_needed(idx))
             offset_edit.returnPressed.connect(lambda idx=i: self._validate_row_and_revert_if_needed(idx))
+
+            mode_combo.currentTextChanged.connect(lambda _=None: self._on_param_changed())
+            mode_combo.currentTextChanged.connect(lambda _=None: self._update_scan_duration())
+
+            # État initial de la combobox Mode (activée seulement pour Z/P)
+            self._update_scan_mode_combo(i, pos)
 
             if pos == "None":
                 self._disable_axis_fields(i)
@@ -1038,8 +1093,10 @@ class ScanWidget(QWidget):
                 self.pixel_edits[i].setProperty("last_valid_text", self.pixel_edits[i].text())
                 self.offset_edits[i].setProperty("last_valid_text", self.offset_edits[i].text())
 
+                self._update_scan_mode_combo(i, axis)
+
                 self._update_steps(self.size_edits[i], self.pixel_edits[i], self.step_edits[i])
-        
+
     def _update_scan_mode_buttons(self):
         self.laser_mode_button.blockSignals(True)
         self.sample_mode_button.blockSignals(True)
@@ -1539,12 +1596,23 @@ class ScanWidget(QWidget):
             return float(default)
 
     def _get_axis_current_position_um(self, axis_name: str) -> float:
-        """Retourne la position actuelle partagée de l'axe (issue du Positioner)."""
+        """Position ABSOLUE actuelle de l'axe (Positioner). Sert au contrôle
+        des limites device (bornes absolues)."""
         if axis_name == "None":
             return 0.0
         if self.axis_settings_manager is None:
             return 0.0
         return float(self.axis_settings_manager.get_axis_position_um(axis_name))
+
+    def _get_axis_current_relative_position_um(self, axis_name: str) -> float:
+        """Position RELATIVE actuelle de l'axe (repère set-0). Sert de base au
+        scan : on balaye autour/à partir du relatif, pas de l'absolu.
+        Pour les galvos (sans platine) le relatif vaut 0."""
+        if axis_name == "None":
+            return 0.0
+        if self.axis_settings_manager is None:
+            return 0.0
+        return float(self.axis_settings_manager.get_axis_relative_position_um(axis_name))
     
     def _read_int_edit(self, edit: QLineEdit, default: int = 1) -> int:
         try:
@@ -1581,14 +1649,14 @@ class ScanWidget(QWidget):
             current_pos_um = self._get_axis_current_position_um(axis_name)
             center_um = current_pos_um + offset_um
 
-            lo_um = center_um - size_um / 2.0
-            hi_um = center_um + size_um / 2.0
+            mode = self._get_row_scan_mode(row_index, axis_name)
+            lo_um, hi_um = self._scan_range_for_mode(center_um, size_um, axis_name, mode)
 
             if lo_um < min_um or hi_um > max_um:
                 return False, (
                     f"{axis_name}: requested scan exceeds stage limits.\n"
                     f"Current position = {current_pos_um:.2f} µm, relative offset = {offset_um:.2f} µm\n"
-                    f"Requested range = [{lo_um:.2f}, {hi_um:.2f}] µm\n"
+                    f"Mode = {mode}, requested range = [{lo_um:.2f}, {hi_um:.2f}] µm\n"
                     f"Allowed range = [{min_um:.2f}, {max_um:.2f}] µm."
                 )
 
@@ -1824,10 +1892,11 @@ class ScanWidget(QWidget):
         # Récupérer sizes/offsets/steps de manière robuste (par ligne)
         rows = []
         sizes = {}
-        offsets = {}    # offsets absolus utilisés par le scan
+        offsets = {}    # base relative du scan (pos relative courante + offset UI)
         relative_offsets = {}    # offsets relatifs saisis dans le widget
-        current_positions = {}   # positions actuelles venant du Positioner
+        current_positions = {}   # positions RELATIVES courantes (Positioner)
         step_sizes = {}
+        scan_modes = {}    # "around" / "from" par axe (stack Z/P)
 
         axis_order = [cb.currentText() for cb in self.scan_dim_combos]
 
@@ -1852,7 +1921,11 @@ class ScanWidget(QWidget):
             except Exception:
                 rel_off = 0.0
 
-            current_pos = self._get_axis_current_position_um(axis) if axis != "None" else 0.0
+            # Base du scan = position RELATIVE courante (repère set-0), pas
+            # l'absolue : le pipeline (StepEvent.target_rel -> move_from_scan ->
+            # rel_to_abs) travaille en relatif. Utiliser l'absolu doublait le
+            # zero_offset (Z abs 500 -> scan autour de 1000). Bug corrigé.
+            current_pos = self._get_axis_current_relative_position_um(axis) if axis != "None" else 0.0
             off = current_pos + rel_off
 
             # step (champ non éditable déjà calculé dans le widget)
@@ -1877,6 +1950,10 @@ class ScanWidget(QWidget):
                 relative_offsets[axis] = rel_off
                 current_positions[axis] = current_pos
                 step_sizes[axis] = step
+                if i < len(self.scan_mode_combos) and self._is_stack_mode_axis(axis):
+                    scan_modes[axis] = self.scan_mode_combos[i].currentText().strip().lower()
+                else:
+                    scan_modes[axis] = "around"
 
         total_pixels = 1
         for row in rows:
@@ -1907,10 +1984,11 @@ class ScanWidget(QWidget):
             "delay_between_rep": delay_between_rep,
             "laser_off_between_rep": laser_off_between_rep,
             "sizes": sizes,
-            "offsets": offsets,                       # absolus
+            "offsets": offsets,                       # base relative du scan
             "relative_offsets": relative_offsets,     # UI
-            "current_positions": current_positions,   # positioner
+            "current_positions": current_positions,   # positions relatives
             "initial_relative_positions": dict(current_positions),
+            "scan_modes": scan_modes,                 # "around"/"from" par axe
             "step_sizes": step_sizes,
             "total_pixels": total_pixels,
         }
@@ -2051,6 +2129,44 @@ class ScanWidget(QWidget):
         self.pixel_edits[row_index].clear()
         self.offset_edits[row_index].clear()
         self.step_edits[row_index].clear()
+
+        self._update_scan_mode_combo(row_index, "None")
+
+    def _is_stack_mode_axis(self, axis_name: str) -> bool:
+        """Axes platine 'stack' pour lesquels le mode Around/From s'applique."""
+        return axis_name in ("Z-Vcoil", "Polarization")
+
+    def _get_row_scan_mode(self, row_index: int, axis_name: str) -> str:
+        """Mode de balayage ('around'/'from') de la ligne pour un axe stack."""
+        if not self._is_stack_mode_axis(axis_name):
+            return "around"
+        if row_index >= len(self.scan_mode_combos):
+            return "around"
+        return self.scan_mode_combos[row_index].currentText().strip().lower()
+
+    def _scan_range_for_mode(self, center_um: float, size_um: float,
+                             axis_name: str, mode: str) -> tuple[float, float]:
+        """Bornes [lo, hi] du balayage selon le mode (around/from) et le sens
+        de l'axe (Z-Vcoil descend, les autres montent)."""
+        if str(mode) == "from":
+            if axis_name == "Z-Vcoil":
+                return center_um - size_um, center_um
+            return center_um, center_um + size_um
+        return center_um - size_um / 2.0, center_um + size_um / 2.0
+
+    def _update_scan_mode_combo(self, row_index, axis_name):
+        """Active la combobox Mode pour les axes stack (Z/P), la désactive et
+        la remet sur 'Around' sinon."""
+        if row_index >= len(self.scan_mode_combos):
+            return
+        combo = self.scan_mode_combos[row_index]
+        enabled = self._is_stack_mode_axis(axis_name)
+        combo.setEnabled(enabled)
+        combo.setStyleSheet(SCAN_COMBO_STYLE if enabled else SCAN_COMBO_DISABLED_STYLE)
+        if not enabled and combo.currentText() != "Around":
+            combo.blockSignals(True)
+            combo.setCurrentText("Around")
+            combo.blockSignals(False)
     
     def _on_param_changed(self):
         """Marque que les paramètres ont changé."""

@@ -13,7 +13,8 @@ class SettingsManager(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.axis_settings = {}
-        self.axis_positions_um = {}
+        self.axis_positions_um = {}            # positions ABSOLUES
+        self.axis_relative_positions_um = {}   # positions RELATIVES (repère set-0)
         self.laser_settings = {}
 
     # ---------- helpers ----------
@@ -55,6 +56,12 @@ class SettingsManager(QObject):
 
     def set_axis_position_um(self, axis_name, value):
         self.axis_positions_um[axis_name] = float(value)
+
+    def get_axis_relative_position_um(self, axis_name):
+        return float(self.axis_relative_positions_um.get(axis_name, 0.0))
+
+    def set_axis_relative_position_um(self, axis_name, value):
+        self.axis_relative_positions_um[axis_name] = float(value)
 
     # ---------- Lasers ----------
     def get_laser_settings(self, laser_name):

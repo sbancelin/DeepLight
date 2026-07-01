@@ -161,6 +161,7 @@ class ScanManager(QObject):
             step_sizes=dict(d.get("step_sizes", {})),
             offsets=dict(d.get("offsets", {})),
             initial_relative_positions=dict(d.get("initial_relative_positions", {})),
+            scan_modes=dict(d.get("scan_modes", {})),
             dwell_time_s=float(d.get("dwell_time", 10e-6) or 10e-6),
             bidirectional_scan=bool(d.get("bidirectional_scan", False)),
             bidirectional_shift_px=bidirectional_shift_px,
@@ -205,26 +206,42 @@ class ScanManager(QObject):
             np.full((n_samples,), float(y_value), dtype=np.float64),
         )
 
-    def _compute_axis_positions(self, axis_name: str, n: int, size: float, offset: float):
+    def _compute_axis_positions(self, axis_name: str, n: int, size: float, offset: float,
+                                mode: str = "around"):
         """
         Génère les positions pour un axe discret.
 
-        Convention :
-        - axes normaux : de offset - size/2 vers offset + size/2
-        - Z-Vcoil : on commence en haut (abs plus grand) et on finit en bas
-        / plus profond (abs plus petit)
+        `offset` = position de référence (déjà en coordonnées RELATIVES :
+        position courante relative + offset utilisateur).
+
+        Convention de sens :
+        - axes normaux : sens croissant (offset -> plus grand)
+        - Z-Vcoil : sens décroissant (on commence en haut / abs plus grand
+          et on finit en bas / plus profond)
+
+        Convention d'étendue selon `mode` :
+        - "around" : ±size/2 autour de `offset` (offset = centre)
+        - "from"   : taille complète À PARTIR de `offset` (offset = départ)
         """
         n = max(int(n), 1)
 
         if n == 1:
             return [offset]
 
-        if axis_name == "Z-Vcoil":
-            start = offset + size / 2.0
-            stop = offset - size / 2.0
+        descending = (axis_name == "Z-Vcoil")
+
+        if str(mode) == "from":
+            # offset = point de départ ; on parcourt toute la taille depuis là.
+            start = offset
+            stop = offset - size if descending else offset + size
         else:
-            start = offset - size / 2.0
-            stop = offset + size / 2.0
+            # "around" : offset = centre.
+            if descending:
+                start = offset + size / 2.0
+                stop = offset - size / 2.0
+            else:
+                start = offset - size / 2.0
+                stop = offset + size / 2.0
 
         return list(np.linspace(start, stop, n))
     
@@ -304,9 +321,14 @@ class ScanManager(QObject):
             else:
                 n3 = max(int(sp.pixel_values[2]), 1)
                 size3 = float(sp.sizes.get(axis3_name, 0.0))
+                # offsets[axis] est déjà en relatif = pos. relative courante +
+                # offset utilisateur (cf. Scan_Widget). On l'utilise tel quel.
                 off3 = float(sp.offsets.get(axis3_name, 0.0))
+                mode3 = str(sp.scan_modes.get(axis3_name, "around"))
 
-                axis3_positions = self._compute_axis_positions(axis3_name, n3, size3, off3)
+                axis3_positions = self._compute_axis_positions(
+                    axis3_name, n3, size3, off3, mode=mode3
+                )
 
         if len(sp.axis_order) >= 4 and sp.axis_order[3] != "None":
             axis4_name = sp.axis_order[3]
@@ -318,11 +340,16 @@ class ScanManager(QObject):
             else:
                 n4 = max(int(sp.pixel_values[3]), 1)
                 size4 = float(sp.sizes.get(axis4_name, 0.0))
-                user_off4 = float(sp.offsets.get(axis4_name, 0.0))
-                base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
-                off4 = base4 + user_off4
+                # offsets[axis] est déjà en relatif (pos. relative courante +
+                # offset utilisateur) : on l'utilise tel quel, comme axis3.
+                # (Avant : base4 + user_off4 doublait la base -> Z partait à
+                # ~2x la position ; bug corrigé.)
+                off4 = float(sp.offsets.get(axis4_name, 0.0))
+                mode4 = str(sp.scan_modes.get(axis4_name, "around"))
 
-                axis4_positions = self._compute_axis_positions(axis4_name, n4, size4, off4)
+                axis4_positions = self._compute_axis_positions(
+                    axis4_name, n4, size4, off4, mode=mode4
+                )
 
         if axis4_name is not None and reps > 1:
             raise NotImplementedError(
@@ -489,31 +516,36 @@ class ScanManager(QObject):
 
                 cursor += delay_samples
 
-        # Step final : retour à la base initiale à la fin du run
-        if axis3_name is not None:
-            base3 = float(sp.initial_relative_positions.get(axis3_name, 0.0))
-            step_events.append(
-                StepEvent(
-                    sample_index=cursor,
-                    axis_name=axis3_name,
-                    target_rel=base3,
-                    velocity=sp.velocity_max.get(axis3_name, 0.0),
+        # Step final : retour à la base initiale à la fin du run.
+        # PAS en preview/continuous : le plan y est rejoué à chaque frame, donc
+        # ce retour ramènerait Z (axis3/axis4) à la position de lancement à
+        # chaque image et empêcherait l'utilisateur de déplacer Z en live.
+        # En preview, on laisse l'axe stack là où il est.
+        if not is_preview_mode:
+            if axis3_name is not None:
+                base3 = float(sp.initial_relative_positions.get(axis3_name, 0.0))
+                step_events.append(
+                    StepEvent(
+                        sample_index=cursor,
+                        axis_name=axis3_name,
+                        target_rel=base3,
+                        velocity=sp.velocity_max.get(axis3_name, 0.0),
 
-                    reason="axis3_return_to_base",
+                        reason="axis3_return_to_base",
+                    )
                 )
-            )
 
-        if axis4_name is not None:
-            base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
-            step_events.append(
-                StepEvent(
-                    sample_index=cursor,
-                    axis_name=axis4_name,
-                    target_rel=base4,
-                    velocity=sp.velocity_max.get(axis4_name, 0.0),
-                    reason="axis4_return_to_base",
+            if axis4_name is not None:
+                base4 = float(sp.initial_relative_positions.get(axis4_name, 0.0))
+                step_events.append(
+                    StepEvent(
+                        sample_index=cursor,
+                        axis_name=axis4_name,
+                        target_rel=base4,
+                        velocity=sp.velocity_max.get(axis4_name, 0.0),
+                        reason="axis4_return_to_base",
+                    )
                 )
-            )
         
         ao_x = np.concatenate(ao_x_parts).astype(np.float64, copy=False)
         ao_y = np.concatenate(ao_y_parts).astype(np.float64, copy=False)

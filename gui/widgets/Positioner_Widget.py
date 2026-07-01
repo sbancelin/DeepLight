@@ -845,6 +845,13 @@ class PositionerWidget(QWidget):
         if visu_name is not None:
             self.stepperPositionForVisualizer.emit(visu_name, float(rel))
 
+            # Partager la position RELATIVE (repère set-0) pour que le scan
+            # balaye autour/à partir du relatif et non de l'absolu.
+            if self.axis_settings_manager is not None:
+                self.axis_settings_manager.set_axis_relative_position_um(
+                    visu_name, float(rel)
+                )
+
     @Slot(str, float)
     def _on_abs_position_changed(self, axis: str, abs_pos: float):
         ui = self.axis_ui.get(axis)
