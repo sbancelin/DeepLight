@@ -147,6 +147,14 @@ class MockMicroscope(MicroscopeBackendBase):
         self.leading_skip_px = lead_px
         self.trailing_skip_px = trail_px
 
+        # dim_fast désigne la taille raster TOTALE (utile + overscan), comme
+        # dans configure_execution_plan (qui prend pix_fast total). dim_image_x/y
+        # restent les tailles utiles. Sans ça, détecteur et reconstruction sont
+        # incohérents avec leading/trailing_skip_px -> "Incompatible raster
+        # geometry" dès qu'il y a de l'overscan (ex. acquisition complète en
+        # mode mosaïque).
+        self.dim_fast = self.dim_fast_total
+
         self._recreate_shared_image()
         self.acquired = {}
 

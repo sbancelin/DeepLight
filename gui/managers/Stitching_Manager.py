@@ -16,6 +16,7 @@ class MosaicRunConfig:
     tile_height_px: int
     tile_width_um: float
     tile_height_um: float
+    n_planes: int
     step_x_um: float
     step_y_um: float
     start_x_rel_um: float
@@ -109,22 +110,26 @@ class StitchingManager(QObject):
         # La mosaïque émise vers l'UI reste à la taille nominale.
         self._reg_margin_px = max(2, cfg.overlap_px // 3) if cfg.overlap_px > 0 else 0
 
+        mosaic_h = (
+            cfg.tiles_y * cfg.tile_height_px - max(0, cfg.tiles_y - 1) * cfg.overlap_px
+            + 2 * self._reg_margin_px
+        )
+        mosaic_w = (
+            cfg.tiles_x * cfg.tile_width_px - max(0, cfg.tiles_x - 1) * cfg.overlap_px
+            + 2 * self._reg_margin_px
+        )
+
         try:
-            self._mosaic = np.zeros(
-                (
-                    cfg.tiles_y * cfg.tile_height_px - max(0, cfg.tiles_y - 1) * cfg.overlap_px
-                    + 2 * self._reg_margin_px,
-                    cfg.tiles_x * cfg.tile_width_px - max(0, cfg.tiles_x - 1) * cfg.overlap_px
-                    + 2 * self._reg_margin_px,
-                ),
-                dtype=np.float32
-            )
+            # Mosaïque 3D : un plan par index d'axe stack (Z/P). n_planes == 1
+            # -> mosaïque 2D classique. Le poids reste 2D (géométrie identique
+            # pour tous les plans).
+            self._mosaic = np.zeros((cfg.n_planes, mosaic_h, mosaic_w), dtype=np.float32)
         except Exception as e:
             self._running = False
             self.run_failed.emit(f"Unable to allocate mosaic image: {e}")
             return
 
-        self._mosaic_weight = np.zeros_like(self._mosaic, dtype=np.float32)
+        self._mosaic_weight = np.zeros((mosaic_h, mosaic_w), dtype=np.float32)
 
         self._tile_sequence = self._build_serpentine_sequence(cfg.tiles_x, cfg.tiles_y)
         self._tile_index = -1
@@ -177,12 +182,19 @@ class StitchingManager(QObject):
                 row_y = row
 
         if row_x is None or row_y is None:
-            raise ValueError("Stitching v1 requires XY scan axes.")
+            raise ValueError("Stitching requires XY scan axes.")
 
         tile_width_px = max(1, int(row_x.get("pixels", 1) or 1))
         tile_height_px = max(1, int(row_y.get("pixels", 1) or 1))
         tile_width_um = float(row_x.get("size_um", 1.0) or 1.0)
         tile_height_um = float(row_y.get("size_um", 1.0) or 1.0)
+
+        # Axes "stack" supplémentaires (Z-Vcoil, Polarization...) : chaque tuile
+        # devient une pile de plans. n_planes = produit de leurs # pixels.
+        extra_rows = [r for r in rows if r is not row_x and r is not row_y]
+        n_planes = 1
+        for r in extra_rows:
+            n_planes *= max(1, int(r.get("pixels", 1) or 1))
 
         if overlap_px >= tile_width_px or overlap_px >= tile_height_px:
             raise ValueError("Overlap must be smaller than tile width and height.")
@@ -207,6 +219,7 @@ class StitchingManager(QObject):
             tile_height_px=tile_height_px,
             tile_width_um=tile_width_um,
             tile_height_um=tile_height_um,
+            n_planes=n_planes,
             step_x_um=step_x_um,
             step_y_um=step_y_um,
             start_x_rel_um=start_x_rel_um,
@@ -338,13 +351,16 @@ class StitchingManager(QObject):
             self._begin_return_home()
             return
 
-        img = self._extract_channel_image(acquired, self._cfg.channel)
-        if img is None:
-            self._fail_and_stop(f"Channel '{self._cfg.channel}' not found in acquired data.")
-            return
+        stack = self._extract_channel_stack(acquired, self._cfg.channel)
+        if stack is None:
+            img = self._extract_channel_image(acquired, self._cfg.channel)
+            if img is None:
+                self._fail_and_stop(f"Channel '{self._cfg.channel}' not found in acquired data.")
+                return
+            stack = np.asarray(img, dtype=np.float32)[None, ...]
 
         try:
-            self._paste_tile(img)
+            self._paste_tile(stack)
         except Exception as e:
             self._fail_and_stop(f"Unable to paste tile into mosaic: {e}")
             return
@@ -386,27 +402,77 @@ class StitchingManager(QObject):
 
         return None
     
+    def _extract_channel_stack(self, acquired, channel: str):
+        """
+        Construit la pile 3D (P, H, W) d'une tuile pour un canal donné, à partir
+        de la structure `acquired` du microscope : rep -> idx_tuple -> ch -> 2D.
+        Les plans sont ordonnés par index d'axe stack (tri des idx_tuple).
+
+        Même orientation que l'image affichée (acquired stocke une copie de
+        shared_images). Retourne None si extraction impossible.
+        """
+        if not isinstance(acquired, dict) or not acquired:
+            return None
+
+        rep_keys = sorted(acquired.keys())
+        frames_by_idx = acquired.get(rep_keys[0])
+        if not isinstance(frames_by_idx, dict) or not frames_by_idx:
+            return None
+
+        planes = []
+        for idx in sorted(frames_by_idx.keys()):
+            ch_dict = frames_by_idx.get(idx, {})
+            img = ch_dict.get(channel)
+            if img is None:
+                # fallback permissif : première image 2D disponible
+                for value in ch_dict.values():
+                    a = np.asarray(value, dtype=np.float32)
+                    if a.ndim == 2:
+                        img = a
+                        break
+            if img is None:
+                return None
+            a = np.asarray(img, dtype=np.float32)
+            if a.ndim != 2:
+                return None
+            planes.append(a)
+
+        if not planes:
+            return None
+
+        return np.stack(planes, axis=0)
+
     def _mosaic_nominal_view(self):
         """
         Vue de la mosaïque à la taille nominale (sans la marge interne
-        de recalage), telle qu'affichée par l'UI.
+        de recalage), telle qu'affichée par l'UI. 2D si un seul plan,
+        3D (P, H, W) sinon.
         """
         m = int(getattr(self, "_reg_margin_px", 0) or 0)
-        if m <= 0:
-            return self._mosaic
-        return self._mosaic[m:-m, m:-m]
+        view = self._mosaic if m <= 0 else self._mosaic[:, m:-m, m:-m]
+        if view.shape[0] == 1:
+            return view[0]
+        return view
 
-    def _paste_tile(self, img):
+    def _paste_tile(self, stack):
         if self._cfg is None or self._mosaic is None:
             return
 
-        arr = np.asarray(img, dtype=np.float32)
-        if arr.ndim != 2:
-            raise ValueError(f"Expected 2D tile image, got shape={arr.shape}")
+        arr = np.asarray(stack, dtype=np.float32)
+        if arr.ndim == 2:
+            arr = arr[None, ...]
+        if arr.ndim != 3:
+            raise ValueError(f"Expected tile stack (P,H,W), got shape={arr.shape}")
 
-        if arr.shape != (self._cfg.tile_height_px, self._cfg.tile_width_px):
+        p_mosaic = self._mosaic.shape[0]
+        # Ajuste le nombre de plans si l'acquisition en renvoie plus/moins que
+        # prévu (robustesse) : on colle les plans communs.
+        p = min(arr.shape[0], p_mosaic)
+        arr = arr[:p]
+
+        if arr.shape[1:] != (self._cfg.tile_height_px, self._cfg.tile_width_px):
             raise ValueError(
-                f"Unexpected tile shape {arr.shape}, expected "
+                f"Unexpected tile shape {arr.shape[1:]}, expected "
                 f"({self._cfg.tile_height_px}, {self._cfg.tile_width_px})"
             )
 
@@ -415,18 +481,20 @@ class StitchingManager(QObject):
         x0 = margin + ix * (self._cfg.tile_width_px - self._cfg.overlap_px)
         y0 = margin + iy * (self._cfg.tile_height_px - self._cfg.overlap_px)
 
-        # Corriger la position par cross-corrélation sur la zone de recouvrement
+        # Corriger la position par cross-corrélation sur la zone de recouvrement.
+        # Le recalage est estimé sur le plan 0 puis appliqué à tous les plans
+        # (mêmes tuiles => même décalage), ce qui garde la pile alignée.
         if self._cfg.overlap_px > 0 and (ix > 0 or iy > 0):
-            dy, dx = self._estimate_tile_registration(arr, x0, y0, ix, iy)
-            x0 = max(0, min(x0 + dx, self._mosaic.shape[1] - self._cfg.tile_width_px))
-            y0 = max(0, min(y0 + dy, self._mosaic.shape[0] - self._cfg.tile_height_px))
+            dy, dx = self._estimate_tile_registration(arr[0], x0, y0, ix, iy)
+            x0 = max(0, min(x0 + dx, self._mosaic.shape[2] - self._cfg.tile_width_px))
+            y0 = max(0, min(y0 + dy, self._mosaic.shape[1] - self._cfg.tile_height_px))
 
         x1 = x0 + self._cfg.tile_width_px
         y1 = y0 + self._cfg.tile_height_px
 
-        # pas d'overlap -> collage direct
+        # pas d'overlap -> collage direct (tous les plans)
         if self._cfg.overlap_px <= 0:
-            self._mosaic[y0:y1, x0:x1] = arr
+            self._mosaic[:p, y0:y1, x0:x1] = arr
             self._mosaic_weight[y0:y1, x0:x1] = 1.0
             return
 
@@ -440,15 +508,18 @@ class StitchingManager(QObject):
             max_iy=self._cfg.tiles_y - 1,
         )
 
-        mosaic_slice = self._mosaic[y0:y1, x0:x1]
-        weight_slice = self._mosaic_weight[y0:y1, x0:x1]
-
+        weight_slice = self._mosaic_weight[y0:y1, x0:x1]           # (h, w)
         new_weight = weight_slice + tile_weight
         safe_weight = np.where(new_weight > 0, new_weight, 1.0)
 
-        blended = (mosaic_slice * weight_slice + arr * tile_weight) / safe_weight
+        mosaic_slice = self._mosaic[:p, y0:y1, x0:x1]              # (p, h, w)
+        # Fondu par plan avec un poids 2D partagé (broadcast sur les plans).
+        blended = (
+            mosaic_slice * weight_slice[None, :, :]
+            + arr * tile_weight[None, :, :]
+        ) / safe_weight[None, :, :]
 
-        self._mosaic[y0:y1, x0:x1] = blended
+        self._mosaic[:p, y0:y1, x0:x1] = blended
         self._mosaic_weight[y0:y1, x0:x1] = new_weight
 
     def _correlate_covered_strip(self, y0, y1, x0, x1, mov, max_shift):
@@ -460,7 +531,7 @@ class StitchingManager(QObject):
 
         Retourne (dy, dx) ou None si la zone couverte est insuffisante.
         """
-        ref = self._mosaic[y0:y1, x0:x1]
+        ref = self._mosaic[0, y0:y1, x0:x1]
         w = self._mosaic_weight[y0:y1, x0:x1]
         if ref.size == 0 or ref.shape != mov.shape:
             return None
@@ -493,7 +564,7 @@ class StitchingManager(QObject):
         max_shift = max(2, ov // 3)
         th = self._cfg.tile_height_px
         tw = self._cfg.tile_width_px
-        mh, mw = self._mosaic.shape
+        mh, mw = self._mosaic.shape[-2], self._mosaic.shape[-1]
 
         shifts_y, shifts_x = [], []
 

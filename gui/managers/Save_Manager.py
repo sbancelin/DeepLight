@@ -250,6 +250,54 @@ class SaveManager:
 
         return zarr_path
 
+    def save_mosaic(
+        self,
+        folder: str,
+        filename: str,
+        comment: str,
+        mosaic,
+        scan_params: dict,
+        mosaic_params: dict | None = None,
+    ) -> str:
+        """
+        Sauvegarde une mosaïque de stitching en OME-TIFF.
+
+        - mosaïque 2D  -> axes "YX"
+        - mosaïque 3D  -> axes "ZYX" (un plan par index d'axe stack Z/P)
+
+        Un sidecar JSON accompagne le fichier (params scan + mosaïque + commentaire).
+        """
+        os.makedirs(folder, exist_ok=True)
+
+        arr = np.asarray(mosaic, dtype=np.float32)
+        if arr.ndim == 3 and arr.shape[0] == 1:
+            arr = arr[0]
+
+        axes = "ZYX" if arr.ndim == 3 else "YX"
+
+        path = make_unique_path(folder, filename, ext=".ome.tif", default_stem="MOSAIC")
+
+        with self._lock:
+            tifffile.imwrite(
+                path,
+                arr,
+                photometric="minisblack",
+                metadata={"axes": axes},
+            )
+
+            sidecar = os.path.splitext(path)[0] + ".json"
+            payload = {
+                "created": self._now_iso(),
+                "comment": comment or "",
+                "axes": axes,
+                "shape": list(arr.shape),
+                "mosaic_params": mosaic_params or {},
+                "scan_params": scan_params or {},
+            }
+            self._write_json(sidecar, payload)
+
+        return path
+
     # ---------- REC ----------
 
     def start_rec_session(

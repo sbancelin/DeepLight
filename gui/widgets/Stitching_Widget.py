@@ -251,9 +251,21 @@ class StitchingWidget(QWidget):
         self.cb_show_layout.setStyleSheet(_CHECKBOX_STYLE)
         controls_layout.addWidget(self.cb_show_layout)
 
+        # Nombre de tuiles + temps estimé (temps par acquisition x # tuiles)
+        self._per_tile_seconds = 0.0
+        self.label_tiles_est = QLabel()
+        self.label_tiles_est.setStyleSheet(_STATUS_VALUE_STYLE)
+        controls_layout.addWidget(self.label_tiles_est)
+
         controls_layout.addStretch(1)
 
-        main_layout.addWidget(controls_frame)        
+        self.button_save = QPushButton("Save")
+        self.button_save.setStyleSheet(_BUTTON_STYLE)
+        self.button_save.setFixedWidth(58)
+        self.button_save.setToolTip("Sauvegarder la mosaïque acquise (OME-TIFF).")
+        controls_layout.addWidget(self.button_save)
+
+        main_layout.addWidget(controls_frame)
 
         # ==========================================================
         # ImageView
@@ -326,6 +338,10 @@ class StitchingWidget(QWidget):
         self.button_reset_levels.clicked.connect(self._on_reset_levels_clicked)
         self.button_reset.clicked.connect(self._reset_controls)
 
+        self.spin_tile_x.valueChanged.connect(self._refresh_estimate_label)
+        self.spin_tile_y.valueChanged.connect(self._refresh_estimate_label)
+        self._refresh_estimate_label()
+
         try:
             self.image_view.getView().scene().sigMouseMoved.connect(self._on_mouse_moved)
         except Exception:
@@ -358,6 +374,34 @@ class StitchingWidget(QWidget):
     def set_status(self, text):
         self.label_status.setText(str(text))
 
+    def set_estimated_time(self, per_tile_seconds: float):
+        """Durée estimée d'UNE acquisition (une tuile, pile Z/P incluse)."""
+        try:
+            self._per_tile_seconds = max(0.0, float(per_tile_seconds or 0.0))
+        except Exception:
+            self._per_tile_seconds = 0.0
+        self._refresh_estimate_label()
+
+    def _refresh_estimate_label(self):
+        n_tiles = int(self.spin_tile_x.value()) * int(self.spin_tile_y.value())
+        total_s = self._per_tile_seconds * n_tiles
+        if self._per_tile_seconds > 0.0:
+            est = self._format_hms(total_s)
+        else:
+            est = "—"
+        self.label_tiles_est.setText(f"Tiles: {n_tiles}  ·  Est: {est}")
+
+    @staticmethod
+    def _format_hms(seconds: float) -> str:
+        s = int(round(max(0.0, float(seconds))))
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        if h:
+            return f"{h}h{m:02d}m{sec:02d}s"
+        if m:
+            return f"{m}m{sec:02d}s"
+        return f"{sec}s"
+
     def set_running(self, running: bool):
         self.button_acquire.setEnabled(not running)
         self.spin_tile_x.setEnabled(not running)
@@ -371,6 +415,7 @@ class StitchingWidget(QWidget):
         self.cb_grid.setEnabled(not running)
         self.button_set_levels.setEnabled(not running)
         self.button_reset_levels.setEnabled(not running)
+        self.button_save.setEnabled(not running)
 
         self.button_stop.setEnabled(True)
 
@@ -387,23 +432,41 @@ class StitchingWidget(QWidget):
         self.combo_channel.blockSignals(False)
 
     def set_image(self, img, width_um=None, height_um=None):
-        self.current_image = np.asarray(img, dtype=np.float32)
+        arr = np.asarray(img, dtype=np.float32)
+        self.current_image = arr
 
-        self.image_view.setImage(
-            self.current_image,
-            autoLevels=self.autoscale_enabled,
-            autoRange=False,
-            autoHistogramRange=False
-        )
+        # Pile 3D (P, H, W) avec P > 1 -> curseur de plans natif pyqtgraph.
+        is_stack = (arr.ndim == 3 and arr.shape[0] > 1)
+
+        if is_stack:
+            # Pile 3D : pyqtgraph ajoute un curseur sur l'axe 0 et conserve
+            # l'orientation par plan (axe1->x, axe2->y), identique au cas 2D
+            # (axe0->x, axe1->y). Ne PAS forcer `axes` sinon x/y sont inversés.
+            self.image_view.setImage(
+                arr,
+                autoLevels=self.autoscale_enabled,
+                autoRange=False,
+                autoHistogramRange=False,
+            )
+            h, w = int(arr.shape[1]), int(arr.shape[2])
+        else:
+            if arr.ndim == 3:
+                arr = arr[0]
+                self.current_image = arr
+            self.image_view.setImage(
+                arr,
+                autoLevels=self.autoscale_enabled,
+                autoRange=False,
+                autoHistogramRange=False
+            )
+            h, w = int(arr.shape[0]), int(arr.shape[1])
 
         img_item = self.image_view.getImageItem()
 
         if width_um is None:
-            width_um = float(self.current_image.shape[1])
+            width_um = float(w)
         if height_um is None:
-            height_um = float(self.current_image.shape[0])
-
-        h, w = self.current_image.shape[:2]
+            height_um = float(h)
         sx = float(width_um) / float(w) if w > 0 else 1.0
         sy = float(height_um) / float(h) if h > 0 else 1.0
 
@@ -566,7 +629,7 @@ class StitchingWidget(QWidget):
         self._apply_levels(0.0, 255.0)
 
     def _on_mouse_moved(self, pos):
-        if self.current_image is None:
+        if self.current_image is None or np.asarray(self.current_image).ndim != 2:
             self.label_pixel_status.setText("x: -, y: -, Counts: -")
             return
 

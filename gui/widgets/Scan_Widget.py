@@ -1363,6 +1363,14 @@ class ScanWidget(QWidget):
         self.samples_per_pixel_edit.setProperty("last_valid_text", new)
         self.samples_per_pixel_edit.blockSignals(False)    
     
+    def get_estimated_scan_duration_s(self) -> float:
+        """Durée estimée d'UNE acquisition (le champ 'duration', en s), telle
+        qu'affichée. Utilisée par le stitching pour estimer le temps total."""
+        try:
+            return max(0.0, float((self.duration_edit.text() or "0").replace(",", ".")))
+        except Exception:
+            return 0.0
+
     def _update_scan_duration(self):
         """Met à jour la durée de scan."""
         try:

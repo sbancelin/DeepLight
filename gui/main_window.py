@@ -166,6 +166,7 @@ class MainWindow(QMainWindow):
             parent=self
         )
         self._stitching_geom_um = (1.0, 1.0)
+        self._last_mosaic = None            # dernière mosaïque reçue (2D ou pile 3D)
         # --- Connexions StitchingManager -> UI / MainWindow ---
         self.stitching_manager.request_preview_single.connect(self._start_stitch_preview_single)
         self.stitching_manager.request_global_stop.connect(self._stop_stitching_hardware)
@@ -183,6 +184,7 @@ class MainWindow(QMainWindow):
         self.ui.stitch_widget.spin_tile_y.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.spin_overlap.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.cb_show_layout.toggled.connect(self.refresh_stitching_preview_grid)
+        self.ui.stitch_widget.button_save.clicked.connect(self.on_stitch_save_clicked)
         # Le layout doit suivre les paramètres du ScanWidget (taille/pixels des
         # tuiles), sinon la grille reste basée sur d'anciennes valeurs et
         # apparaît décalée par rapport à la mosaïque réellement acquise.
@@ -827,7 +829,8 @@ class MainWindow(QMainWindow):
         channels = list(scan_params.get("active_channels", [])) or ["default"]
         scan_params["repetitions"] = 1
 
-        # v1 : XY uniquement
+        # XY obligatoires pour la mosaïque ; les axes stack (Z/P) éventuels sont
+        # gérés en profondeur (pile de plans par tuile).
         active_axes = list(scan_params.get("active_axes", []))
         if len(active_axes) < 2:
             self.ui.stitch_widget.set_status("Need at least 2 active scan axes.")
@@ -838,7 +841,7 @@ class MainWindow(QMainWindow):
             row_x = next(row for row in rows if str(row.get("axis", "")).startswith("X"))
             row_y = next(row for row in rows if str(row.get("axis", "")).startswith("Y"))
         except Exception:
-            self.ui.stitch_widget.set_status("Stitching v1 requires XY scan axes.")
+            self.ui.stitch_widget.set_status("Stitching requires XY scan axes.")
             return
 
         tile_w_um = float(row_x.get("size_um", 1.0) or 1.0)
@@ -875,12 +878,16 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def _start_stitch_preview_single(self, scan_parameters: dict):
         """
-        Lance une tuile unitaire pour le stitching.
-        On réutilise exactement le pipeline preview_single existant.
+        Lance l'acquisition d'une tuile pour le stitching.
+
+        On utilise le pipeline d'acquisition COMPLET (run_acquisition) et non
+        preview_single : preview_single n'acquiert qu'une frame et ne remplit
+        pas `acquired`, alors que le stitching multi-axes (XYZ/XYP) a besoin de
+        toute la pile de plans (un par index d'axe Z/P) via `acquired`.
         """
         self.acquisition_manager.set_scan_parameters(scan_parameters)
         self.start_scan_outputs(scan_parameters, mode="acquisition")
-        self.acquisition_manager.start_preview_single()
+        self.acquisition_manager.start_acquisition(scan_parameters)
 
     @Slot()
     def _stop_stitching_hardware(self):
@@ -896,6 +903,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_stitch_mosaic_updated(self, mosaic):
+        self._last_mosaic = mosaic
         w_um, h_um = self._stitching_geom_um
         self.ui.stitch_widget.set_image(mosaic, width_um=w_um, height_um=h_um)
 
@@ -905,6 +913,65 @@ class MainWindow(QMainWindow):
             self.ui.stitch_widget.set_mosaic_layout_preview(scan_params)
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        # Temps estimé = durée d'UNE acquisition (pile Z/P incluse) x # tuiles.
+        try:
+            per_tile_s = self.ui.scan_widget.get_estimated_scan_duration_s()
+            self.ui.stitch_widget.set_estimated_time(per_tile_s)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+    @Slot()
+    def on_stitch_save_clicked(self):
+        if self.stitching_manager.is_running():
+            self.ui.stitch_widget.set_status("Cannot save while running.")
+            return
+
+        mosaic = self._last_mosaic
+        if mosaic is None:
+            self.ui.stitch_widget.set_status("No mosaic to save.")
+            return
+
+        try:
+            folder = self.ui.save_widget.folder_line_edit.text().strip()
+            filename = self.ui.save_widget.filename_line_edit.text().strip()
+            comment = self.ui.save_widget.comment_text_edit.toPlainText().strip()
+        except Exception:
+            folder = ""
+            filename = ""
+            comment = ""
+
+        if not folder:
+            self.ui.stitch_widget.set_status("Set a save folder first.")
+            return
+
+        if not filename:
+            filename = "MOSAIC"
+
+        try:
+            scan_params = self.ui.scan_widget.get_scan_parameters()
+        except Exception:
+            scan_params = {}
+
+        try:
+            mosaic_params = self.ui.stitch_widget.get_parameters()
+        except Exception:
+            mosaic_params = {}
+
+        try:
+            path = self.save_manager.save_mosaic(
+                folder=folder,
+                filename=filename,
+                comment=comment,
+                mosaic=mosaic,
+                scan_params=scan_params,
+                mosaic_params=mosaic_params,
+            )
+            self.ui.stitch_widget.set_status(f"Mosaic saved: {path}")
+            logger.info(f"[Stitch] Mosaic saved: {path}")
+        except Exception as e:
+            self.ui.stitch_widget.set_status(f"Save failed: {e}")
+            logger.error(f"[Stitch] Mosaic save failed: {e}")
 
     @Slot()
     def _on_stitch_run_started(self):
