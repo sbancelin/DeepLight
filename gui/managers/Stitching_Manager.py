@@ -26,6 +26,17 @@ class MosaicRunConfig:
     tol_x_um: float
     tol_y_um: float
 
+    # Ordre de balayage de l'axe stack (Z/P) :
+    #   plane_outer=False -> "Z per tile" : pile complète par tuile (défaut)
+    #   plane_outer=True  -> "Z per plane" : mosaïque XY complète par plan
+    plane_outer: bool = False
+    stack_axis: str | None = None            # axe positioner ("z"/"p") ou None
+    stack_axis_display: str | None = None     # nom UI ("Z-Vcoil"/"Polarization")
+    plane_positions_rel: tuple = ()           # positions relatives par plan
+    stack_speed_mm_s: float = 1.0
+    stack_tol_um: float = 0.1
+    start_stack_rel_um: float = 0.0
+
 
 class StitchingManager(QObject):
     """
@@ -67,10 +78,17 @@ class StitchingManager(QObject):
         self._mosaic = None
         self._reg_margin_px = 0
         self._tile_sequence: list[tuple[int, int]] = []
-        self._tile_index = -1
+        # Séquence unifiée d'étapes : (plane_index_or_None, ix, iy).
+        # plane_index None -> mode Z per tile (pile complète collée d'un coup).
+        self._step_sequence: list[tuple] = []
+        self._step_index = -1
+        self._current_plane = None            # plan stack actuellement positionné
+        self._pending_xy_after_stack = None   # (x, y) à atteindre après le move stack
+        self._motion_phase = None             # "stack" | "xy" | "home"
 
         self._target_x_rel = None
         self._target_y_rel = None
+        self._target_stack_rel = None
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(40)
@@ -132,15 +150,29 @@ class StitchingManager(QObject):
         self._mosaic_weight = np.zeros((mosaic_h, mosaic_w), dtype=np.float32)
 
         self._tile_sequence = self._build_serpentine_sequence(cfg.tiles_x, cfg.tiles_y)
-        self._tile_index = -1
 
+        if cfg.plane_outer:
+            # Plans en externe, tuiles en interne : mosaïque XY complète par plan.
+            self._step_sequence = [
+                (p, ix, iy)
+                for p in range(cfg.n_planes)
+                for (ix, iy) in self._tile_sequence
+            ]
+        else:
+            # Z per tile : pile complète collée par tuile (plane_index None).
+            self._step_sequence = [(None, ix, iy) for (ix, iy) in self._tile_sequence]
+
+        self._step_index = -1
+        self._current_plane = None
+
+        order_txt = f"{cfg.stack_axis_display} per plane" if cfg.plane_outer else "stack per tile"
         self.status_changed.emit(
-            f"Start mosaic {cfg.tiles_x}x{cfg.tiles_y} on channel '{cfg.channel}'"
+            f"Start mosaic {cfg.tiles_x}x{cfg.tiles_y} on '{cfg.channel}' [{order_txt}]"
         )
         self.mosaic_updated.emit(self._mosaic_nominal_view().copy())
         self.run_started.emit()
 
-        self._advance_to_next_tile()
+        self._advance_to_next_step()
 
     @Slot()
     def stop_run(self):
@@ -210,6 +242,53 @@ class StitchingManager(QObject):
         tol_x = float(self.positioner_manager.get_tolerance("x"))
         tol_y = float(self.positioner_manager.get_tolerance("y"))
 
+        # ------- Ordre de balayage de l'axe stack -------
+        # scan_order encode l'axe stack ET l'ordre :
+        #   "z_per_tile" / "p_per_tile"  -> pile complète par tuile (défaut)
+        #   "z_per_plane" / "p_per_plane" -> mosaïque XY complète par plan, en
+        #     déplaçant l'axe stack (Z ou P) une seule fois entre deux plans.
+        # Le mode "per plane" nécessite que l'axe demandé (Z ou P) soit le SEUL
+        # axe stack actif ; sinon on retombe sur "per tile".
+        scan_order = str(mosaic_params.get("scan_order", "z_per_tile"))
+        plane_outer = False
+        stack_axis = None
+        stack_axis_display = None
+        plane_positions_rel: tuple = ()
+        stack_speed = speed_x
+        stack_tol = tol_x
+        start_stack_rel = 0.0
+
+        _AXIS_TO_POS = {"Z-Vcoil": "z", "Polarization": "p"}
+
+        plane_outer_requested = scan_order.endswith("_per_plane")
+        requested_axis = scan_order.split("_", 1)[0] if "_" in scan_order else None  # "z"/"p"
+
+        if plane_outer_requested and n_planes > 1:
+            # Sélectionne parmi les axes stack celui demandé par le scan_order.
+            stack_row = next(
+                (r for r in extra_rows
+                 if _AXIS_TO_POS.get(str(r.get("axis", ""))) == requested_axis),
+                None,
+            )
+            if stack_row is not None:
+                stack_axis_display = str(stack_row.get("axis", ""))
+                stack_axis = _AXIS_TO_POS.get(stack_axis_display)
+                scan_modes = scan_params.get("scan_modes", {}) or {}
+                mode = str(scan_modes.get(stack_axis_display, "around"))
+                plane_positions_rel = tuple(
+                    self._compute_stack_positions(stack_row, mode)
+                )
+                # len == n_planes garantit que l'axe demandé est le seul axe stack
+                # (sinon n_planes est un produit et l'ordre par plan est ambigu).
+                if len(plane_positions_rel) == n_planes:
+                    plane_outer = True
+                    try:
+                        stack_speed = float(self.positioner_manager.get_max_speed(stack_axis))
+                        stack_tol = float(self.positioner_manager.get_tolerance(stack_axis))
+                        start_stack_rel = float(self.positioner_manager.get_rel_pos(stack_axis))
+                    except Exception:
+                        plane_outer = False
+
         return MosaicRunConfig(
             tiles_x=tiles_x,
             tiles_y=tiles_y,
@@ -228,7 +307,57 @@ class StitchingManager(QObject):
             stage_speed_y_mm_s=speed_y,
             tol_x_um=tol_x,
             tol_y_um=tol_y,
+            plane_outer=plane_outer,
+            stack_axis=stack_axis,
+            stack_axis_display=stack_axis_display,
+            plane_positions_rel=plane_positions_rel,
+            stack_speed_mm_s=stack_speed,
+            stack_tol_um=stack_tol,
+            start_stack_rel_um=start_stack_rel,
         )
+
+    def _compute_stack_positions(self, row: dict, mode: str) -> list[float]:
+        """Positions relatives des plans de l'axe stack (mêmes conventions que
+        Scan_manager._compute_axis_positions : Z-Vcoil descend ; around/from)."""
+        n = max(1, int(row.get("pixels", 1) or 1))
+        size = float(row.get("size_um", 0.0) or 0.0)
+        offset = float(row.get("offset_um", 0.0) or 0.0)  # base relative + offset
+        axis = str(row.get("axis", ""))
+
+        if n == 1:
+            return [offset]
+
+        descending = (axis == "Z-Vcoil")
+        if str(mode) == "from":
+            start = offset
+            stop = offset - size if descending else offset + size
+        else:
+            if descending:
+                start, stop = offset + size / 2.0, offset - size / 2.0
+            else:
+                start, stop = offset - size / 2.0, offset + size / 2.0
+
+        return [float(v) for v in np.linspace(start, stop, n)]
+
+    @staticmethod
+    def _strip_stack_axis(scan_params: dict, stack_display: str) -> dict:
+        """Retourne une copie des scan_params sans l'axe stack (Z/P), pour une
+        acquisition XY seule : l'axe est retiré de axis_order/active_axes/rows
+        et son slot pixel mis à 1 -> le plan galvo ne contient plus que XY."""
+        p = dict(scan_params or {})
+
+        axis_order = list(p.get("axis_order", []))
+        pix = list(p.get("pixel_values", []))
+        for i, ax in enumerate(axis_order):
+            if ax == stack_display:
+                axis_order[i] = "None"
+                if i < len(pix):
+                    pix[i] = 1
+        p["axis_order"] = axis_order
+        p["pixel_values"] = pix
+        p["active_axes"] = [ax for ax in p.get("active_axes", []) if ax != stack_display]
+        p["rows"] = [r for r in p.get("rows", []) if r.get("axis") != stack_display]
+        return p
 
     def _build_serpentine_sequence(self, tiles_x: int, tiles_y: int) -> list[tuple[int, int]]:
         seq = []
@@ -245,7 +374,7 @@ class StitchingManager(QObject):
     # Run engine
     # ------------------------------------------------------------------
 
-    def _advance_to_next_tile(self):
+    def _advance_to_next_step(self):
         if not self._running or self._cfg is None:
             return
 
@@ -253,22 +382,39 @@ class StitchingManager(QObject):
             self._begin_return_home()
             return
 
-        self._tile_index += 1
-        total = len(self._tile_sequence)
+        self._step_index += 1
+        total = len(self._step_sequence)
 
-        if self._tile_index >= total:
+        if self._step_index >= total:
             self.status_changed.emit("Mosaic complete. Returning to start...")
             self._begin_return_home()
             return
 
-        ix, iy = self._tile_sequence[self._tile_index]
-        self.run_progress.emit(self._tile_index, total)
+        plane, ix, iy = self._step_sequence[self._step_index]
+        self.run_progress.emit(self._step_index, total)
 
         x_target = self._cfg.start_x_rel_um + ix * self._cfg.step_x_um
         y_target = self._cfg.start_y_rel_um + iy * self._cfg.step_y_um
 
+        # Mode Z per plane : quand on change de plan, on déplace d'abord l'axe
+        # stack (une seule fois pour tout le balayage XY du plan), puis les XY.
+        if plane is not None and plane != self._current_plane:
+            self._current_plane = plane
+            # Nouveau plan = mosaïque XY repartant de zéro : on réinitialise le
+            # poids 2D partagé (sinon le fondu du plan suivant est corrompu par
+            # le poids accumulé du plan précédent).
+            self._mosaic_weight.fill(0.0)
+            stack_target = float(self._cfg.plane_positions_rel[plane])
+            self.status_changed.emit(
+                f"Plane {plane + 1}/{self._cfg.n_planes} - move {self._cfg.stack_axis_display} "
+                f"to {stack_target:.2f} µm"
+            )
+            self._pending_xy_after_stack = (x_target, y_target)
+            self._move_stack_to(stack_target)
+            return
+
         self.status_changed.emit(
-            f"Tile {self._tile_index + 1}/{total} - move to X={x_target:.2f} µm, Y={y_target:.2f} µm"
+            f"Step {self._step_index + 1}/{total} - move to X={x_target:.2f} µm, Y={y_target:.2f} µm"
         )
         self._move_to(x_target, y_target)
 
@@ -277,6 +423,7 @@ class StitchingManager(QObject):
         self._target_y_rel = float(y_rel_um)
         self._waiting_for_move = True
         self._waiting_for_acq = False
+        self._motion_phase = "xy"
 
         try:
             move_xy = getattr(self.positioner_manager, "move_xy_to_rel", None)
@@ -298,12 +445,66 @@ class StitchingManager(QObject):
 
         self._poll_timer.start()
 
+    def _move_stack_to(self, stack_rel_um: float):
+        """Déplace l'axe stack (Z/P) à une position relative (mode Z per plane)."""
+        self._target_stack_rel = float(stack_rel_um)
+        self._waiting_for_move = True
+        self._waiting_for_acq = False
+        self._motion_phase = "stack"
+
+        try:
+            self.positioner_manager.move_to_rel(
+                self._cfg.stack_axis, self._target_stack_rel, self._cfg.stack_speed_mm_s
+            )
+        except Exception as e:
+            self._fail_and_stop(f"Stack axis move error: {e}")
+            return
+
+        self._poll_timer.start()
+
     @Slot()
     def _check_motion_completion(self):
         if not self._running or not self._waiting_for_move or self._cfg is None:
             self._poll_timer.stop()
             return
 
+        # --- Phase déplacement de l'axe stack (Z per plane) ---
+        if self._motion_phase == "stack":
+            try:
+                cur = float(self.positioner_manager.get_rel_pos(self._cfg.stack_axis))
+            except Exception as e:
+                self._poll_timer.stop()
+                self._fail_and_stop(f"Unable to read stack axis position: {e}")
+                return
+
+            if abs(cur - self._target_stack_rel) > max(self._cfg.stack_tol_um, 1e-6):
+                return
+
+            self._poll_timer.stop()
+            self._waiting_for_move = False
+            self._motion_phase = None
+
+            xy = self._pending_xy_after_stack
+            self._pending_xy_after_stack = None
+
+            # Retour à la base : après le retour de l'axe stack, on ramène XY
+            # puis on finalise (ne PAS re-déclencher _begin_return_home -> boucle).
+            if self._returning_home:
+                if xy is not None:
+                    self._move_to(xy[0], xy[1])
+                else:
+                    self._finalize_run()
+                return
+
+            if self._stop_requested:
+                self._begin_return_home()
+                return
+
+            if xy is not None:
+                self._move_to(xy[0], xy[1])
+            return
+
+        # --- Phase déplacement XY ---
         try:
             cur_x = float(self.positioner_manager.get_rel_pos("x"))
             cur_y = float(self.positioner_manager.get_rel_pos("y"))
@@ -320,6 +521,7 @@ class StitchingManager(QObject):
 
         self._poll_timer.stop()
         self._waiting_for_move = False
+        self._motion_phase = None
 
         if self._returning_home:
             self._finalize_run()
@@ -334,9 +536,15 @@ class StitchingManager(QObject):
         params = dict(self._scan_params or {})
         params["repetitions"] = 1
 
+        # Z per plane : l'axe stack est déjà positionné par le manager, on
+        # acquiert donc une image XY SEULE (l'axe stack est retiré du scan pour
+        # que le plan ne le redéplace pas).
+        if self._cfg.plane_outer and self._cfg.stack_axis_display:
+            params = self._strip_stack_axis(params, self._cfg.stack_axis_display)
+
         self._waiting_for_acq = True
         self.status_changed.emit(
-            f"Tile {self._tile_index + 1}/{len(self._tile_sequence)} - acquiring..."
+            f"Step {self._step_index + 1}/{len(self._step_sequence)} - acquiring..."
         )
         self.request_preview_single.emit(params)
 
@@ -359,15 +567,20 @@ class StitchingManager(QObject):
                 return
             stack = np.asarray(img, dtype=np.float32)[None, ...]
 
+        # Z per tile -> plane None -> pile complète collée à partir du plan 0.
+        # Z per plane -> plane = index du plan courant -> collage sur ce plan.
+        plane, _ix, _iy = self._step_sequence[self._step_index]
+        plane_offset = 0 if plane is None else int(plane)
+
         try:
-            self._paste_tile(stack)
+            self._paste_tile(stack, plane_offset=plane_offset)
         except Exception as e:
             self._fail_and_stop(f"Unable to paste tile into mosaic: {e}")
             return
 
         self.mosaic_updated.emit(self._mosaic_nominal_view().copy())
-        self.run_progress.emit(self._tile_index + 1, len(self._tile_sequence))
-        self._advance_to_next_tile()
+        self.run_progress.emit(self._step_index + 1, len(self._step_sequence))
+        self._advance_to_next_step()
 
     def _extract_channel_image(self, acquired, channel: str):
         """
@@ -454,7 +667,7 @@ class StitchingManager(QObject):
             return view[0]
         return view
 
-    def _paste_tile(self, stack):
+    def _paste_tile(self, stack, plane_offset: int = 0):
         if self._cfg is None or self._mosaic is None:
             return
 
@@ -465,10 +678,13 @@ class StitchingManager(QObject):
             raise ValueError(f"Expected tile stack (P,H,W), got shape={arr.shape}")
 
         p_mosaic = self._mosaic.shape[0]
-        # Ajuste le nombre de plans si l'acquisition en renvoie plus/moins que
-        # prévu (robustesse) : on colle les plans communs.
-        p = min(arr.shape[0], p_mosaic)
+        # Nombre de plans collés à partir de plane_offset. En Z per tile,
+        # plane_offset=0 et arr contient toute la pile ; en Z per plane,
+        # plane_offset=plan courant et arr contient 1 plan.
+        p = min(arr.shape[0], p_mosaic - int(plane_offset))
         arr = arr[:p]
+        z0 = int(plane_offset)
+        z1 = z0 + p
 
         if arr.shape[1:] != (self._cfg.tile_height_px, self._cfg.tile_width_px):
             raise ValueError(
@@ -477,24 +693,23 @@ class StitchingManager(QObject):
             )
 
         margin = int(getattr(self, "_reg_margin_px", 0) or 0)
-        ix, iy = self._tile_sequence[self._tile_index]
+        _plane, ix, iy = self._step_sequence[self._step_index]
         x0 = margin + ix * (self._cfg.tile_width_px - self._cfg.overlap_px)
         y0 = margin + iy * (self._cfg.tile_height_px - self._cfg.overlap_px)
 
-        # Corriger la position par cross-corrélation sur la zone de recouvrement.
-        # Le recalage est estimé sur le plan 0 puis appliqué à tous les plans
-        # (mêmes tuiles => même décalage), ce qui garde la pile alignée.
+        # Recalage par cross-corrélation, estimé sur le plan de référence
+        # (plane_offset) et appliqué à tous les plans collés (même décalage).
         if self._cfg.overlap_px > 0 and (ix > 0 or iy > 0):
-            dy, dx = self._estimate_tile_registration(arr[0], x0, y0, ix, iy)
+            dy, dx = self._estimate_tile_registration(arr[0], x0, y0, ix, iy, ref_plane=z0)
             x0 = max(0, min(x0 + dx, self._mosaic.shape[2] - self._cfg.tile_width_px))
             y0 = max(0, min(y0 + dy, self._mosaic.shape[1] - self._cfg.tile_height_px))
 
         x1 = x0 + self._cfg.tile_width_px
         y1 = y0 + self._cfg.tile_height_px
 
-        # pas d'overlap -> collage direct (tous les plans)
+        # pas d'overlap -> collage direct
         if self._cfg.overlap_px <= 0:
-            self._mosaic[:p, y0:y1, x0:x1] = arr
+            self._mosaic[z0:z1, y0:y1, x0:x1] = arr
             self._mosaic_weight[y0:y1, x0:x1] = 1.0
             return
 
@@ -512,17 +727,17 @@ class StitchingManager(QObject):
         new_weight = weight_slice + tile_weight
         safe_weight = np.where(new_weight > 0, new_weight, 1.0)
 
-        mosaic_slice = self._mosaic[:p, y0:y1, x0:x1]              # (p, h, w)
+        mosaic_slice = self._mosaic[z0:z1, y0:y1, x0:x1]          # (p, h, w)
         # Fondu par plan avec un poids 2D partagé (broadcast sur les plans).
         blended = (
             mosaic_slice * weight_slice[None, :, :]
             + arr * tile_weight[None, :, :]
         ) / safe_weight[None, :, :]
 
-        self._mosaic[:p, y0:y1, x0:x1] = blended
+        self._mosaic[z0:z1, y0:y1, x0:x1] = blended
         self._mosaic_weight[y0:y1, x0:x1] = new_weight
 
-    def _correlate_covered_strip(self, y0, y1, x0, x1, mov, max_shift):
+    def _correlate_covered_strip(self, y0, y1, x0, x1, mov, max_shift, ref_plane=0):
         """
         Corrèle la strip mosaïque [y0:y1, x0:x1] avec `mov` en se limitant à
         la sous-zone réellement couverte (poids non nul). Les bandes vides
@@ -531,7 +746,7 @@ class StitchingManager(QObject):
 
         Retourne (dy, dx) ou None si la zone couverte est insuffisante.
         """
-        ref = self._mosaic[0, y0:y1, x0:x1]
+        ref = self._mosaic[int(ref_plane), y0:y1, x0:x1]
         w = self._mosaic_weight[y0:y1, x0:x1]
         if ref.size == 0 or ref.shape != mov.shape:
             return None
@@ -555,10 +770,11 @@ class StitchingManager(QObject):
 
         return self._cross_correlate(ref[r0:r1, c0:c1], mov[r0:r1, c0:c1], max_shift)
 
-    def _estimate_tile_registration(self, arr, x0_nom, y0_nom, ix, iy):
+    def _estimate_tile_registration(self, arr, x0_nom, y0_nom, ix, iy, ref_plane=0):
         """
         Estime la correction (dy, dx) à appliquer à la position nominale
         par cross-corrélation dans la zone de recouvrement avec les tuiles voisines.
+        Le recalage se fait sur le plan `ref_plane` de la mosaïque.
         """
         ov = self._cfg.overlap_px
         max_shift = max(2, ov // 3)
@@ -576,7 +792,8 @@ class StitchingManager(QObject):
             if x_ov_end > x_ov_start and y_end > y0_nom:
                 mov = arr[:y_end - y0_nom, :x_ov_end - x_ov_start]
                 shift = self._correlate_covered_strip(
-                    y0_nom, y_end, x_ov_start, x_ov_end, mov, max_shift
+                    y0_nom, y_end, x_ov_start, x_ov_end, mov, max_shift,
+                    ref_plane=ref_plane,
                 )
                 if shift is not None:
                     shifts_y.append(shift[0])
@@ -591,7 +808,8 @@ class StitchingManager(QObject):
             if 0 <= x_ov_start < x_ov_end and y_end > y0_nom:
                 mov = arr[:y_end - y0_nom, (x_ov_start - x0_nom):(x_ov_end - x0_nom)]
                 shift = self._correlate_covered_strip(
-                    y0_nom, y_end, x_ov_start, x_ov_end, mov, max_shift
+                    y0_nom, y_end, x_ov_start, x_ov_end, mov, max_shift,
+                    ref_plane=ref_plane,
                 )
                 if shift is not None:
                     shifts_y.append(shift[0])
@@ -605,7 +823,8 @@ class StitchingManager(QObject):
             if y_ov_end > y_ov_start and x_end > x0_nom:
                 mov = arr[:y_ov_end - y_ov_start, :x_end - x0_nom]
                 shift = self._correlate_covered_strip(
-                    y_ov_start, y_ov_end, x0_nom, x_end, mov, max_shift
+                    y_ov_start, y_ov_end, x0_nom, x_end, mov, max_shift,
+                    ref_plane=ref_plane,
                 )
                 if shift is not None:
                     shifts_y.append(shift[0])
@@ -708,6 +927,17 @@ class StitchingManager(QObject):
             return
 
         self._returning_home = True
+
+        # Z per plane : ramener d'abord l'axe stack à sa position initiale, puis
+        # les XY (le retour XY déclenche _finalize_run).
+        if self._cfg.plane_outer and self._cfg.stack_axis is not None:
+            self.status_changed.emit("Returning stack axis and XY to start...")
+            self._pending_xy_after_stack = (
+                self._cfg.start_x_rel_um, self._cfg.start_y_rel_um
+            )
+            self._move_stack_to(self._cfg.start_stack_rel_um)
+            return
+
         self.status_changed.emit("Returning to initial XY stage position...")
         self._move_to(self._cfg.start_x_rel_um, self._cfg.start_y_rel_um)
 
@@ -738,7 +968,7 @@ class StitchingManager(QObject):
         self._returning_home = False
         self._poll_timer.stop()
 
-        total = len(self._tile_sequence)
+        total = len(self._step_sequence)
         self.run_progress.emit(total, total)
         self.status_changed.emit("Done")
         self.run_finished.emit()

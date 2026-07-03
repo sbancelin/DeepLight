@@ -251,7 +251,28 @@ class StitchingWidget(QWidget):
         self.cb_show_layout.setStyleSheet(_CHECKBOX_STYLE)
         controls_layout.addWidget(self.cb_show_layout)
 
-        # Nombre de tuiles + temps estimé (temps par acquisition x # tuiles)
+        order_label = QLabel("Scan order")
+        controls_layout.addWidget(order_label)
+
+        self.combo_scan_order = QComboBox()
+        self.combo_scan_order.addItems(
+            ["XYZ Tiles", "XY Tiles Z", "XYP Tiles", "XY Tiles P"]
+        )
+        self.combo_scan_order.setCurrentText("XYZ Tiles")
+        self.combo_scan_order.setToolTip(
+            "XYZ Tiles : pour chaque tuile XY, pile Z complète, puis tuile suivante.\n"
+            "XY Tiles Z : mosaïque XY complète pour chaque plan Z, puis plan Z suivant\n"
+            "(l'axe Z ne bouge qu'entre deux balayages).\n"
+            "XYP Tiles : pour chaque tuile XY, pile P (polarisation) complète, puis tuile suivante.\n"
+            "XY Tiles P : mosaïque XY complète pour chaque plan P, puis plan P suivant.\n"
+            "Le mode 'Tiles <axe>' est sans effet si l'axe stack correspondant\n"
+            "(Z ou P) n'est pas le seul axe stack actif."
+        )
+        self.combo_scan_order.setStyleSheet(self.combo_channel.styleSheet())
+        self.combo_scan_order.setMinimumWidth(96)
+        controls_layout.addWidget(self.combo_scan_order)
+
+        # Temps estimé total (temps par acquisition x nombre de tuiles)
         self._per_tile_seconds = 0.0
         self.label_tiles_est = QLabel()
         self.label_tiles_est.setStyleSheet(_STATUS_VALUE_STYLE)
@@ -362,6 +383,13 @@ class StitchingWidget(QWidget):
     # ==========================================================
     # Public API
     # ==========================================================
+    _SCAN_ORDER_MAP = {
+        "XYZ Tiles": "z_per_tile",
+        "XY Tiles Z": "z_per_plane",
+        "XYP Tiles": "p_per_tile",
+        "XY Tiles P": "p_per_plane",
+    }
+
     def get_parameters(self):
         return {
             "tiles_x": self.spin_tile_x.value(),
@@ -369,6 +397,9 @@ class StitchingWidget(QWidget):
             "overlap_px": self.spin_overlap.value(),
             "channel": self.combo_channel.currentText(),
             "show_layout": self.cb_show_layout.isChecked(),
+            "scan_order": self._SCAN_ORDER_MAP.get(
+                self.combo_scan_order.currentText(), "z_per_tile"
+            ),
         }
 
     def set_status(self, text):
@@ -383,13 +414,12 @@ class StitchingWidget(QWidget):
         self._refresh_estimate_label()
 
     def _refresh_estimate_label(self):
-        n_tiles = int(self.spin_tile_x.value()) * int(self.spin_tile_y.value())
-        total_s = self._per_tile_seconds * n_tiles
         if self._per_tile_seconds > 0.0:
-            est = self._format_hms(total_s)
+            n_tiles = int(self.spin_tile_x.value()) * int(self.spin_tile_y.value())
+            est = self._format_hms(self._per_tile_seconds * n_tiles)
         else:
             est = "—"
-        self.label_tiles_est.setText(f"Tiles: {n_tiles}  ·  Est: {est}")
+        self.label_tiles_est.setText(f"Est: {est}")
 
     @staticmethod
     def _format_hms(seconds: float) -> str:
@@ -409,6 +439,7 @@ class StitchingWidget(QWidget):
         self.spin_overlap.setEnabled(not running)
         self.combo_channel.setEnabled(not running)
         self.cb_show_layout.setEnabled(not running)
+        self.combo_scan_order.setEnabled(not running)
 
         self.cb_autoscale.setEnabled(not running)
         self.cb_lock.setEnabled(not running)
