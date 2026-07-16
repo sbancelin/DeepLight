@@ -287,13 +287,14 @@ class PositionerWidget(QWidget):
             # visualizer / la base de balayage.
             "p4": None,
         }
-        # Limites par défaut des axes (P(λ/2) et P(λ/4) : lames Elliptec, 0..360°)
+        # Limites par défaut des axes
+        # (P(λ/2) et P(λ/4) : lames Elliptec, -360..360° -> rotation dans les deux sens)
         self.axis_limits = {
             "x": {"min": -20000, "max": 20000},
             "y": {"min": -20000, "max": 20000},
             "z": {"min": 0, "max": 7000},
-            "p": {"min": 0, "max": 360},
-            "p4": {"min": 0, "max": 360},
+            "p": {"min": -360, "max": 360},
+            "p4": {"min": -360, "max": 360},
         }
         self.axis_velocity_limits = {
             "x": {"min": 0.01, "max": 4},

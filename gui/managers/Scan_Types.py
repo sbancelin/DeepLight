@@ -233,7 +233,7 @@ STEPPER_AXIS_DEFAULTS = {
         "tolerance": 0.1,
     },
     "Polarization": {
-        "min_um": 0.0,
+        "min_um": -360.0,   # rotation autorisée dans les deux sens
         "max_um": 360.0,
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
@@ -241,7 +241,7 @@ STEPPER_AXIS_DEFAULTS = {
     # P(λ/4) : lame quart d'onde (ELL14 adresse 2). Axe positioner uniquement,
     # jamais proposé comme axe de scan.
     "Polarization-L4": {
-        "min_um": 0.0,
+        "min_um": -360.0,   # rotation autorisée dans les deux sens
         "max_um": 360.0,
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
