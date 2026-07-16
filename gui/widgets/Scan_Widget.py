@@ -420,7 +420,7 @@ class ScanWidget(QWidget):
             "X-Stage": {"size": "100", "pixels": "64", "offset": "0"},
             "Y-Stage": {"size": "100", "pixels": "64", "offset": "0"},
             "Z-Vcoil": {"size": "10", "pixels": "10", "offset": "0"},
-            "Polarization": {"size": "180", "pixels": "18", "offset": "0"},
+            "Polarization": {"size": "180", "pixels": "19", "offset": "0"},
         }
 
         self.scan_kind = "laser"

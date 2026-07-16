@@ -83,6 +83,14 @@ COBOLT_ELL14_ADDRESS = "0"
 COBOLT_ELL14_COUNTS_PER_REV = 143360
 COBOLT_ELL14_TIMEOUT_S = 1.0
 
+# Deux montures Elliptec supplémentaires partagent le MÊME bus/hub ELLB
+# (même port COM15) que la lame demi-onde de puissance du Cobolt (adresse 0) :
+#   - adresse 1 : lame demi-onde -> positioner "p"  = P(λ/2) (utilisable en scan)
+#   - adresse 2 : lame quart d'onde -> positioner "p4" = P(λ/4) (hors scan)
+# Elles sont pilotées via le même protocole ELL14 (angle en degrés).
+ELL14_LAMBDA2_ADDRESS = "1"
+ELL14_LAMBDA4_ADDRESS = "2"
+
 # Spark Lasers ALCOR / XSight
 SPARK_ALCOR_PORT = "COM14"
 SPARK_ALCOR_BAUDRATE = 115200
@@ -215,15 +223,114 @@ class _CoboltLaserController:
         ans = self._query("l?")
         return bool(int(ans))
 
+# =============================================================================
+# BUS SÉRIE ELLIPTEC PARTAGÉ (hub ELLB)
+# =============================================================================
+_ELLIPTEC_BUSES: dict = {}
+_ELLIPTEC_BUSES_LOCK = Lock()
+
+
+class _ElliptecBus:
+    """
+    Bus série partagé par plusieurs montures Elliptec derrière un même hub ELLB.
+
+    Toutes les montures d'un hub partagent UN SEUL port COM ; sous Windows on ne
+    peut pas ouvrir deux fois le même port. Ce bus détient l'unique objet Serial
+    et sérialise les échanges : une transaction adressée (write + read) est
+    exécutée sous un verrou unique, pour éviter tout entrelacement entre adresses
+    ou entre threads (poll positioner, commande puissance laser, etc.).
+    """
+
+    def __init__(self, port, baudrate=9600, timeout_s=1.0):
+        self.port = str(port)
+        self.baudrate = int(baudrate)
+        self.timeout_s = float(timeout_s)
+        self.serial = None
+        self._io_lock = Lock()
+
+    @property
+    def connected(self) -> bool:
+        return self.serial is not None and getattr(self.serial, "is_open", False)
+
+    def connect(self):
+        with self._io_lock:
+            if self.serial is not None and getattr(self.serial, "is_open", False):
+                return
+            self.serial = serial.Serial(
+                self.port,
+                baudrate=self.baudrate,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=self.timeout_s,
+                write_timeout=self.timeout_s,
+            )
+            try:
+                self.serial.reset_input_buffer()
+                self.serial.reset_output_buffer()
+            except Exception:
+                pass
+
+    def close(self):
+        with self._io_lock:
+            try:
+                if self.serial is not None:
+                    self.serial.close()
+            finally:
+                self.serial = None
+
+    def command(self, address: str, payload: str, timeout_s: float = 2.0) -> str:
+        """Envoie '<address><payload>\\r' et lit la réponse, sous verrou unique."""
+        if not self.connected:
+            self.connect()
+
+        msg = f"{address}{payload}\r".encode("ascii")
+        with self._io_lock:
+            try:
+                self.serial.reset_input_buffer()
+            except Exception:
+                pass
+
+            self.serial.write(msg)
+            self.serial.flush()
+
+            chunks = []
+            t0 = time.time()
+            while time.time() - t0 < float(timeout_s):
+                n = self.serial.in_waiting
+                if n:
+                    chunks.append(self.serial.read(n))
+                    time.sleep(0.02)
+                    continue
+                time.sleep(0.02)
+                if chunks and self.serial.in_waiting <= 0:
+                    break
+
+        return b"".join(chunks).decode("ascii", errors="replace").strip()
+
+
+def _get_elliptec_bus(port, baudrate=9600, timeout_s=1.0) -> "_ElliptecBus":
+    """Retourne le bus partagé pour ce port (créé à la demande, singleton)."""
+    key = str(port).upper()
+    with _ELLIPTEC_BUSES_LOCK:
+        bus = _ELLIPTEC_BUSES.get(key)
+        if bus is None:
+            bus = _ElliptecBus(port, baudrate=baudrate, timeout_s=timeout_s)
+            _ELLIPTEC_BUSES[key] = bus
+        return bus
+
+
 class _ElliptecELL14Controller:
     """
     Minimal Thorlabs ELL14 / ELLC serial controller.
 
-    Used here as a half-wave plate rotator for Cobolt power control.
+    Utilisé pour la lame demi-onde de puissance du Cobolt (adresse 0) ET comme
+    contrôleur d'angle générique pour les positioners P(λ/2) et P(λ/4) (adresses
+    1 et 2). Toutes les instances d'un même port passent par un _ElliptecBus
+    partagé (une seule connexion série, cf. hub ELLB).
 
     Protocol used:
     - ASCII serial
-    - address usually "0"
     - gp          : get position
     - maXXXXXXXX  : move absolute, signed 32-bit hex counts
     """
@@ -243,31 +350,13 @@ class _ElliptecELL14Controller:
         self.baudrate = int(baudrate)
         self.timeout_s = float(timeout_s)
 
-        self.serial = None
+        # Bus série partagé (une seule connexion pour toutes les adresses du port).
+        self.bus = _get_elliptec_bus(port, baudrate=baudrate, timeout_s=timeout_s)
         self.connected = False
-        self._io_lock = Lock()
         self._last_angle_deg = 0.0
 
     def connect(self):
-        if self.connected and self.serial is not None:
-            return
-
-        self.serial = serial.Serial(
-            self.port,
-            baudrate=self.baudrate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=self.timeout_s,
-            write_timeout=self.timeout_s,
-        )
-
-        try:
-            self.serial.reset_input_buffer()
-            self.serial.reset_output_buffer()
-        except Exception:
-            pass
-
+        self.bus.connect()
         self.connected = True
 
         try:
@@ -277,56 +366,22 @@ class _ElliptecELL14Controller:
             logger.warning(f"[ELL14] Connected on {self.port}, but initial position read failed: {e}")
 
     def close(self):
-        try:
-            if self.serial is not None:
-                self.serial.close()
-        finally:
-            self.serial = None
-            self.connected = False
+        # Ne PAS fermer le bus partagé : d'autres montures (autres adresses)
+        # peuvent encore l'utiliser. On se contente de marquer déconnecté.
+        self.connected = False
 
     def _ensure_connected(self):
-        if not self.connected or self.serial is None:
+        if not self.connected or not self.bus.connected:
             self.connect()
 
-    def _write(self, payload: str):
-        self._ensure_connected()
-        msg = f"{self.address}{payload}\r".encode("ascii")
-
-        with self._io_lock:
-            try:
-                self.serial.reset_input_buffer()
-            except Exception:
-                pass
-
-            self.serial.write(msg)
-            self.serial.flush()
-
-    def _read_available(self, timeout_s: float = 2.0) -> str:
-        self._ensure_connected()
-
-        chunks = []
-        t0 = time.time()
-
-        with self._io_lock:
-            while time.time() - t0 < float(timeout_s):
-                n = self.serial.in_waiting
-                if n:
-                    chunks.append(self.serial.read(n))
-                    time.sleep(0.02)
-                    continue
-
-                # petit délai pour laisser arriver la réponse
-                time.sleep(0.02)
-
-                if chunks and self.serial.in_waiting <= 0:
-                    break
-
-        raw = b"".join(chunks)
-        return raw.decode("ascii", errors="replace").strip()
+    def stop(self):
+        # L'ELL14 exécute des mouvements bloquants ; pas d'arrêt en cours de move.
+        # Méthode no-op pour l'homogénéité d'API avec les autres contrôleurs.
+        return
 
     def command(self, payload: str, timeout_s: float = 2.0) -> str:
-        self._write(payload)
-        return self._read_available(timeout_s=timeout_s)
+        self._ensure_connected()
+        return self.bus.command(self.address, payload, timeout_s=timeout_s)
 
     @classmethod
     def deg_to_counts(cls, deg: float) -> int:
@@ -1921,16 +1976,22 @@ class RealHardwarePositionerManager(PositionerManager):
         *,
         xy_controller: Optional[_ScientificaMotion8XYController] = None,
         z_controller: Optional[_PIVoiceCoilController] = None,
-        p_controller: Optional[_ThorlabsRotationController] = None,
+        p_controller=None,
+        p4_controller=None,
         parent=None,
         poll_ms: int = 150,
     ):
         super().__init__(axes, parent=parent)
         self._xy = xy_controller
         self._z = z_controller
-        self._p = p_controller
+        self._p = p_controller       # P(λ/2) : ELL14 adresse 1 (axe "p")
+        self._p4 = p4_controller     # P(λ/4) : ELL14 adresse 2 (axe "p4")
         self._pending_targets_abs = {}
         self._pending_sample_xy_rel = {"x": None, "y": None}
+        # Les montures Elliptec sont interrogées via le bus série partagé : on
+        # limite leur cadence de poll pour ne pas saturer le port (les autres
+        # axes gardent le poll rapide).
+        self._last_pol_poll_t = 0.0
 
         # True pendant un move XY bloquant (worker scan/spectro) :
         # le poll GUI ne touche alors pas au port série XY.
@@ -1941,6 +2002,7 @@ class RealHardwarePositionerManager(PositionerManager):
         self._refresh_from_hardware("y")
         self._refresh_from_hardware("z")
         self._refresh_from_hardware("p")
+        self._refresh_from_hardware("p4")
 
         # polling pour refléter les moves externes (MikroMove)
         self._poll_timer = QTimer(self)
@@ -1960,6 +2022,8 @@ class RealHardwarePositionerManager(PositionerManager):
                 new_abs = float(self._z.get_abs_um())
             elif axis == "p" and self._p is not None:
                 new_abs = float(self._p.get_angle_deg())
+            elif axis == "p4" and self._p4 is not None:
+                new_abs = float(self._p4.get_angle_deg())
             else:
                 return False
 
@@ -2051,9 +2115,16 @@ class RealHardwarePositionerManager(PositionerManager):
                     self.movingChanged.emit("z", False)
                     self._emit_positions("z")
 
-        # --- P
-        if "p" in self._state:
-            self._refresh_from_hardware("p", force_emit=False)
+        # --- P(λ/2) et P(λ/4) : montures Elliptec sur bus série partagé.
+        # Poll throttlé (~0.5 s) pour refléter d'éventuels moves externes sans
+        # saturer le port COM.
+        now = time.time()
+        if now - self._last_pol_poll_t >= 0.5:
+            self._last_pol_poll_t = now
+            if "p" in self._state and self._p is not None:
+                self._refresh_from_hardware("p", force_emit=False)
+            if "p4" in self._state and self._p4 is not None:
+                self._refresh_from_hardware("p4", force_emit=False)
     
     def validate_scan_targets(self, scan_parameters: dict):
         """
@@ -2101,7 +2172,7 @@ class RealHardwarePositionerManager(PositionerManager):
         st = self._state[axis]
 
         # pour le réel, toujours relire le hardware avant de décider
-        if axis in ("x", "y", "z", "p"):
+        if axis in ("x", "y", "z", "p", "p4"):
             self._refresh_from_hardware(axis, force_emit=False)
 
         if not self._validate_move(axis, float(target_abs), float(speed)):
@@ -2139,16 +2210,17 @@ class RealHardwarePositionerManager(PositionerManager):
             self._refresh_from_hardware(axis, force_emit=True)
             return
 
-        if axis == "p":
-            if self._p is None:
-                self._log("axis p requested but no Thorlabs rotation controller is available.")
+        if axis in ("p", "p4"):
+            ctrl = self._p if axis == "p" else self._p4
+            if ctrl is None:
+                self._log(f"axis {axis!r} requested but no rotation controller is available.")
                 return
 
             st.moving = True
             self.movingChanged.emit(axis, True)
             try:
-                self._p.move_to_angle_deg(float(target_abs), blocking=True)
-                st.abs_pos = float(self._p.get_angle_deg())
+                ctrl.move_to_angle_deg(float(target_abs), blocking=True)
+                st.abs_pos = float(ctrl.get_angle_deg())
             finally:
                 st.moving = False
                 self.movingChanged.emit(axis, False)
@@ -2570,8 +2642,14 @@ class RealHardwarePositionerManager(PositionerManager):
             return
         elif axis == "z" and self._z is not None:
             self._z.stop()
-        elif axis == "p" and self._p is not None:
-            self._p.stop()
+        elif axis in ("p", "p4"):
+            ctrl = self._p if axis == "p" else self._p4
+            stop_fn = getattr(ctrl, "stop", None) if ctrl is not None else None
+            if callable(stop_fn):
+                try:
+                    stop_fn()
+                except Exception:
+                    pass
 
         st = self._state[axis]
         if st.moving:
@@ -2631,13 +2709,18 @@ class HardwareManager(QObject):
     def __init__(self, backend_name: str = "mock", settings_manager=None, parent=None):
         super().__init__(parent)
         self.backend_name = (backend_name or "mock").lower()
-        self._positioner_axes = ["x", "y", "z", "p"]
+        # "p"  = P(λ/2) (ELL14 adresse 1, utilisable en scan via "Polarization")
+        # "p4" = P(λ/4) (ELL14 adresse 2, hors scan)
+        self._positioner_axes = ["x", "y", "z", "p", "p4"]
         self.settings_manager = settings_manager
 
         self._shutter = None
         self._xy_controller = None
         self._z_controller = None
         self._rotators = {}
+        # Montures Elliptec des positioners P (bus COM15 partagé avec la HWP Cobolt)
+        self._ell_lambda2 = None   # P(λ/2), adresse 1
+        self._ell_lambda4 = None   # P(λ/4), adresse 2
 
         self._devices_initialized = False
         self._shutter_failed = False
@@ -2751,6 +2834,40 @@ class HardwareManager(QObject):
             if laser_name not in self._rotators:
                 self._rotators[laser_name] = _ThorlabsRotationController(serial)
 
+        # Montures Elliptec des positioners P(λ/2)/P(λ/4), sur le bus COM15
+        # partagé (même hub ELLB que la HWP Cobolt à l'adresse 0).
+        if self._ell_lambda2 is None:
+            self._ell_lambda2 = _ElliptecELL14Controller(
+                port=COBOLT_ELL14_PORT,
+                address=ELL14_LAMBDA2_ADDRESS,
+                baudrate=COBOLT_ELL14_BAUDRATE,
+                timeout_s=COBOLT_ELL14_TIMEOUT_S,
+            )
+        if self._ell_lambda4 is None:
+            self._ell_lambda4 = _ElliptecELL14Controller(
+                port=COBOLT_ELL14_PORT,
+                address=ELL14_LAMBDA4_ADDRESS,
+                baudrate=COBOLT_ELL14_BAUDRATE,
+                timeout_s=COBOLT_ELL14_TIMEOUT_S,
+            )
+
+        for label, ctrl, addr in (
+            ("P(λ/2)", self._ell_lambda2, ELL14_LAMBDA2_ADDRESS),
+            ("P(λ/4)", self._ell_lambda4, ELL14_LAMBDA4_ADDRESS),
+        ):
+            try:
+                if ctrl is not None and not ctrl.connected:
+                    ctrl.connect()
+                    logger.info(
+                        f"[HardwareManager] Connection to {label} ELL14 "
+                        f"port={COBOLT_ELL14_PORT} addr={addr} successful"
+                    )
+            except Exception as e:
+                logger.error(
+                    f"[HardwareManager] ERROR connecting {label} ELL14 "
+                    f"port={COBOLT_ELL14_PORT} addr={addr}: {e}"
+                )
+
         try:
             if self._shutter is not None and not self._shutter.connected:
                 self._shutter.connect()
@@ -2819,7 +2936,8 @@ class HardwareManager(QObject):
                 self._positioner_axes,
                 xy_controller=self._xy_controller,
                 z_controller=self._z_controller,
-                p_controller=None,
+                p_controller=self._ell_lambda2,
+                p4_controller=self._ell_lambda4,
                 parent=parent,
                 poll_ms=80,
             )

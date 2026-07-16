@@ -6,6 +6,10 @@ from functools import partial
 from ..managers.Scan_Types import STEPPER_AXIS_DEFAULTS
 from .Log_Widget import logger
 
+# Vitesse interne fixe des lames Elliptec ELL14 (P(λ/2)/P(λ/4)) : 430°/s.
+# Valeur imposée et non modifiable dans l'UI.
+ELL14_FIXED_SPEED_DEG_S = 430.0
+
 CHECKBOX_STYLE = """
     QCheckBox::indicator {
         width: 12px;
@@ -35,10 +39,11 @@ def setup_positioner_settings_dialog(dialog):
 
     axes = [
         # axis_key, axis_label, shared_axis_name, pos_unit, vel_unit, has_ums_scaling, has_backlash
-        ("x", "X - stage", "X-Stage",      "µm", "mm/s", True,  True),
-        ("y", "Y - stage", "Y-Stage",      "µm", "mm/s", True,  True),
-        ("z", "Z-VCoil",   "Z-Vcoil",      "µm", "mm/s", False, False),
-        ("p", "P",         "Polarization", "°",  "°/s",  False, False),
+        ("x",  "X - stage", "X-Stage",         "µm", "mm/s", True,  True),
+        ("y",  "Y - stage", "Y-Stage",         "µm", "mm/s", True,  True),
+        ("z",  "Z-VCoil",   "Z-Vcoil",         "µm", "mm/s", False, False),
+        ("p",  "P(λ/2)",    "Polarization",    "°",  "°/s",  False, False),
+        ("p4", "P(λ/4)",    "Polarization-L4", "°",  "°/s",  False, False),
     ]
 
     # ---- build UI avec valeurs actuelles ----
@@ -86,6 +91,11 @@ def setup_positioner_settings_dialog(dialog):
         vel_layout = QHBoxLayout()
         vel_edit = QLineEdit(str(cur_vmax))
         vel_edit.setObjectName(f"velocity_edit_{axis_key}")
+        # Lames Elliptec ELL14 : vitesse fixe 430°/s, non modifiable.
+        if axis_key in ("p", "p4"):
+            vel_edit.setText(str(int(ELL14_FIXED_SPEED_DEG_S)))
+            vel_edit.setReadOnly(True)
+            vel_edit.setToolTip("ELL14 : vitesse interne fixe (430°/s), non modifiable.")
         vel_layout.addWidget(QLabel(f"Velocity max ({vel_unit}):"))
         vel_layout.addWidget(vel_edit)
         dialog.add_layout(vel_layout)
@@ -252,8 +262,11 @@ class PositionerWidget(QWidget):
         self.manager = None  # injecté
         self.axis_settings_manager = None
         self.axis_ui = {}
-        self.axis_keys = ["x", "y", "z", "p"]
-        self.axis_labels = {"x": "X - stage", "y": "Y - stage", "z": "Z-VCoil", "p": "P"}
+        self.axis_keys = ["x", "y", "z", "p", "p4"]
+        self.axis_labels = {
+            "x": "X - stage", "y": "Y - stage", "z": "Z-VCoil",
+            "p": "P(λ/2)", "p4": "P(λ/4)",
+        }
         self._buttons_connected = False
         self._keyboard_shortcuts_locked = True
 
@@ -262,26 +275,32 @@ class PositionerWidget(QWidget):
             "X - stage": "x",
             "Y - stage": "y",
             "Z-VCoil": "z",
-            "P": "p",
+            "P(λ/2)": "p",
+            "P(λ/4)": "p4",
         }
         self._axis_to_stepper_visualizer_name = {
             "x": "X-Stage",
             "y": "Y-Stage",
             "z": "Z-Vcoil",
             "p": "Polarization",
+            # P(λ/4) n'est PAS un axe de scan : pas de remontée vers le
+            # visualizer / la base de balayage.
+            "p4": None,
         }
-        # Limites par défaut des axes
+        # Limites par défaut des axes (P(λ/2) et P(λ/4) : lames Elliptec, 0..360°)
         self.axis_limits = {
             "x": {"min": -20000, "max": 20000},
             "y": {"min": -20000, "max": 20000},
             "z": {"min": 0, "max": 7000},
-            "p": {"min": 0, "max": 180}
+            "p": {"min": 0, "max": 360},
+            "p4": {"min": 0, "max": 360},
         }
         self.axis_velocity_limits = {
             "x": {"min": 0.01, "max": 4},
             "y": {"min": 0.01, "max": 4},
             "z": {"min": 0.01, "max": 200},
-            "p": {"min": 0.01, "max": 100}
+            "p": {"min": 0.01, "max": ELL14_FIXED_SPEED_DEG_S},
+            "p4": {"min": 0.01, "max": ELL14_FIXED_SPEED_DEG_S},
         }
 
         content_widget = QWidget()
@@ -323,7 +342,7 @@ class PositionerWidget(QWidget):
             grid_layout.addWidget(label, 0, col)
 
         # Axes et champs éditables
-        pos_axis = ["X - stage", "Y - stage", "Z-VCoil", "P"]
+        pos_axis = ["X - stage", "Y - stage", "Z-VCoil", "P(λ/2)", "P(λ/4)"]
         self.pos_edits = {}
         
         for row, pos in enumerate(pos_axis, 1):
@@ -410,8 +429,9 @@ class PositionerWidget(QWidget):
             grid_layout.addWidget(minus_button, row, 4)
             setattr(self, f"minus_button_{pos.lower().replace('-', '_')}", minus_button)
 
-            # Colonne 5: Step
-            step_edit = QLineEdit("100")
+            # Colonne 5: Step (1° par défaut pour les lames Elliptec P(λ/2)/P(λ/4))
+            default_step = "1" if pos in ("P(λ/2)", "P(λ/4)") else "100"
+            step_edit = QLineEdit(default_step)
             step_edit.setStyleSheet("""
                 QLineEdit {
                     background-color: #333;
@@ -451,10 +471,14 @@ class PositionerWidget(QWidget):
                 default_speed = "3.8"
             elif pos == "Z-VCoil":
                 default_speed = "200"
+            elif pos in ("P(λ/2)", "P(λ/4)"):
+                default_speed = str(int(ELL14_FIXED_SPEED_DEG_S))  # 430°/s (fixe)
             else:
                 default_speed = "1"
             speed_edit = QLineEdit(default_speed)
-            if pos in ("X - stage", "Y - stage"):
+            # X/Y : vitesse pilotée par la Scientifica. P(λ/2)/P(λ/4) : lames
+            # Elliptec à vitesse interne fixe -> champ en lecture seule.
+            if pos in ("X - stage", "Y - stage", "P(λ/2)", "P(λ/4)"):
                 speed_edit.setReadOnly(True)
                 speed_edit.setFocusPolicy(Qt.NoFocus)
                 speed_edit.setStyleSheet("""
@@ -591,6 +615,7 @@ class PositionerWidget(QWidget):
             "y": "Y-Stage",
             "z": "Z-Vcoil",
             "p": "Polarization",
+            "p4": "Polarization-L4",
         }
 
         for axis_key, shared_name in axis_map.items():
@@ -609,6 +634,14 @@ class PositionerWidget(QWidget):
                 self.axis_limits[axis_key]["min"] = float(s.get("min_um", self.axis_limits[axis_key]["min"]))
                 self.axis_limits[axis_key]["max"] = float(s.get("max_um", self.axis_limits[axis_key]["max"]))
                 self.axis_velocity_limits[axis_key]["max"] = float(s.get("vel_max", self.axis_velocity_limits[axis_key]["max"]))
+
+            # Lames Elliptec ELL14 : vitesse imposée à 430°/s, non modifiable
+            # (on ignore toute valeur persistée différente).
+            if axis_key in ("p", "p4"):
+                self.axis_velocity_limits[axis_key]["max"] = ELL14_FIXED_SPEED_DEG_S
+                ui = self.axis_ui.get(axis_key)
+                if ui is not None:
+                    ui["speed"].setText(str(int(ELL14_FIXED_SPEED_DEG_S)))
 
             tol = float(s.get("tolerance", 0.1))
 
