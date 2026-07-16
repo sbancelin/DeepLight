@@ -388,7 +388,34 @@ class StitchingWidget(QWidget):
         "XY Tiles Z": "z_per_plane",
         "XYP Tiles": "p_per_tile",
         "XY Tiles P": "p_per_plane",
+        "XY Tiles": "z_per_tile",   # pas d'axe stack : ordre indifférent
     }
+
+    def set_stack_axis(self, axis):
+        """Adapte les choix du combo 'Scan order' à l'axe stack réellement actif
+        dans l'onglet Scan.
+            axis == 'z'  -> XYZ Tiles / XY Tiles Z
+            axis == 'p'  -> XYP Tiles / XY Tiles P
+            sinon (aucun ou plusieurs axes stack) -> XY Tiles (par tuile)
+        On évite ainsi de proposer un ordre P alors que seul Z est balayé."""
+        if axis == "z":
+            items = ["XYZ Tiles", "XY Tiles Z"]
+        elif axis == "p":
+            items = ["XYP Tiles", "XY Tiles P"]
+        else:
+            items = ["XY Tiles"]
+
+        if [self.combo_scan_order.itemText(i)
+                for i in range(self.combo_scan_order.count())] == items:
+            return
+
+        current = self.combo_scan_order.currentText()
+        self.combo_scan_order.blockSignals(True)
+        self.combo_scan_order.clear()
+        self.combo_scan_order.addItems(items)
+        idx = self.combo_scan_order.findText(current)
+        self.combo_scan_order.setCurrentIndex(idx if idx >= 0 else 0)
+        self.combo_scan_order.blockSignals(False)
 
     def get_parameters(self):
         return {

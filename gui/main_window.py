@@ -910,7 +910,27 @@ class MainWindow(QMainWindow):
     def refresh_stitching_preview_grid(self):
         try:
             scan_params = self.ui.scan_widget.get_scan_parameters()
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+            return
+
+        try:
             self.ui.stitch_widget.set_mosaic_layout_preview(scan_params)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        # Adapte les choix d'ordre de balayage (Z vs P) à l'axe stack actif.
+        try:
+            rows = [r for r in scan_params.get("rows", []) if r.get("axis") != "None"]
+            _AXIS_TO_POS = {"Z-Vcoil": "z", "Polarization": "p"}
+            stack_axes = [
+                _AXIS_TO_POS[str(r.get("axis", ""))]
+                for r in rows
+                if str(r.get("axis", "")) in _AXIS_TO_POS
+            ]
+            self.ui.stitch_widget.set_stack_axis(
+                stack_axes[0] if len(stack_axes) == 1 else None
+            )
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
@@ -977,20 +997,38 @@ class MainWindow(QMainWindow):
     def _on_stitch_run_started(self):
         self.ui.stitch_widget.set_running(True)
         self.ui.stitch_widget.set_status("Mosaic started...")
+        # Barre de progression globale : suit la mosaïque entière (nb de tuiles/
+        # plans acquis), et non chaque image tuile par tuile.
+        try:
+            self.ui.global_progress_widget.start_task("Mosaic")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot()
     def _on_stitch_run_finished(self):
         self.ui.stitch_widget.set_running(False)
         self.ui.stitch_widget.set_status("Mosaic finished.")
+        try:
+            self.ui.global_progress_widget.finish_task("Done")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot(str)
     def _on_stitch_run_failed(self, message: str):
         self.ui.stitch_widget.set_running(False)
         self.ui.stitch_widget.set_status(f"Error: {message}")
+        try:
+            self.ui.global_progress_widget.finish_task("Failed")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
 
     @Slot(int, int)
     def _on_stitch_run_progress(self, done: int, total: int):
         self.ui.stitch_widget.set_status(f"Tiles: {done}/{total}")
+        try:
+            self.ui.global_progress_widget.set_progress(done, total, source="Mosaic")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
         
     def _capture_stepper_return_targets(self):
         """
@@ -1220,11 +1258,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"[MainWindow] consume_samples error: {e}")
 
-        # Progression globale (bas du GUI) pour les scans laser
+        # Progression globale (bas du GUI) pour les scans laser.
+        # En stitching, la barre globale suit la mosaïque (tuiles), pas les
+        # samples de la tuile courante : on ne l'écrase pas ici.
         try:
             self._scan_samples_done = int(getattr(self, "_scan_samples_done", 0)) + int(delta_samples)
             total = int(getattr(self, "_scan_samples_total", 0))
-            if total > 0:
+            if total > 0 and not self.stitching_manager.is_running():
                 # en preview continu, les samples dépassent le total d'une
                 # frame : on affiche la progression de la frame courante
                 done = self._scan_samples_done
@@ -1538,10 +1578,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
-        try:
-            self.ui.global_progress_widget.start_task("Scan", total=self._scan_samples_total)
-        except Exception as e:
-            logger.debug(f"[MainWindow] ignored exception: {e}")
+        # En stitching, la barre globale suit la mosaïque entière : on ne la
+        # laisse pas être redémarrée par chaque acquisition tuile.
+        if not self.stitching_manager.is_running():
+            try:
+                self.ui.global_progress_widget.start_task("Scan", total=self._scan_samples_total)
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self.user_shutter_override = None
         self._update_controls_enabled(True)
@@ -1549,10 +1592,13 @@ class MainWindow(QMainWindow):
     @Slot()
     def on_acquisition_stopped(self):
         """Gère l'arrêt de l'acquisition."""
-        try:
-            self.ui.global_progress_widget.finish_task("Stopped")
-        except Exception as e:
-            logger.debug(f"[MainWindow] ignored exception: {e}")
+        # En stitching, la fin d'une acquisition tuile ne clôt PAS la barre
+        # globale (elle représente la mosaïque complète, gérée par le run).
+        if not self.stitching_manager.is_running():
+            try:
+                self.ui.global_progress_widget.finish_task("Stopped")
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
             self.scan_manager.flush_pending_buffers()
