@@ -291,22 +291,26 @@ class _ElliptecBus:
             except Exception:
                 pass
 
-            self.serial.write(msg)
-            self.serial.flush()
+            prev_timeout = self.serial.timeout
+            try:
+                self.serial.timeout = float(timeout_s)
+                self.serial.write(msg)
+                self.serial.flush()
 
-            chunks = []
-            t0 = time.time()
-            while time.time() - t0 < float(timeout_s):
-                n = self.serial.in_waiting
-                if n:
-                    chunks.append(self.serial.read(n))
-                    time.sleep(0.02)
-                    continue
-                time.sleep(0.02)
-                if chunks and self.serial.in_waiting <= 0:
-                    break
+                # Les réponses Elliptec se terminent par CR LF : read_until rend
+                # la main DÈS le terminateur (~10-15 ms) au lieu d'attendre par
+                # pas de sleep. Ces appels ont lieu sur le thread GUI : toute
+                # milliseconde bloquée ici se voit à l'écran.
+                # Si le terminateur n'arrive pas, read_until rend quand même les
+                # octets reçus à l'expiration du timeout (jamais pire qu'avant).
+                raw = self.serial.read_until(b"\n")
+            finally:
+                try:
+                    self.serial.timeout = prev_timeout
+                except Exception:
+                    pass
 
-        return b"".join(chunks).decode("ascii", errors="replace").strip()
+        return raw.decode("ascii", errors="replace").strip()
 
 
 def _get_elliptec_bus(port, baudrate=9600, timeout_s=1.0) -> "_ElliptecBus":
@@ -443,19 +447,34 @@ class _ElliptecELL14Controller:
         extra = 100.0 + 100.0 * (mag_deg - MIRA_ROTATOR_REL_MAX_DEG) / MIRA_ROTATOR_REL_MAX_DEG
         return sign * extra
 
+    def _parse_position_response(self, response: str):
+        """Extrait l'angle (deg) d'un message 'PO' Elliptec, ou None."""
+        idx = response.find("PO")
+        if idx < 0 or len(response) < idx + 10:
+            return None
+        try:
+            counts = self.hex32_to_counts(response[idx + 2: idx + 10])
+        except ValueError:
+            return None
+        return self.counts_to_deg(counts)
+
     def get_angle_deg(self) -> float:
         response = self.command("gp", timeout_s=1.0)
 
-        idx = response.find("PO")
-        if idx < 0 or len(response) < idx + 10:
+        angle = self._parse_position_response(response)
+        if angle is None:
             raise RuntimeError(f"Unable to parse ELL14 position from response: {response!r}")
 
-        hex_pos = response[idx + 2: idx + 10]
-        counts = self.hex32_to_counts(hex_pos)
-        self._last_angle_deg = self.counts_to_deg(counts)
+        self._last_angle_deg = angle
         return float(self._last_angle_deg)
 
-    def move_to_angle_deg(self, angle_deg: float, blocking: bool = True):
+    def move_to_angle_deg(self, angle_deg: float, blocking: bool = True) -> float:
+        """Déplacement absolu. Retourne l'angle final (deg).
+
+        La réponse à 'ma' n'arrive qu'une fois le mouvement terminé et contient
+        déjà la position finale (message PO) : on l'exploite directement, sans
+        pause ni relecture — l'appelant est souvent le thread GUI.
+        """
         self._ensure_connected()
 
         angle_deg = float(angle_deg)
@@ -464,14 +483,19 @@ class _ElliptecELL14Controller:
 
         self._last_angle_deg = angle_deg
 
-        self.command(f"ma{hex_counts}", timeout_s=10.0)
+        response = self.command(f"ma{hex_counts}", timeout_s=10.0)
 
-        if blocking:
-            time.sleep(0.2)
+        angle = self._parse_position_response(response)
+        if angle is not None:
+            self._last_angle_deg = angle
+        elif blocking:
+            # Réponse inattendue (ex: message d'état GS) : on relit une fois.
             try:
                 self.get_angle_deg()
             except Exception:
                 pass
+
+        return float(self._last_angle_deg)
 
     def set_power_percent(self, percent: float, offset_deg: float):
         angle = self._power_percent_to_absolute_angle_deg(
@@ -1964,11 +1988,18 @@ class RealHardwarePositionerManager(PositionerManager):
     """
     Real V1 hardware positioner manager.
     Implemented:
-    - z -> PI V-308 via USB
-    - p -> Thorlabs rotation mount (degrees)
+    - z  -> PI V-308 via USB
+    - p  -> P(λ/2) : monture Elliptec ELL14 (degrés), adresse 1
+    - p4 -> P(λ/4) : monture Elliptec ELL14 (degrés), adresse 2
     Not implemented in this V1:
     - x / y stages, because no hardware/controller was provided for them
     """
+
+    # Axes portés par des montures Elliptec : toute lecture est une transaction
+    # série bloquante sur le thread GUI. On ne les relit donc JAMAIS "au cas où"
+    # (pas de poll, pas de relecture avant un move) : la position en cache est
+    # rafraîchie après chaque mouvement, au démarrage et sur set_zero.
+    _ELLIPTEC_AXES = ("p", "p4")
 
     def __init__(
         self,
@@ -1988,10 +2019,6 @@ class RealHardwarePositionerManager(PositionerManager):
         self._p4 = p4_controller     # P(λ/4) : ELL14 adresse 2 (axe "p4")
         self._pending_targets_abs = {}
         self._pending_sample_xy_rel = {"x": None, "y": None}
-        # Les montures Elliptec sont interrogées via le bus série partagé : on
-        # limite leur cadence de poll pour ne pas saturer le port (les autres
-        # axes gardent le poll rapide).
-        self._last_pol_poll_t = 0.0
 
         # True pendant un move XY bloquant (worker scan/spectro) :
         # le poll GUI ne touche alors pas au port série XY.
@@ -2115,16 +2142,13 @@ class RealHardwarePositionerManager(PositionerManager):
                     self.movingChanged.emit("z", False)
                     self._emit_positions("z")
 
-        # --- P(λ/2) et P(λ/4) : montures Elliptec sur bus série partagé.
-        # Poll throttlé (~0.5 s) pour refléter d'éventuels moves externes sans
-        # saturer le port COM.
-        now = time.time()
-        if now - self._last_pol_poll_t >= 0.5:
-            self._last_pol_poll_t = now
-            if "p" in self._state and self._p is not None:
-                self._refresh_from_hardware("p", force_emit=False)
-            if "p4" in self._state and self._p4 is not None:
-                self._refresh_from_hardware("p4", force_emit=False)
+        # --- P(λ/2) / P(λ/4) : PAS de polling.
+        # Ces lames Elliptec ne bougent que sur commande DeepLight (mouvements
+        # ponctuels ; seul le scan de polarisation bouge la λ/2 régulièrement).
+        # Chaque lecture est une transaction série BLOQUANTE sur le thread GUI :
+        # les interroger en boucle saccadait toute l'UI. Leur position est donc
+        # relue uniquement après un mouvement (cf. _move_abs), au démarrage et
+        # sur set_zero.
     
     def validate_scan_targets(self, scan_parameters: dict):
         """
@@ -2172,7 +2196,8 @@ class RealHardwarePositionerManager(PositionerManager):
         st = self._state[axis]
 
         # pour le réel, toujours relire le hardware avant de décider
-        if axis in ("x", "y", "z", "p", "p4"):
+        # (sauf Elliptec : cache fiable, cf. _ELLIPTEC_AXES)
+        if axis in ("x", "y", "z"):
             self._refresh_from_hardware(axis, force_emit=False)
 
         if not self._validate_move(axis, float(target_abs), float(speed)):
@@ -2210,7 +2235,7 @@ class RealHardwarePositionerManager(PositionerManager):
             self._refresh_from_hardware(axis, force_emit=True)
             return
 
-        if axis in ("p", "p4"):
+        if axis in self._ELLIPTEC_AXES:
             ctrl = self._p if axis == "p" else self._p4
             if ctrl is None:
                 self._log(f"axis {axis!r} requested but no rotation controller is available.")
@@ -2219,8 +2244,10 @@ class RealHardwarePositionerManager(PositionerManager):
             st.moving = True
             self.movingChanged.emit(axis, True)
             try:
-                ctrl.move_to_angle_deg(float(target_abs), blocking=True)
-                st.abs_pos = float(ctrl.get_angle_deg())
+                # move_to_angle_deg renvoie la position finale lue dans la
+                # réponse du move : pas de relecture série supplémentaire.
+                final_deg = ctrl.move_to_angle_deg(float(target_abs), blocking=True)
+                st.abs_pos = float(target_abs if final_deg is None else final_deg)
             finally:
                 st.moving = False
                 self.movingChanged.emit(axis, False)
@@ -2271,7 +2298,10 @@ class RealHardwarePositionerManager(PositionerManager):
     @Slot(str, float, float)
     def move_to_rel(self, axis: str, rel_target: float, speed: float):
         self._require_axis(axis)
-        self._refresh_from_hardware(axis, force_emit=False)
+        # La cible ne dépend que de zero_offset : inutile de relire une monture
+        # Elliptec (transaction série bloquante) juste pour la calculer.
+        if axis not in self._ELLIPTEC_AXES:
+            self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
         target_abs = float(st.zero_offset) + float(rel_target)
         self._move_abs(axis, target_abs=target_abs, speed=float(speed))
@@ -2487,7 +2517,10 @@ class RealHardwarePositionerManager(PositionerManager):
     @Slot(str, float, float)
     def move_relative(self, axis: str, delta: float, speed: float):
         self._require_axis(axis)
-        self._refresh_from_hardware(axis, force_emit=False)
+        # Pour les Elliptec on part du cache (tenu à jour après chaque move)
+        # plutôt que d'ajouter une lecture série bloquante à chaque clic +/-.
+        if axis not in self._ELLIPTEC_AXES:
+            self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
         target_abs = float(st.abs_pos) + float(delta)
         self._move_abs(axis, target_abs=target_abs, speed=float(speed))
@@ -2570,7 +2603,10 @@ class RealHardwarePositionerManager(PositionerManager):
         # ------------------------------------------------------------------
         # Cas standard (laser / Z / P / autres commandes)
         # ------------------------------------------------------------------
-        self._refresh_from_hardware(axis, force_emit=False)
+        # Scan de polarisation : la λ/2 est déplacée à chaque plan. La cible ne
+        # dépend que de zero_offset -> on évite une lecture série par point.
+        if axis not in self._ELLIPTEC_AXES:
+            self._refresh_from_hardware(axis, force_emit=False)
         st = self._state[axis]
         target_abs = float(st.zero_offset) + float(target_rel)
 
@@ -2642,14 +2678,15 @@ class RealHardwarePositionerManager(PositionerManager):
             return
         elif axis == "z" and self._z is not None:
             self._z.stop()
-        elif axis in ("p", "p4"):
-            ctrl = self._p if axis == "p" else self._p4
-            stop_fn = getattr(ctrl, "stop", None) if ctrl is not None else None
-            if callable(stop_fn):
-                try:
-                    stop_fn()
-                except Exception:
-                    pass
+        elif axis in self._ELLIPTEC_AXES:
+            # Les moves Elliptec sont bloquants : il n'y a rien à interrompre, et
+            # on ne relit pas (stop_all() est appelé sur des chemins critiques,
+            # ex. arrêt de mosaïque -> ne pas y ajouter de latence série).
+            st = self._state[axis]
+            if st.moving:
+                st.moving = False
+                self.movingChanged.emit(axis, False)
+            return
 
         st = self._state[axis]
         if st.moving:
