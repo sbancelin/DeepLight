@@ -938,12 +938,68 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
-        # Temps estimé = durée d'UNE acquisition (pile Z/P incluse) x # tuiles.
+        # Temps estimé TOTAL du run (acquisitions + trajets XY + moves stack +
+        # latences + retour à la base), pas seulement la somme des acquisitions.
         try:
-            per_tile_s = self.ui.scan_widget.get_estimated_scan_duration_s()
-            self.ui.stitch_widget.set_estimated_time(per_tile_s)
+            total_s = self._compute_stitching_estimate_s(scan_params)
+            self.ui.stitch_widget.set_estimated_time(total_s)
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
+
+    def _compute_stitching_estimate_s(self, scan_params: dict) -> float:
+        """Estimation réaliste de la durée totale d'une mosaïque (voir
+        StitchingManager.estimate_duration_seconds)."""
+        rows = [r for r in scan_params.get("rows", []) if r.get("axis") != "None"]
+        row_x = next((r for r in rows if str(r.get("axis", "")).startswith("X")), None)
+        row_y = next((r for r in rows if str(r.get("axis", "")).startswith("Y")), None)
+        if row_x is None or row_y is None:
+            return 0.0
+
+        mp = self.ui.stitch_widget.get_parameters()
+        per_acq = float(self.ui.scan_widget.get_estimated_scan_duration_s())
+
+        def speed(ax, default):
+            try:
+                return float(self.positioner_manager.get_max_speed(ax))
+            except Exception:
+                return float(default)
+
+        # Axes stack supplémentaires (Z/P) -> n_planes et, si 'per plane', range.
+        _AXIS_TO_POS = {"Z-Vcoil": "z", "Polarization": "p"}
+        extra = [r for r in rows if r is not row_x and r is not row_y]
+        n_planes = 1
+        for r in extra:
+            n_planes *= max(1, int(r.get("pixels", 1) or 1))
+
+        scan_order = str(mp.get("scan_order", "z_per_tile"))
+        plane_outer = False
+        stack_range_um = 0.0
+        stack_speed = 1.0
+        if scan_order.endswith("_per_plane") and n_planes > 1 and len(extra) == 1:
+            req_axis = scan_order.split("_", 1)[0]
+            r = extra[0]
+            ax = _AXIS_TO_POS.get(str(r.get("axis", "")))
+            if ax == req_axis:
+                plane_outer = True
+                stack_range_um = abs(float(r.get("size_um", 0.0) or 0.0))
+                stack_speed = speed(ax, 1.0)
+
+        return StitchingManager.estimate_duration_seconds(
+            tiles_x=int(mp.get("tiles_x", 1)),
+            tiles_y=int(mp.get("tiles_y", 1)),
+            overlap_px=int(mp.get("overlap_px", 0)),
+            tile_w_um=float(row_x.get("size_um", 1.0) or 1.0),
+            tile_h_um=float(row_y.get("size_um", 1.0) or 1.0),
+            tile_w_px=int(row_x.get("pixels", 1) or 1),
+            tile_h_px=int(row_y.get("pixels", 1) or 1),
+            per_acq_full_s=per_acq,
+            speed_x_mm_s=speed("x", 3.8),
+            speed_y_mm_s=speed("y", 3.8),
+            n_planes=n_planes,
+            plane_outer=plane_outer,
+            stack_range_um=stack_range_um,
+            stack_speed_mm_s=stack_speed,
+        )
 
     @Slot()
     def on_stitch_save_clicked(self):

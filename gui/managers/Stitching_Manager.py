@@ -5,6 +5,16 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 import numpy as np
 
+# Latences fixes approximatives (calibrables) utilisées par l'ESTIMATION de
+# durée. Elles couvrent ce qui n'est pas un temps de trajet pur :
+#   _MOVE_OVERHEAD_S : décélération/stabilisation de la platine + détection
+#                      d'arrivée (poll) + latence de commande, par mouvement.
+#   _ACQ_OVERHEAD_S  : mise en place/arrêt du pipeline d'acquisition et recalage
+#                      (cross-corrélation), par tuile acquise.
+# Ajuste-les si l'estimation dérive du temps réel observé.
+_MOVE_OVERHEAD_S = 0.12
+_ACQ_OVERHEAD_S = 0.08
+
 
 @dataclass
 class MosaicRunConfig:
@@ -91,7 +101,11 @@ class StitchingManager(QObject):
         self._target_stack_rel = None
 
         self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(40)
+        # 20 ms : on veut détecter l'arrivée au plus vite (chaque ms d'attente
+        # est multipliée par le nombre de tuiles). Combiné à la relecture forcée
+        # de la position (cf. _check_motion_completion), on ne dépend plus du
+        # cache du positioner rafraîchi seulement toutes les poll_ms du manager.
+        self._poll_timer.setInterval(20)
         self._poll_timer.timeout.connect(self._check_motion_completion)
 
         self.acquisition_manager.acquisition_done.connect(self._on_acquisition_done)
@@ -371,6 +385,97 @@ class StitchingManager(QObject):
         return seq
 
     # ------------------------------------------------------------------
+    # Estimation de durée
+    # ------------------------------------------------------------------
+    @staticmethod
+    def estimate_duration_seconds(
+        *,
+        tiles_x: int,
+        tiles_y: int,
+        overlap_px: int,
+        tile_w_um: float,
+        tile_h_um: float,
+        tile_w_px: int,
+        tile_h_px: int,
+        per_acq_full_s: float,
+        speed_x_mm_s: float,
+        speed_y_mm_s: float,
+        n_planes: int = 1,
+        plane_outer: bool = False,
+        stack_range_um: float = 0.0,
+        stack_speed_mm_s: float = 1.0,
+    ) -> float:
+        """Durée totale estimée d'un run de mosaïque.
+
+        Prend en compte, en plus du temps d'acquisition des tuiles :
+        - les trajets XY de la platine le long du serpentin (distance / vitesse) ;
+        - en mode 'per plane' : les déplacements de l'axe stack (Z/P) et les
+          resets XY entre plans ;
+        - une latence fixe par mouvement et par acquisition (cf. constantes) ;
+        - le retour à la position de départ.
+
+        `per_acq_full_s` = durée d'UNE acquisition complète (pile Z/P incluse),
+        telle qu'affichée par le ScanWidget. Le temps d'acquisition total vaut
+        n_tiles × per_acq_full_s dans les deux ordres de balayage (en 'per plane'
+        chaque acquisition ne fait qu'un plan, mais il y en a n_planes× plus).
+        """
+        tiles_x = max(1, int(tiles_x))
+        tiles_y = max(1, int(tiles_y))
+        n_planes = max(1, int(n_planes))
+        overlap = max(0, int(overlap_px))
+        tw = max(1, int(tile_w_px))
+        th = max(1, int(tile_h_px))
+        n_tiles = tiles_x * tiles_y
+
+        step_x = float(tile_w_um) * (tw - overlap) / tw
+        step_y = float(tile_h_um) * (th - overlap) / th
+        vx = max(float(speed_x_mm_s), 1e-6) * 1000.0   # µm/s
+        vy = max(float(speed_y_mm_s), 1e-6) * 1000.0
+
+        def xy_move_time(i0, j0, i1, j1) -> float:
+            dx = abs(i1 - i0) * step_x
+            dy = abs(j1 - j0) * step_y
+            if dx <= 0.0 and dy <= 0.0:
+                return 0.0
+            # move_xy_to_rel déplace X et Y simultanément -> max des deux.
+            return max(dx / vx, dy / vy) + _MOVE_OVERHEAD_S
+
+        # serpentin (mêmes indices que _build_serpentine_sequence)
+        seq = []
+        for iy in range(tiles_y):
+            xs = range(tiles_x) if iy % 2 == 0 else range(tiles_x - 1, -1, -1)
+            for ix in xs:
+                seq.append((ix, iy))
+
+        pass_time = sum(
+            xy_move_time(seq[k][0], seq[k][1], seq[k + 1][0], seq[k + 1][1])
+            for k in range(len(seq) - 1)
+        )
+
+        acq_time = n_tiles * max(0.0, float(per_acq_full_s))
+
+        if plane_outer and n_planes > 1:
+            n_acq = n_tiles * n_planes
+            vs = max(float(stack_speed_mm_s), 1e-6) * 1000.0
+            stack_step = abs(float(stack_range_um)) / max(1, n_planes - 1)
+            # 1 move stack initial + (n_planes-1) inter-plans
+            stack_time = n_planes * (stack_step / vs + _MOVE_OVERHEAD_S)
+            reset_time = (n_planes - 1) * xy_move_time(
+                seq[-1][0], seq[-1][1], seq[0][0], seq[0][1]
+            )
+            xy_time = n_planes * pass_time + reset_time + stack_time
+            return_time = (
+                abs(float(stack_range_um)) / vs + _MOVE_OVERHEAD_S
+            ) + xy_move_time(seq[0][0], seq[0][1], 0, 0)
+        else:
+            n_acq = n_tiles
+            xy_time = pass_time
+            return_time = xy_move_time(seq[-1][0], seq[-1][1], 0, 0)
+
+        overhead = n_acq * _ACQ_OVERHEAD_S
+        return acq_time + xy_time + return_time + overhead
+
+    # ------------------------------------------------------------------
     # Run engine
     # ------------------------------------------------------------------
 
@@ -505,6 +610,14 @@ class StitchingManager(QObject):
             return
 
         # --- Phase déplacement XY ---
+        # Relecture forcée de la position réelle (une transaction série) : sinon
+        # get_rel_pos renvoie le cache du positioner, rafraîchi seulement toutes
+        # les poll_ms du manager (~80 ms) -> arrivée détectée avec ce retard sur
+        # CHAQUE tuile. No-op si le manager ne fournit pas cette méthode (mock).
+        refresh_xy = getattr(self.positioner_manager, "refresh_xy_position", None)
+        if callable(refresh_xy):
+            refresh_xy()
+
         try:
             cur_x = float(self.positioner_manager.get_rel_pos("x"))
             cur_y = float(self.positioner_manager.get_rel_pos("y"))

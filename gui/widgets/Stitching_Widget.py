@@ -272,8 +272,9 @@ class StitchingWidget(QWidget):
         self.combo_scan_order.setMinimumWidth(96)
         controls_layout.addWidget(self.combo_scan_order)
 
-        # Temps estimé total (temps par acquisition x nombre de tuiles)
-        self._per_tile_seconds = 0.0
+        # Temps estimé TOTAL du run (calculé côté MainWindow : acquisitions +
+        # trajets XY + moves stack + latences + retour à la base).
+        self._total_seconds = 0.0
         self.label_tiles_est = QLabel()
         self.label_tiles_est.setStyleSheet(_STATUS_VALUE_STYLE)
         controls_layout.addWidget(self.label_tiles_est)
@@ -359,8 +360,8 @@ class StitchingWidget(QWidget):
         self.button_reset_levels.clicked.connect(self._on_reset_levels_clicked)
         self.button_reset.clicked.connect(self._reset_controls)
 
-        self.spin_tile_x.valueChanged.connect(self._refresh_estimate_label)
-        self.spin_tile_y.valueChanged.connect(self._refresh_estimate_label)
+        # Le total est recalculé côté MainWindow (via refresh_stitching_preview_grid,
+        # déjà connecté à ces spinbox) puis poussé par set_estimated_time().
         self._refresh_estimate_label()
 
         try:
@@ -432,20 +433,16 @@ class StitchingWidget(QWidget):
     def set_status(self, text):
         self.label_status.setText(str(text))
 
-    def set_estimated_time(self, per_tile_seconds: float):
-        """Durée estimée d'UNE acquisition (une tuile, pile Z/P incluse)."""
+    def set_estimated_time(self, total_seconds: float):
+        """Durée totale estimée du run de mosaïque (déjà calculée en amont)."""
         try:
-            self._per_tile_seconds = max(0.0, float(per_tile_seconds or 0.0))
+            self._total_seconds = max(0.0, float(total_seconds or 0.0))
         except Exception:
-            self._per_tile_seconds = 0.0
+            self._total_seconds = 0.0
         self._refresh_estimate_label()
 
     def _refresh_estimate_label(self):
-        if self._per_tile_seconds > 0.0:
-            n_tiles = int(self.spin_tile_x.value()) * int(self.spin_tile_y.value())
-            est = self._format_hms(self._per_tile_seconds * n_tiles)
-        else:
-            est = "—"
+        est = self._format_hms(self._total_seconds) if self._total_seconds > 0.0 else "—"
         self.label_tiles_est.setText(f"Est: {est}")
 
     @staticmethod

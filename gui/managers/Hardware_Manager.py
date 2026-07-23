@@ -2067,6 +2067,25 @@ class RealHardwarePositionerManager(PositionerManager):
             #self._log(f"refresh failed axis={axis}: {e}")
             return False
 
+    def refresh_xy_position(self):
+        """Relit immédiatement la position XY (une seule transaction série) et
+        met à jour le cache. Utilisé par le stitching pour détecter l'arrivée
+        d'une tuile sans attendre le prochain poll (~poll_ms) du manager."""
+        if self._xy is None or self._xy_blocking_busy:
+            return
+        try:
+            x_um, y_um = self._xy.get_xy_abs_um()
+        except Exception:
+            return
+        for axis, new_abs in (("x", float(x_um)), ("y", float(y_um))):
+            if axis not in self._state:
+                continue
+            st = self._state[axis]
+            changed = abs(float(st.abs_pos) - new_abs) > max(float(st.tolerance), 1e-6)
+            st.abs_pos = new_abs
+            if changed:
+                self._emit_positions(axis)
+
     @Slot()
     def _poll_hardware_positions(self):
         # --- XY : une seule transaction série pour les deux axes.
