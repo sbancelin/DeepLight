@@ -225,6 +225,15 @@ class ScanManager(QObject):
         """
         n = max(int(n), 1)
 
+        # Polarization : l'axe représente l'AZIMUT absolu, balayé de 0 à `size`
+        # en croissant (indépendant de la position courante / de l'offset UI).
+        # Les positions physiques des lames (λ/2, λ/4) sont dérivées de la table
+        # de calibration au moment du mouvement (move_from_scan).
+        if axis_name == "Polarization":
+            if n == 1:
+                return [0.0]
+            return list(np.linspace(0.0, float(size), n))
+
         if n == 1:
             return [offset]
 
@@ -398,7 +407,10 @@ class ScanManager(QObject):
         if axis3_name is not None and axis3_positions and axis3_positions[0] is not None:
             init3 = float(axis3_positions[0])
             cur3 = float(sp.initial_relative_positions.get(axis3_name, init3))
-            if abs(init3 - cur3) > 1e-9:
+            # Polarization : toujours forcer l'init (init3 est un azimut, pas la
+            # position λ/2 courante ; les deux lames DOIVENT être placées avant
+            # la 1ère frame, même si les valeurs numériques coïncident).
+            if abs(init3 - cur3) > 1e-9 or axis3_name == "Polarization":
                 step_events.append(
                     StepEvent(
                         sample_index=0,
@@ -412,7 +424,7 @@ class ScanManager(QObject):
         if axis4_name is not None and axis4_positions and axis4_positions[0] is not None:
             init4 = float(axis4_positions[0])
             cur4 = float(sp.initial_relative_positions.get(axis4_name, init4))
-            if abs(init4 - cur4) > 1e-9:
+            if abs(init4 - cur4) > 1e-9 or axis4_name == "Polarization":
                 step_events.append(
                     StepEvent(
                         sample_index=0,

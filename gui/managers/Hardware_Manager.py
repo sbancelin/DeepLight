@@ -2534,6 +2534,11 @@ class RealHardwarePositionerManager(PositionerManager):
         t_sched_ms: float,
         reason: str
     ):
+        # Axe de scan Polarization : azimut -> table -> déplace λ/2 (p) ET λ/4 (p4).
+        if axis_name == "Polarization":
+            self._handle_polarization_scan(target_rel, reason)
+            return
+
         axis = self.axis_from_scan_name(axis_name)
         if axis is None or axis not in self._state:
             logger.warning(

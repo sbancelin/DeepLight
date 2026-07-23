@@ -1073,10 +1073,17 @@ class ScanWidget(QWidget):
             axis = combo.currentText()
             if axis == "None":
                 self._disable_axis_fields(i)
+            elif axis == "Polarization":
+                # Verrouillé : size=180°, 19 points (step 10°), non modifiable.
+                self._apply_polarization_row_lock(i)
             else:
                 self.size_edits[i].setEnabled(True)
                 self.pixel_edits[i].setEnabled(True)
                 self.offset_edits[i].setEnabled(True)
+
+                # Réautorise l'édition si la ligne sortait d'un verrou Polarization.
+                for e in (self.size_edits[i], self.pixel_edits[i], self.offset_edits[i]):
+                    e.setReadOnly(False)
 
                 self._set_editable_lineedit_style(self.size_edits[i])
                 self._set_editable_lineedit_style(self.pixel_edits[i])
@@ -2139,6 +2146,32 @@ class ScanWidget(QWidget):
         self.step_edits[row_index].clear()
 
         self._update_scan_mode_combo(row_index, "None")
+
+    def _apply_polarization_row_lock(self, row_index):
+        """Axe Polarization : valeurs imposées et non modifiables (pour l'instant).
+
+        size = 180°, 19 points -> pas de 10°. L'axe balaie l'AZIMUT de 0 à 180° ;
+        les positions physiques des lames (λ/2, λ/4) sont dérivées de la table de
+        calibration au moment du scan (cf. Positioner_Manager)."""
+        for edit, val in (
+            (self.size_edits[row_index], "180"),
+            (self.pixel_edits[row_index], "19"),
+            (self.offset_edits[row_index], "0"),
+        ):
+            edit.blockSignals(True)
+            edit.setText(val)
+            edit.setProperty("last_valid_text", val)
+            edit.blockSignals(False)
+            edit.setEnabled(True)
+            edit.setReadOnly(True)
+            self._set_disabled_lineedit_style(edit)
+
+        self._update_scan_mode_combo(row_index, "Polarization")
+        self._update_steps(
+            self.size_edits[row_index],
+            self.pixel_edits[row_index],
+            self.step_edits[row_index],
+        )
 
     def _is_stack_mode_axis(self, axis_name: str) -> bool:
         """Axes platine 'stack' pour lesquels le mode Around/From s'applique."""

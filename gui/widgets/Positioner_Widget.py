@@ -138,6 +138,38 @@ def setup_positioner_settings_dialog(dialog):
             tol_layout.addWidget(tol_edit)
             dialog.add_layout(tol_layout)
 
+        # Lames d'onde P(λ/2)/P(λ/4) : offset de montage + presets circulaires.
+        if axis_key in ("p", "p4"):
+            cur_offset = float(axis_cfg.get("offset_deg", defaults.get("offset_deg", 0.0)))
+            off_layout = QHBoxLayout()
+            off_edit = QLineEdit(str(cur_offset))
+            off_edit.setObjectName(f"offset_edit_{axis_key}")
+            off_edit.setToolTip(
+                "Offset de montage : le 0° (relatif) du positioner correspond\n"
+                "à cet angle physique de la lame."
+            )
+            off_layout.addWidget(QLabel(f"Offset ({pos_unit}):"))
+            off_layout.addWidget(off_edit)
+            dialog.add_layout(off_layout)
+
+            cur_cd = float(axis_cfg.get("cd_deg", defaults.get("cd_deg", 0.0)))
+            cd_layout = QHBoxLayout()
+            cd_edit = QLineEdit(str(cur_cd))
+            cd_edit.setObjectName(f"cd_edit_{axis_key}")
+            cd_edit.setToolTip("Position (relative) de cette lame pour la polarisation circulaire droite (CD).")
+            cd_layout.addWidget(QLabel(f"CD — circ. droite ({pos_unit}):"))
+            cd_layout.addWidget(cd_edit)
+            dialog.add_layout(cd_layout)
+
+            cur_cg = float(axis_cfg.get("cg_deg", defaults.get("cg_deg", 0.0)))
+            cg_layout = QHBoxLayout()
+            cg_edit = QLineEdit(str(cur_cg))
+            cg_edit.setObjectName(f"cg_edit_{axis_key}")
+            cg_edit.setToolTip("Position (relative) de cette lame pour la polarisation circulaire gauche (CG).")
+            cg_layout.addWidget(QLabel(f"CG — circ. gauche ({pos_unit}):"))
+            cg_layout.addWidget(cg_edit)
+            dialog.add_layout(cg_layout)
+
         # UMS scaling factor (X et Y seulement)
         if has_ums:
             ums_value = float(axis_cfg.get(
@@ -213,6 +245,35 @@ def setup_positioner_settings_dialog(dialog):
                     positioner_widget.manager.set_limits(
                         axis_key, min_position, max_position, velocity_limit, tolerance
                     )
+
+            # Lames d'onde : offset de montage + presets circulaires.
+            if axis_key in ("p", "p4"):
+                def _read(name, fallback):
+                    w = dialog.findChild(QLineEdit, name)
+                    if w is None:
+                        return fallback
+                    try:
+                        return float(w.text().replace(",", "."))
+                    except ValueError:
+                        return fallback
+
+                offset_deg = _read(f"offset_edit_{axis_key}", 0.0)
+                cd_deg = _read(f"cd_edit_{axis_key}", 0.0)
+                cg_deg = _read(f"cg_edit_{axis_key}", 0.0)
+
+                if positioner_widget.axis_settings_manager is not None:
+                    positioner_widget.axis_settings_manager.update_axis_settings(
+                        shared_axis_name,
+                        offset_deg=offset_deg,
+                        cd_deg=cd_deg,
+                        cg_deg=cg_deg,
+                    )
+
+                if positioner_widget.manager is not None:
+                    try:
+                        positioner_widget.manager.set_zero_offset(axis_key, offset_deg)
+                    except Exception:
+                        pass
 
             # UMS scaling factor : sauvegarde + push manager
             if has_ums:
@@ -572,7 +633,32 @@ class PositionerWidget(QWidget):
                 }
             """)
 
+        # Polarisation circulaire : presets CD (droite) / CG (gauche) qui
+        # positionnent les DEUX lames (λ/2 + λ/4) selon les valeurs des settings.
+        _CIRC_BTN_STYLE = """
+            QPushButton {
+                background-color: #333;
+                color: white;
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 2px 8px;
+                min-height: 20px;
+            }
+            QPushButton:hover { background-color: #444; }
+        """
+        self.button_circular_right = QPushButton("CD")
+        self.button_circular_right.setToolTip("Polarisation circulaire droite (CD) : positionne λ/2 et λ/4.")
+        self.button_circular_right.setStyleSheet(_CIRC_BTN_STYLE)
+        self.button_circular_right.clicked.connect(lambda: self.apply_circular("CD"))
+
+        self.button_circular_left = QPushButton("CG")
+        self.button_circular_left.setToolTip("Polarisation circulaire gauche (CG) : positionne λ/2 et λ/4.")
+        self.button_circular_left.setStyleSheet(_CIRC_BTN_STYLE)
+        self.button_circular_left.clicked.connect(lambda: self.apply_circular("CG"))
+
         bottom_row.addWidget(self.stop_all_button)
+        bottom_row.addWidget(self.button_circular_right)
+        bottom_row.addWidget(self.button_circular_left)
         bottom_row.addWidget(self.keyboard_shortcuts_lock_checkbox)
 
         content_layout.addLayout(bottom_row)
@@ -590,6 +676,39 @@ class PositionerWidget(QWidget):
         dialog = SettingsDialog("Positioner - Settings", self)
         setup_positioner_settings_dialog(dialog)
         dialog.exec()
+
+    # Correspondance axe positioner -> nom partagé (settings) des lames d'onde.
+    _WAVEPLATE_SHARED_NAMES = {"p": "Polarization", "p4": "Polarization-L4"}
+
+    def apply_circular(self, kind: str):
+        """Positionne λ/2 (p) et λ/4 (p4) pour une polarisation circulaire droite
+        (CD) ou gauche (CG), d'après les valeurs des settings positioner."""
+        if self.manager is None:
+            return
+
+        key = "cd_deg" if str(kind).upper() == "CD" else "cg_deg"
+
+        for axis_key, shared_name in self._WAVEPLATE_SHARED_NAMES.items():
+            if not self.manager.has_axis(axis_key):
+                continue
+
+            default = STEPPER_AXIS_DEFAULTS.get(shared_name, {}).get(key, 0.0)
+            target_rel = default
+            if self.axis_settings_manager is not None:
+                s = self.axis_settings_manager.get_axis_settings(shared_name) or {}
+                target_rel = float(s.get(key, default))
+
+            if not self.manager.is_rel_target_allowed(axis_key, target_rel):
+                logger.warning(
+                    f"[PositionerWidget] {kind} target {target_rel}° hors limites "
+                    f"pour {axis_key} — ignoré."
+                )
+                continue
+
+            try:
+                self.manager.move_to_rel(axis_key, target_rel, ELL14_FIXED_SPEED_DEG_S)
+            except Exception as e:
+                logger.error(f"[PositionerWidget] apply_circular({kind}) {axis_key} failed: {e}")
     
     def set_limits(self, axis, min_limit, max_limit, velocity_limit):
         """Définir les limites pour un axe donné."""
@@ -643,6 +762,15 @@ class PositionerWidget(QWidget):
                 ui = self.axis_ui.get(axis_key)
                 if ui is not None:
                     ui["speed"].setText(str(int(ELL14_FIXED_SPEED_DEG_S)))
+
+                # Offset de montage : le 0° relatif du positioner correspond à
+                # cet angle physique de la lame.
+                if self.manager is not None:
+                    try:
+                        offset_deg = float(s.get("offset_deg", 0.0))
+                        self.manager.set_zero_offset(axis_key, offset_deg)
+                    except Exception:
+                        pass
 
             tol = float(s.get("tolerance", 0.1))
 

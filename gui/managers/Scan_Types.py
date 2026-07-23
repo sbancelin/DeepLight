@@ -237,6 +237,12 @@ STEPPER_AXIS_DEFAULTS = {
         "max_um": 360.0,
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
+        # Offset de montage : le 0° du positioner (relatif) correspond à cet
+        # angle physique de la lame. -> devient le zero_offset de l'axe.
+        "offset_deg": 0.0,
+        # Positions (relatives) des lames pour les polarisations circulaires.
+        "cd_deg": -15.63,   # circulaire droite (CD)
+        "cg_deg": -57.51,   # circulaire gauche (CG)
     },
     # P(λ/4) : lame quart d'onde (ELL14 adresse 2). Axe positioner uniquement,
     # jamais proposé comme axe de scan.
@@ -245,5 +251,8 @@ STEPPER_AXIS_DEFAULTS = {
         "max_um": 360.0,
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
+        "offset_deg": 0.0,
+        "cd_deg": -1.52,    # circulaire droite (CD)
+        "cg_deg": 87.7,     # circulaire gauche (CG)
     },
 }

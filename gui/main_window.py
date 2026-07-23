@@ -195,6 +195,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.refresh_stitching_preview_grid)
         QTimer.singleShot(50, self.refresh_stitching_preview_grid)
 
+        # Polarisation circulaire droite (CD) par défaut à l'initialisation :
+        # positionne λ/2 et λ/4 selon les settings (no-op si lames absentes).
+        QTimer.singleShot(200, lambda: self.ui.positioner_widget.apply_circular("CD"))
+
         self._visualizer_flush_timer = QTimer(self)
         self._visualizer_flush_timer.setInterval(250)
         self._visualizer_flush_timer.timeout.connect(self._flush_visualizers)
@@ -1283,16 +1287,22 @@ class MainWindow(QMainWindow):
             if str(info.get("mode", "")) != "sample":
                 return
 
+            # En stitching, la barre globale suit la mosaïque entière : une tuile
+            # (scan sample) ne doit ni la faire progresser ni la clôturer, sinon
+            # finish_task remet _source=None et la barre Mosaic se fige.
+            stitching = self.stitching_manager.is_running()
+
             if bool(info.get("done", False)):
                 elapsed_s = float(info.get("elapsed_s", 0.0) or 0.0)
                 px_s = float(info.get("pixels_per_s", 0.0) or 0.0)
                 total_px = int(info.get("pixel_total", 0) or 0)
 
-                try:
-                    self.ui.global_progress_widget.set_progress(total_px, total_px, source="Scan")
-                    self.ui.global_progress_widget.finish_task("Done")
-                except Exception as e:
-                    logger.debug(f"[MainWindow] ignored exception: {e}")
+                if not stitching:
+                    try:
+                        self.ui.global_progress_widget.set_progress(total_px, total_px, source="Scan")
+                        self.ui.global_progress_widget.finish_task("Done")
+                    except Exception as e:
+                        logger.debug(f"[MainWindow] ignored exception: {e}")
 
                 self.statusBar().showMessage(
                     f"Sample scan done - {total_px} px in {elapsed_s:.2f} s ({px_s:.1f} px/s)",
@@ -1308,10 +1318,11 @@ class MainWindow(QMainWindow):
             y_um = float(info.get("y_um", 0.0) or 0.0)
 
             if pixel_total > 0:
-                try:
-                    self.ui.global_progress_widget.set_progress(pixel_done, pixel_total, source="Scan")
-                except Exception as e:
-                    logger.debug(f"[MainWindow] ignored exception: {e}")
+                if not stitching:
+                    try:
+                        self.ui.global_progress_widget.set_progress(pixel_done, pixel_total, source="Scan")
+                    except Exception as e:
+                        logger.debug(f"[MainWindow] ignored exception: {e}")
 
                 msg = (
                     f"Sample scan - line {line_index + 1}/{line_count} | "

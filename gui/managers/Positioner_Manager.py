@@ -42,10 +42,55 @@ class PositionerManager(QObject):
         "Polarization": "p",
     }
 
+    # Vitesse (fixe) des lames Elliptec ELL14 pour les moves de scan polar.
+    _POLAR_SPEED_DEG_S = 430.0
+
     def __init__(self, axes: list[str], parent=None):
         super().__init__(parent)
         self._axes = axes
         self._state: Dict[str, AxisState] = {a: AxisState() for a in axes}
+        # Positions relatives des lames avant un scan de polarisation, pour les
+        # restaurer au retour à la base (cf. _handle_polarization_scan).
+        self._polar_prescan: Optional[dict] = None
+
+    def _handle_polarization_scan(self, target_rel: float, reason: str):
+        """Un point de scan 'Polarization' = un AZIMUT (°).
+
+        On lit la table de calibration pour obtenir les positions des DEUX lames
+        (λ/2 sur l'axe 'p', λ/4 sur l'axe 'p4') qui produisent cette
+        polarisation, et on les déplace. L'état des lames avant le scan est
+        mémorisé pour être restauré au 'return_to_base'.
+        """
+        from .Polarization_Table import get_polarization_table
+
+        r = str(reason or "")
+
+        # Retour à la base : restaurer les positions pré-scan des deux lames.
+        if r.endswith("return_to_base"):
+            pre = self._polar_prescan
+            self._polar_prescan = None
+            if pre is not None:
+                for ax in ("p", "p4"):
+                    if ax in self._state and pre.get(ax) is not None:
+                        self.move_to_rel(ax, float(pre[ax]), self._POLAR_SPEED_DEG_S)
+            return
+
+        # Première commande du run : mémoriser l'état courant des lames.
+        if self._polar_prescan is None:
+            self._polar_prescan = {}
+            for ax in ("p", "p4"):
+                try:
+                    self._polar_prescan[ax] = (
+                        float(self.get_rel_pos(ax)) if ax in self._state else None
+                    )
+                except Exception:
+                    self._polar_prescan[ax] = None
+
+        l2_deg, l4_deg = get_polarization_table().lookup(float(target_rel))
+        if "p" in self._state:
+            self.move_to_rel("p", float(l2_deg), self._POLAR_SPEED_DEG_S)
+        if "p4" in self._state:
+            self.move_to_rel("p4", float(l4_deg), self._POLAR_SPEED_DEG_S)
 
     def set_ums_scaling_factor(self, factor: float):
         """
@@ -71,6 +116,17 @@ class PositionerManager(QObject):
     
     def get_zero_offset(self, axis: str) -> float:
         return float(self._state[axis].zero_offset)
+
+    def set_zero_offset(self, axis: str, offset: float):
+        """Fixe directement le zero_offset (repère relatif) d'un axe.
+
+        Utilisé pour l'offset de montage des lames d'onde : le 0° relatif du
+        positioner correspond à cet angle physique. Contrairement à set_zero
+        (qui capture la position courante), la valeur est imposée telle quelle.
+        """
+        self._require_axis(axis)
+        self._state[axis].zero_offset = float(offset)
+        self._emit_positions(axis)
 
     def get_tolerance(self, axis: str) -> float:
         return float(self._state[axis].tolerance)
@@ -212,6 +268,11 @@ class MockPositionerManager(PositionerManager):
         Commande issue du ScanManager.
         Le scan parle avec des noms UI/hardware, le manager avec x/y/z/p.
         """
+        # Axe de scan Polarization : azimut -> table -> déplace λ/2 ET λ/4.
+        if axis_name == "Polarization":
+            self._handle_polarization_scan(target_rel, reason)
+            return
+
         axis = self.axis_from_scan_name(axis_name)
         if axis is None:
             return
