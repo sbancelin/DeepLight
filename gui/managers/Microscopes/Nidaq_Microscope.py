@@ -48,10 +48,13 @@ except Exception as _exc:
     AnalogMultiChannelReader = None
     _HAS_NIDAQ = False
     # Lazy import, as in _log(), to keep this guard free of import-order concerns.
+    # debug, not warning: this module is imported even for a mock run, where the
+    # absence of nidaqmx is expected. _require_nidaq() raises an explicit
+    # RuntimeError if the nidaq backend is actually used.
     from ...widgets.Log_Widget import logger as _logger
-    _logger.warning(
+    _logger.debug(
         f"[NidaqMicroscope] nidaqmx unavailable ({type(_exc).__name__}: {_exc}). "
-        "The nidaq backend cannot acquire; use --backend mock."
+        "The nidaq backend will not be able to acquire."
     )
 if _HAS_NIDAQ:
     warnings.filterwarnings(

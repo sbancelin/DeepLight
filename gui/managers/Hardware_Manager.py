@@ -144,13 +144,15 @@ except Exception as _exc:
     CultureInfo = None
     SystemDecimal = None
     _HAS_CLR = False
-    # Say why: this silently disables every Thorlabs Kinesis device (shutter and
-    # rotation mounts). A frequent cause is the unrelated PyPI package "clr"
-    # being installed alongside pythonnet, whose package directory shadows
-    # pythonnet's clr module -- "pip uninstall clr" fixes that.
-    logger.warning(
+    # debug, not warning: at import time this has no consequence yet, and on a
+    # mock run it never will. Using a Kinesis device raises an explicit
+    # RuntimeError further down, which is where it actually matters.
+    # A frequent cause is the unrelated PyPI package "clr" installed alongside
+    # pythonnet, whose package directory shadows pythonnet's clr module --
+    # "pip uninstall clr" fixes that.
+    logger.debug(
         f"[Kinesis] pythonnet/clr unavailable ({type(_exc).__name__}: {_exc}). "
-        "Thorlabs shutter and rotation mounts are disabled."
+        "Thorlabs shutter and rotation mounts will be unavailable."
     )
 
 
@@ -161,9 +163,9 @@ except Exception as _exc:
     GCSDevice = None
     GCSError = Exception
     _HAS_PI = False
-    logger.warning(
+    logger.debug(
         f"[PI] pipython unavailable ({type(_exc).__name__}: {_exc}). "
-        "The PI V-308 Z stage is disabled."
+        "The PI V-308 Z stage will be unavailable."
     )
 
 

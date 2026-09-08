@@ -35,9 +35,9 @@ except Exception as _exc:
     DaqError = Exception
     DaqWarning = Warning
     _HAS_NIDAQ = False
-    logger.warning(
+    logger.debug(
         f"[PMT] nidaqmx unavailable ({type(_exc).__name__}: {_exc}). "
-        "Digital photon counting is disabled."
+        "Digital photon counting will be unavailable."
     )
 
 
