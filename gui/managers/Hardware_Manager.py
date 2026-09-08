@@ -10,6 +10,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Slot, QTimer
 
+from ...config import CONFIG
 from .Positioner_Manager import MockPositionerManager, PositionerManager
 from ..widgets.Log_Widget import logger
 from .Motic_Camera_Manager import CameraController, OpenCVCameraBackend, MockCameraBackend
@@ -17,10 +18,18 @@ from .PiCam_Kuro_Manager import PiCamKuroManager
 
 
 # =============================================================================
-# HARD-CODED HARDWARE CONFIG
+# HARDWARE CONFIG
+#
+# Ports, serial numbers and driver paths are read from the configuration file
+# (see DeepLight/config.py for where it lives and how to edit it). The constant
+# names below are unchanged, so the rest of this module is unaffected.
+#
+# Constants that describe the hardware *model* rather than this particular
+# installation stay literal on purpose: putting them in a user-editable file
+# would only invite someone to "adjust" them into being wrong.
 # =============================================================================
 
-NI_DEVICE_NAME = "Dev1"
+NI_DEVICE_NAME = CONFIG.ni.device_name
 
 # NI AO / AI channels
 NI_AO_X = f"{NI_DEVICE_NAME}/ao0"
@@ -30,9 +39,9 @@ NI_AI_VIS = f"{NI_DEVICE_NAME}/ai0"
 NI_AI_IR = f"{NI_DEVICE_NAME}/ai1"
 
 # AI default range / config
-NI_AI_MIN_V = -10.0
-NI_AI_MAX_V = 10.0
-NI_AI_TERMINAL_MODE = "DIFF"  # requested: differential
+NI_AI_MIN_V = CONFIG.ni.ai_min_v
+NI_AI_MAX_V = CONFIG.ni.ai_max_v
+NI_AI_TERMINAL_MODE = CONFIG.ni.ai_terminal_mode
 
 # NI counter defaults for digital PMTs
 # These are only defaults: DeepLight may override them through detector specs / UI.
@@ -42,19 +51,16 @@ NI_CI_DEFAULT_SAMPLE_CLOCK = f"/{NI_DEVICE_NAME}/ao/SampleClock"
 NI_CI_DEFAULT_START_TRIGGER = f"/{NI_DEVICE_NAME}/ao/StartTrigger"
 
 # Thorlabs serials
-THORLABS_SHUTTER_SERIAL = "68800404"
-THORLABS_ROTATOR_SERIALS = {
-    "Mira 900": "27269600",
-    "Tumecs": "27005331",
-}
+THORLABS_SHUTTER_SERIAL = CONFIG.thorlabs.shutter_serial
+THORLABS_ROTATOR_SERIALS = CONFIG.thorlabs.rotator_serials.as_dict()
 
-# PI serial (replace later)
-PI_V308_SERIAL = "123041734"
+# PI serial
+PI_V308_SERIAL = CONFIG.pi.v308_serial
 
 # Kinesis path
-THORLABS_KINESIS_PATH = r"C:\Program Files\Thorlabs\Kinesis"
+THORLABS_KINESIS_PATH = CONFIG.thorlabs.kinesis_path
 
-# Half-wave plate power mapping:
+# Half-wave plate power mapping (property of the plate, not of the setup):
 # 0%   -> offset_deg
 # 100% -> offset_deg + 45°
 MIRA_POWER_MIN_PERCENT = 0.0
@@ -63,50 +69,50 @@ MIRA_ROTATOR_REL_MIN_DEG = 0.0
 MIRA_ROTATOR_REL_MAX_DEG = 45.0
 
 # PI Z defaults
-PI_Z_AXIS_ID = 1
-PI_Z_DEFAULT_VEL_MM_S = 0.5
+PI_Z_AXIS_ID = CONFIG.pi.z_axis_id
+PI_Z_DEFAULT_VEL_MM_S = CONFIG.pi.z_default_vel_mm_s
 
-# If your PRM controller class differs, change this later.
-# Common values depending on controller family:
-# - "KCubeDCServo"
-# - "KCubeStepperMotor"
-THORLABS_ROTATOR_CONTROLLER_KIND = "KCubeDCServo"
+# Controller family of the rotation mounts; see thorlabs.rotator_controller_kind
+# in the configuration file ("KCubeDCServo" or "KCubeStepperMotor").
+THORLABS_ROTATOR_CONTROLLER_KIND = CONFIG.thorlabs.rotator_controller_kind
 
 # Cobolt Flamenco
-COBOLT_FLAMENCO_PORT = "COM12"
-COBOLT_FLAMENCO_BAUDRATE = 115200
-COBOLT_FLAMENCO_MAX_POWER_MW = 300.0
+COBOLT_FLAMENCO_PORT = CONFIG.cobolt.flamenco_port
+COBOLT_FLAMENCO_BAUDRATE = CONFIG.cobolt.flamenco_baudrate
+COBOLT_FLAMENCO_MAX_POWER_MW = CONFIG.cobolt.flamenco_max_power_mw
 
-COBOLT_ELL14_PORT = "COM15"
-COBOLT_ELL14_BAUDRATE = 9600
-COBOLT_ELL14_ADDRESS = "0"
-COBOLT_ELL14_COUNTS_PER_REV = 143360
-COBOLT_ELL14_TIMEOUT_S = 1.0
+COBOLT_ELL14_PORT = CONFIG.cobolt.ell14_port
+COBOLT_ELL14_BAUDRATE = CONFIG.cobolt.ell14_baudrate
+COBOLT_ELL14_ADDRESS = CONFIG.cobolt.ell14_address
+COBOLT_ELL14_COUNTS_PER_REV = 143360   # ELL14 hardware constant
+COBOLT_ELL14_TIMEOUT_S = CONFIG.cobolt.ell14_timeout_s
 
 # Deux montures Elliptec supplémentaires partagent le MÊME bus/hub ELLB
-# (même port COM15) que la lame demi-onde de puissance du Cobolt (adresse 0) :
+# (même port que cobolt.ell14_port) que la lame demi-onde de puissance du
+# Cobolt (adresse 0) :
 #   - adresse 1 : lame demi-onde -> positioner "p"  = P(λ/2) (utilisable en scan)
 #   - adresse 2 : lame quart d'onde -> positioner "p4" = P(λ/4) (hors scan)
 # Elles sont pilotées via le même protocole ELL14 (angle en degrés).
-ELL14_LAMBDA2_ADDRESS = "1"
-ELL14_LAMBDA4_ADDRESS = "2"
+ELL14_LAMBDA2_ADDRESS = CONFIG.elliptec.lambda2_address
+ELL14_LAMBDA4_ADDRESS = CONFIG.elliptec.lambda4_address
 
 # Spark Lasers ALCOR / XSight
-SPARK_ALCOR_PORT = "COM14"
-SPARK_ALCOR_BAUDRATE = 115200
-SPARK_ALCOR_TIMEOUT_S = 0.7
+SPARK_ALCOR_PORT = CONFIG.alcor.port
+SPARK_ALCOR_BAUDRATE = CONFIG.alcor.baudrate
+SPARK_ALCOR_TIMEOUT_S = CONFIG.alcor.timeout_s
 
+# Repetition rates: properties of the ALCOR model.
 SPARK_ALCOR_BASE_REP_RATE_KHZ = 80000.0
 SPARK_ALCOR_REP_RATE_MIN_KHZ = 2900.0
 SPARK_ALCOR_REP_RATE_MAX_KHZ = 81000.0
 
 # Scientifica Motion 8 XY stage (virtual serial port)
-SCIENTIFICA_STAGE_PORT = "COM11"
-SCIENTIFICA_STAGE_BAUDRATE = 9600
-SCIENTIFICA_STAGE_TIMEOUT_S = 1.0
-SCIENTIFICA_STAGE_DEVICE_ID = 0
-SCIENTIFICA_STAGE_X_AXIS_ID = 1
-SCIENTIFICA_STAGE_Y_AXIS_ID = 0
+SCIENTIFICA_STAGE_PORT = CONFIG.scientifica.port
+SCIENTIFICA_STAGE_BAUDRATE = CONFIG.scientifica.baudrate
+SCIENTIFICA_STAGE_TIMEOUT_S = CONFIG.scientifica.timeout_s
+SCIENTIFICA_STAGE_DEVICE_ID = CONFIG.scientifica.device_id
+SCIENTIFICA_STAGE_X_AXIS_ID = CONFIG.scientifica.x_axis_id
+SCIENTIFICA_STAGE_Y_AXIS_ID = CONFIG.scientifica.y_axis_id
 SCIENTIFICA_STAGE_HOME_MODE = "in"   # "in" or "out"
 
 SCIENTIFICA_STAGE_PROFILE_INDEX = 0
