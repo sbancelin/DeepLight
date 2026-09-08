@@ -1617,6 +1617,47 @@ class MainWindow(QMainWindow):
         else:
             btn.setIcon(QIcon(None))
 
+    def apply_zoom_roi(self):
+        """Turn the rectangle drawn on the image into the next scan region.
+
+        The image spans [0, size_um] in view coordinates while the scan is
+        centred on its offset, so a view abscissa maps back as
+        offset - size/2 + x. The ROI centre therefore gives the new offset, its
+        width and height give the new sizes, and the pixel counts stay put: the
+        next image covers the drawn region with the same sampling.
+        """
+        region = self.ui.get_zoom_roi_region()
+        if region is None:
+            logger.warning("[ROI] no zoom rectangle drawn (Ctrl+R to draw one).")
+            return
+
+        scan_parameters = self.ui.scan_widget.get_scan_parameters()
+        row_x, row_y = self._get_display_axes_from_scan_params(scan_parameters)
+        if row_x is None or row_y is None:
+            logger.warning("[ROI] two active axes are needed to apply a zoom.")
+            return
+
+        x0, y0, roi_w, roi_h = region
+        new_region = {}
+
+        for row, lo_view, new_size in ((row_x, x0, roi_w), (row_y, y0, roi_h)):
+            old_size = float(row.get("size_um", 0.0) or 0.0)
+            old_rel = float(row.get("relative_offset_um", 0.0) or 0.0)
+            centre_view = lo_view + new_size / 2.0
+            new_region[row["axis"]] = (
+                new_size,
+                old_rel - old_size / 2.0 + centre_view,
+            )
+
+        if self.ui.scan_widget.apply_region_of_interest(new_region):
+            self.ui.clear_zoom_roi()
+            for axis, (size_um, rel_off) in new_region.items():
+                logger.info(
+                    f"[ROI] {axis}: size {size_um:.2f} µm, relative offset {rel_off:.2f} µm"
+                )
+        else:
+            logger.warning("[ROI] the drawn region could not be applied.")
+
     def _connect_actions(self):
         """
         Connect the action-bar buttons to the window's own slots.
@@ -1630,6 +1671,7 @@ class MainWindow(QMainWindow):
         ui.pushButton_acquisitionStart.clicked.connect(self.RecButtonClicked)
         ui.pushButton_stop.clicked.connect(self.stopButtonClicked)
         ui.pushButton_shutter.toggled.connect(self.shutterButtonClicked)
+        ui.shortcut_zoom_roi_apply.activated.connect(self.apply_zoom_roi)
 
     @Slot(bool)
     def shutterButtonClicked(self, checked: bool):

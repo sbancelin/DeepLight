@@ -185,6 +185,8 @@ class MainWindowLayout:
 
         #####↓ Initialisation   #####
         self.im_status_labels = {}
+        self._zoom_roi = None
+        self._zoom_roi_view = None
 
         # Création du widget central
         self.centralwidget = QWidget(window)
@@ -518,6 +520,16 @@ class MainWindowLayout:
             lambda: self.pull_levels_to_image_extreme("max")
         )
 
+        # ---- ROI de zoom : Ctrl+R dessine, Ctrl+Entrée applique ----
+        # L'application est branchée dans MainWindow._connect_actions() : elle
+        # a besoin des paramètres de scan, que ce module ne connaît pas.
+        self.shortcut_zoom_roi = QShortcut(QKeySequence("Ctrl+R"), window)
+        self.shortcut_zoom_roi.setContext(Qt.ApplicationShortcut)
+        self.shortcut_zoom_roi.activated.connect(self.toggle_zoom_roi)
+
+        self.shortcut_zoom_roi_apply = QShortcut(QKeySequence("Ctrl+Return"), window)
+        self.shortcut_zoom_roi_apply.setContext(Qt.ApplicationShortcut)
+
         # ---- Bandeaux latéraux : bascules + raccourcis ----
         # Câblé ici plutôt que dans MainWindow : cela ne touche que des widgets
         # de ce module, aucun slot de la fenêtre n'est nommé.
@@ -683,6 +695,68 @@ class MainWindowLayout:
 
         lo, hi = self._get_image_minmax_from_widget(im, channel=channel)
         self._apply_levels(im, hist_lut, lo, hi)
+
+    # ---- ROI de zoom -----------------------------------------------------
+
+    def _roi_host(self):
+        """The image the ROI belongs to: the hovered one, else the first."""
+        items = [(ch, im) for ch, im in self.im_widgets.items() if im is not None]
+        if not items:
+            return None, None
+        for ch, im in items:
+            if im.underMouse():
+                return ch, im
+        return items[0]
+
+    def toggle_zoom_roi(self):
+        """Show or hide the rectangle used to pick the next field of view."""
+        if self._zoom_roi is not None:
+            self.clear_zoom_roi()
+            return
+
+        channel, im = self._roi_host()
+        if im is None:
+            return
+
+        view = im.getView()
+        (x0, x1), (y0, y1) = view.viewRange()
+        w = (x1 - x0) / 3.0
+        h = (y1 - y0) / 3.0
+
+        roi = pg.RectROI(
+            pos=(x0 + (x1 - x0 - w) / 2.0, y0 + (y1 - y0 - h) / 2.0),
+            size=(w, h),
+            pen=pg.mkPen("#9CFF9C", width=2),
+            rotatable=False,
+        )
+        roi.addScaleHandle([0, 0], [1, 1])
+        roi.addScaleHandle([1, 1], [0, 0])
+        roi.setZValue(20)
+        view.addItem(roi)
+
+        self._zoom_roi = roi
+        self._zoom_roi_view = view
+
+    def clear_zoom_roi(self):
+        if self._zoom_roi is None:
+            return
+        try:
+            self._zoom_roi_view.removeItem(self._zoom_roi)
+        except Exception as e:
+            logger.debug(f"[ROI] could not remove the zoom rectangle: {e}")
+        self._zoom_roi = None
+        self._zoom_roi_view = None
+
+    def get_zoom_roi_region(self):
+        """Return the ROI as (x0, y0, width, height) in image µm, or None."""
+        if self._zoom_roi is None:
+            return None
+        pos = self._zoom_roi.pos()
+        size = self._zoom_roi.size()
+        w, h = float(size.x()), float(size.y())
+        if w <= 0.0 or h <= 0.0:
+            return None
+        return float(pos.x()), float(pos.y()), w, h
 
     def _levels_targets(self):
         """Which images a contrast shortcut acts on.

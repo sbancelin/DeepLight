@@ -1117,6 +1117,39 @@ class ScanWidget(QWidget):
         self.laser_mode_button.blockSignals(False)
         self.sample_mode_button.blockSignals(False)
     
+    def apply_region_of_interest(self, region: dict) -> bool:
+        """Re-centre and resize the scan on a region drawn in the image.
+
+        `region` maps an axis name to (size_um, relative_offset_um). The pixel
+        counts are deliberately left untouched, so the next image keeps the same
+        sampling and only the field of view changes -- which is the point of
+        zooming into a ROI.
+
+        Writing the fields is enough: their textChanged already recomputes the
+        step, the total pixel count and the estimated duration.
+        """
+        applied = False
+
+        for i, combo in enumerate(self.scan_dim_combos):
+            axis = combo.currentText()
+            if axis == "None" or axis not in region:
+                continue
+
+            try:
+                size_um = float(region[axis][0])
+                rel_off = float(region[axis][1])
+            except (TypeError, ValueError, IndexError):
+                continue
+
+            if not (size_um > 0.0) or size_um != size_um or rel_off != rel_off:
+                continue
+
+            self.size_edits[i].setText(f"{size_um:.4f}")
+            self.offset_edits[i].setText(f"{rel_off:.4f}")
+            applied = True
+
+        return applied
+
     def set_settle_ms(self, ms: float):
         """Receive the settle time shared from the Spectro widget."""
         self._settle_ms = max(0.0, float(ms))
