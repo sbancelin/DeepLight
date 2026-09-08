@@ -1,14 +1,18 @@
 """Layout definition for the DeepLight main window.
 
-NOTE: this module is **hand-written and hand-maintained**. It follows the
-Qt Designer naming convention (``setupUi`` / ``retranslateUi``) but it is not
-generated: there is no ``.ui`` source file for it anywhere in the repository,
-and it composes the project's own widgets directly. Edit this file by hand —
-do not attempt to regenerate it with ``pyside6-uic``, which would discard the
-custom widgets and stylesheets defined here.
+This module is hand-written and hand-maintained: there is no ``.ui`` source
+file anywhere in the repository, and it composes the project's own widgets
+directly. It deliberately does *not* use the Qt Designer / ``pyside6-uic``
+naming convention, so nothing here suggests the file can be regenerated —
+doing so would discard the custom widgets and stylesheets defined below.
+
+``MainWindowLayout.build(window)`` creates the widgets and attaches them to
+the window. Connections to the window's own slots are made in
+``MainWindow._connect_actions()``, not here, so that this module never
+depends on the window's method names.
 """
 
-from PySide6.QtCore import (QCoreApplication, QSize, Qt)
+from PySide6.QtCore import (QSize, Qt)
 from PySide6.QtGui import (QIcon, QTransform, QShortcut, QKeySequence)
 from PySide6.QtWidgets import (QApplication, QLineEdit, QCheckBox, QDockWidget, QGridLayout, QGroupBox, QSplitter, QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy, QSpacerItem, QTabWidget, QWidget, QMessageBox)
@@ -154,19 +158,20 @@ def ask_levels_min_max(parent=None, title="LUT Levels", lo0=0.0, hi0=255.0):
         return None
     return lo, hi
 
-class Ui_MainWindowDesign:
+class MainWindowLayout:
     """Construction de l'interface principale DeepLight et de ses widgets centraux."""
 
-    def setupUi(self, MainWindowDesign):
-        if not MainWindowDesign.objectName():
-            MainWindowDesign.setObjectName(u"MainWindowDesign")
-        MainWindowDesign.resize(1692, 1596)
+    def build(self, window):
+        """Create the main window's widgets and attach them to ``window``."""
+        if not window.objectName():
+            window.setObjectName("MainWindow")
+        window.resize(1692, 1596)
 
         #####↓ Initialisation   #####
         self.im_status_labels = {}
 
         # Création du widget central
-        self.centralwidget = QWidget(MainWindowDesign)
+        self.centralwidget = QWidget(window)
         self.centralwidget.setObjectName(u"centralwidget")
 
         # Layout principal du widget central
@@ -178,8 +183,8 @@ class Ui_MainWindowDesign:
         self.gridLayout_11.setObjectName(u"gridLayout_11")
 
 ################# Barre d'action ###################
-        MainWindowDesign.setCentralWidget(self.centralwidget)
-        self.dockWidget_preview = QDockWidget(MainWindowDesign)
+        window.setCentralWidget(self.centralwidget)
+        self.dockWidget_preview = QDockWidget(window)
         self.dockWidget_preview.setObjectName(u"dockWidget_preview")
         self.dockWidget_preview.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetFloatable|QDockWidget.DockWidgetFeature.DockWidgetMovable)
         self.dockWidget_preview.setTitleBarWidget(QWidget())  # Supprime la barre de titre
@@ -263,10 +268,10 @@ class Ui_MainWindowDesign:
         self.gridLayout_15.addWidget(self.groupBox_11, 1, 0, 1, 1)
 
         self.dockWidget_preview.setWidget(self.dockWidgetContents_8)
-        MainWindowDesign.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dockWidget_preview)
+        window.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dockWidget_preview)
 
 ##################  Left panel dock ####################
-        self.left_panel_dock = PanelDock("", MainWindowDesign)
+        self.left_panel_dock = PanelDock("", window)
 
         self.scan_widget = ScanWidget()
         self.detector_widget = DetectorWidget()
@@ -318,10 +323,10 @@ class Ui_MainWindowDesign:
         self.left_panel_dock.add_panel(self.detector_panel)
         self.left_panel_dock.add_panel(self.laser_panel)
 
-        MainWindowDesign.addDockWidget(Qt.LeftDockWidgetArea, self.left_panel_dock)
+        window.addDockWidget(Qt.LeftDockWidgetArea, self.left_panel_dock)
 
 ##################  Right panel dock ####################
-        self.right_panel_dock = PanelDock("Helpers", MainWindowDesign)
+        self.right_panel_dock = PanelDock("Helpers", window)
 
         self.analog_out_widget = AnalogOutVisualizerWidget()
         self.visu_step_widget = StepperVisualizerWidget()
@@ -347,7 +352,7 @@ class Ui_MainWindowDesign:
         self.right_panel_dock.add_panel(self.frc_panel)
         self.right_panel_dock.add_panel(self.log_panel)
 
-        MainWindowDesign.addDockWidget(Qt.RightDockWidgetArea, self.right_panel_dock)
+        window.addDockWidget(Qt.RightDockWidgetArea, self.right_panel_dock)
 
 ################# Onglet Scan ######################
         self.tab_preview = QWidget()
@@ -424,33 +429,30 @@ class Ui_MainWindowDesign:
         self.tabWidget.addTab(self.spectro_widget, "Spectro")
 
         ################# Barre de progression globale (bas du GUI) ######################
-        self.global_progress_widget = GlobalProgressWidget(MainWindowDesign)
-        MainWindowDesign.statusBar().addPermanentWidget(self.global_progress_widget, 1)
+        self.global_progress_widget = GlobalProgressWidget(window)
+        window.statusBar().addPermanentWidget(self.global_progress_widget, 1)
 
         ##################  Helpers   ##################
-        self.retranslateUi(MainWindowDesign)
+        self._apply_texts(window)
 
-##################   Connect signals ####################
-        self.pushButton_previewSingle.clicked.connect(MainWindowDesign.previewsingleButtonClicked)
-        self.pushButton_previewcontinuous.clicked.connect(MainWindowDesign.previewcontinuousButtonClicked)
-        self.pushButton_acquisitionStart.clicked.connect(MainWindowDesign.RecButtonClicked)
-        self.pushButton_stop.clicked.connect(MainWindowDesign.stopButtonClicked)
-        self.pushButton_shutter.toggled.connect(MainWindowDesign.shutterButtonClicked)
+        # The action-bar buttons are connected to the window's slots by
+        # MainWindow._connect_actions(); this module must not depend on the
+        # window's method names.
 
         # ---------------- Global shortcuts ----------------
-        self.shortcut_preview_single = QShortcut(QKeySequence(Qt.Key_Space), MainWindowDesign)
+        self.shortcut_preview_single = QShortcut(QKeySequence(Qt.Key_Space), window)
         self.shortcut_preview_single.setContext(Qt.ApplicationShortcut)
         self.shortcut_preview_single.activated.connect(self._shortcut_preview_single)
 
-        self.shortcut_preview_continuous = QShortcut(QKeySequence("Ctrl+Space"), MainWindowDesign)
+        self.shortcut_preview_continuous = QShortcut(QKeySequence("Ctrl+Space"), window)
         self.shortcut_preview_continuous.setContext(Qt.ApplicationShortcut)
         self.shortcut_preview_continuous.activated.connect(self._shortcut_preview_continuous)
 
-        self.shortcut_stop = QShortcut(QKeySequence(Qt.Key_Escape), MainWindowDesign)
+        self.shortcut_stop = QShortcut(QKeySequence(Qt.Key_Escape), window)
         self.shortcut_stop.setContext(Qt.ApplicationShortcut)
         self.shortcut_stop.activated.connect(self._shortcut_stop)
 
-        self.shortcut_shutter = QShortcut(QKeySequence("Ctrl+Q"), MainWindowDesign)
+        self.shortcut_shutter = QShortcut(QKeySequence("Ctrl+Q"), window)
         self.shortcut_shutter.setContext(Qt.ApplicationShortcut)
         self.shortcut_shutter.activated.connect(self._shortcut_toggle_shutter)
 
@@ -665,18 +667,19 @@ class Ui_MainWindowDesign:
         except Exception:
             pass
     
-    def retranslateUi(self, MainWindowDesign):
-        MainWindowDesign.setWindowTitle(QCoreApplication.translate("MainWindowDesign", u"MainWindow", None))
-        self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_preview), QCoreApplication.translate("MainWindowDesign", u"Scan", None))
-        self.dockWidget_preview.setWindowTitle(QCoreApplication.translate("MainWindowDesign", u"Commands", None))
+    def _apply_texts(self, window):
+        """Set the window/tab titles and the action-bar tooltips."""
+        window.setWindowTitle("DeepLight")
+        self.tabWidget.setTabText(self.tabWidget.indexOf(self.tab_preview), "Scan")
+        self.dockWidget_preview.setWindowTitle("Commands")
         self.groupBox_11.setTitle("")
-        self.pushButton_acquisitionStart.setToolTip(QCoreApplication.translate("MainWindowDesign", u"<html><head/><body><p>Start the scanning saving data</p></body></html>", None))
+        self.pushButton_acquisitionStart.setToolTip("Start the scanning, saving data")
         self.pushButton_acquisitionStart.setText("")
-        self.pushButton_previewSingle.setToolTip(QCoreApplication.translate("MainWindowDesign", u"<html><head/><body><p>Start the scanning without storing data</p></body></html>", None))
+        self.pushButton_previewSingle.setToolTip("Start the scanning without storing data")
         self.pushButton_previewSingle.setText("")
-        self.pushButton_stop.setToolTip(QCoreApplication.translate("MainWindowDesign", u"<html><head/><body><p>Stop the scan</p></body></html>", None))
+        self.pushButton_stop.setToolTip("Stop the scan")
         self.pushButton_stop.setText("")
-        self.pushButton_shutter.setToolTip(QCoreApplication.translate("MainWindowDesign", u"<html><head/><body><p>Toggle shutter open/closed</p></body></html>", None))
+        self.pushButton_shutter.setToolTip("Toggle shutter open/closed")
         self.pushButton_shutter.setText("")
 
     def get_scan_tab_references(self):

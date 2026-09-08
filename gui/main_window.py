@@ -6,7 +6,7 @@ import numpy as np
 import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder='row-major')
 
-from .main_window_design import Ui_MainWindowDesign     # Import de l'UI générée par Qt Designer
+from .main_window_design import MainWindowLayout
 from .managers.Acquisition_Manager import AcquisitionManager
 from .managers.Hardware_Manager import HardwareManager
 from .managers.Save_Manager import SaveManager
@@ -36,8 +36,9 @@ class MainWindow(QMainWindow):
         self.backend_name = getattr(args, "backend", "mock")
         self.microscope_backend = microscope_backend
 
-        self.ui = Ui_MainWindowDesign()
-        self.ui.setupUi(self)  # Appeler setupUi pour initialiser les attributs
+        self.ui = MainWindowLayout()
+        self.ui.build(self)      # crée les widgets et les attache à la fenêtre
+        self._connect_actions()  # branche la barre d'action sur les slots ci-dessous
         #self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         screen = self.screen() or QGuiApplication.primaryScreen()
@@ -1610,6 +1611,20 @@ class MainWindow(QMainWindow):
             btn.setIcon(QIcon("./gui/Icons/laser_icon_open.svg"))
         else:
             btn.setIcon(QIcon(None))
+
+    def _connect_actions(self):
+        """Branche les boutons de la barre d'action sur les slots de la fenêtre.
+
+        Ces connexions vivaient auparavant dans main_window_design.py, ce qui
+        obligeait le module de layout à connaître les noms de méthodes de
+        MainWindow. Elles appartiennent ici.
+        """
+        ui = self.ui
+        ui.pushButton_previewSingle.clicked.connect(self.previewsingleButtonClicked)
+        ui.pushButton_previewcontinuous.clicked.connect(self.previewcontinuousButtonClicked)
+        ui.pushButton_acquisitionStart.clicked.connect(self.RecButtonClicked)
+        ui.pushButton_stop.clicked.connect(self.stopButtonClicked)
+        ui.pushButton_shutter.toggled.connect(self.shutterButtonClicked)
 
     @Slot(bool)
     def shutterButtonClicked(self, checked: bool):
