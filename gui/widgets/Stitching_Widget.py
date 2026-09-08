@@ -151,6 +151,9 @@ class StitchingWidget(QWidget):
 
         self._mosaic_rect_items = []
         self._layout_placeholder_item = None
+        # Aucune mosaïque réelle reçue : le fond noir n'est qu'un gabarit et
+        # doit suivre la taille de la grille de tuiles (cf. _fit_placeholder_to_grid).
+        self._has_mosaic = False
 
         self._default_tile_x = 3
         self._default_tile_y = 3
@@ -373,11 +376,7 @@ class StitchingWidget(QWidget):
         self._apply_levels(0.0, 255.0)
 
         # Init vue avec taille physique explicite
-        self.set_image(
-            self.current_image,
-            width_um=self._default_width_um,
-            height_um=self._default_height_um
-        )
+        self._show_placeholder(self._default_width_um, self._default_height_um)
         self._set_initial_view_range()
         self._update_layout_placeholder()
 
@@ -491,6 +490,7 @@ class StitchingWidget(QWidget):
     def set_image(self, img, width_um=None, height_um=None):
         arr = np.asarray(img, dtype=np.float32)
         self.current_image = arr
+        self._has_mosaic = True
 
         # Pile 3D (P, H, W) avec P > 1 -> curseur de plans natif pyqtgraph.
         is_stack = (arr.ndim == 3 and arr.shape[0] > 1)
@@ -708,6 +708,38 @@ class StitchingWidget(QWidget):
         except Exception:
             self.label_pixel_status.setText("x: -  y: -  Counts: -")
 
+    def _show_placeholder(self, width_um: float, height_um: float):
+        """Draw the empty black canvas at the given physical extent.
+
+        Distinct from set_image(): this is a template, not an acquired mosaic,
+        so it must not mark the widget as holding one.
+        """
+        self.set_image(
+            np.zeros((512, 512), dtype=np.uint8),
+            width_um=float(width_um),
+            height_um=float(height_um),
+        )
+        self._has_mosaic = False
+
+    def _fit_placeholder_to_grid(self, width_um: float, height_um: float):
+        """Make the empty canvas match the tile grid.
+
+        The black background used to be a fixed 512 x 512 µm square while the
+        grid followed the real tile size, so a 3x3 preview never lined up with
+        what was displayed underneath it.
+        """
+        if width_um <= 0.0 or height_um <= 0.0:
+            return
+
+        self._default_width_um = float(width_um)
+        self._default_height_um = float(height_um)
+
+        if self._has_mosaic:
+            return
+
+        self._show_placeholder(width_um, height_um)
+        self._set_initial_view_range()
+
     def _clear_mosaic_preview(self):
         view = self.image_view.getView()
         for item in self._mosaic_rect_items:
@@ -789,3 +821,9 @@ class StitchingWidget(QWidget):
                 rect.setZValue(10)
                 view.addItem(rect)
                 self._mosaic_rect_items.append(rect)
+
+        # Étendue réelle de la mosaïque : le fond noir doit la couvrir exactement.
+        self._fit_placeholder_to_grid(
+            (tiles_x - 1) * step_x_um + tile_width_um,
+            (tiles_y - 1) * step_y_um + tile_height_um,
+        )
