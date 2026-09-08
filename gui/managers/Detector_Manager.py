@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import numpy as np
-from PySide6.QtCore import QObject
+
+from .Detector_Manager_Base import DetectorManagerBase
 
 MOCK_ANALOG_MAX_V = 10.0
 MOCK_DIGITAL_MAX_COUNTS = 65535.0
 
-class MockDetectorManager(QObject):
+class MockDetectorManager(DetectorManagerBase):
     """
     Mock generator of detector signals.
 
@@ -42,6 +43,10 @@ class MockDetectorManager(QObject):
     # ------------------------------------------------------------------
     # API publique
     # ------------------------------------------------------------------
+
+    def get_frame_signal(self, channel: str) -> np.ndarray | None:
+        """Return the prepared raster signal of `channel`, or None."""
+        return self._frame_signal_cache.get(channel)
 
     def _mock_integrated_scalar(self, channel: str, dwell_time_s: float) -> float:
         if not self._frame_signal_cache or channel not in self._frame_signal_cache:

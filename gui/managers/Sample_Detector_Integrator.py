@@ -3,14 +3,22 @@ from __future__ import annotations
 import numpy as np
 from typing import Dict, Iterable
 
+from .Detector_Manager_Base import validate_detector_contract
+
 
 class SampleDetectorIntegrator:
     """
     Minimal abstraction producing one scalar value per pixel.
     The default path is "analog_integrating".
+
+    The detector it is given must satisfy DetectorManagerBase; this class is
+    the only consumer of that contract, which is why the contract is scoped to
+    exactly what is used here.
     """
 
     def __init__(self, detector_manager=None):
+        if detector_manager is not None:
+            validate_detector_contract(detector_manager)
         self.detector_manager = detector_manager
         self._frame_context: Dict = {}
 
@@ -113,9 +121,11 @@ class SampleDetectorIntegrator:
         if dm is None:
             raise RuntimeError("No detector_manager attached")
 
-        # Chemin mock : on lit directement le pixel correspondant dans la frame synthétique déjà préparée par start_frame(...).
-        if hasattr(dm, "_frame_signal_cache") and channel in dm._frame_signal_cache:
-            signal = dm._frame_signal_cache[channel]
+        # Le détecteur a-t-il déjà préparé une frame complète (cf. start_frame) ?
+        # Si oui on y lit directement le pixel ; get_frame_signal() renvoie None
+        # pour un détecteur qui acquiert point par point.
+        signal = dm.get_frame_signal(channel) if hasattr(dm, "get_frame_signal") else None
+        if signal is not None:
             pixel_index = self._pixel_to_stream_index(x_index, y_index)
 
             spp = max(1, int(getattr(dm, "samples_per_pixel", 1)))
