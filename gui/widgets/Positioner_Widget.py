@@ -95,7 +95,7 @@ def setup_positioner_settings_dialog(dialog):
         if axis_key in ("p", "p4"):
             vel_edit.setText(str(int(ELL14_FIXED_SPEED_DEG_S)))
             vel_edit.setReadOnly(True)
-            vel_edit.setToolTip("ELL14 : vitesse interne fixe (430°/s), non modifiable.")
+            vel_edit.setToolTip("ELL14: fixed internal speed (430°/s), not adjustable.")
         vel_layout.addWidget(QLabel(f"Velocity max ({vel_unit}):"))
         vel_layout.addWidget(vel_edit)
         dialog.add_layout(vel_layout)
@@ -107,12 +107,12 @@ def setup_positioner_settings_dialog(dialog):
             backlash_edit = QLineEdit(str(cur_backlash))
             backlash_edit.setObjectName(f"backlash_edit_{axis_key}")
             backlash_edit.setToolTip(
-                "Backlash retour (µm) — lignes impaires (droite→gauche).\n"
-                "Le stage dépasse de cette valeur le premier pixel\n"
-                "de chaque ligne inversée avant de revenir.\n"
-                "Valeur positive = dépasse vers X+ ; négative = vers X−."
+                "Return backlash (µm) — odd lines (right→left).\n"
+                "The stage overshoots the first pixel of each reversed\n"
+                "line by this amount before coming back.\n"
+                "Positive value = overshoots towards X+ ; negative = towards X−."
             )
-            backlash_layout.addWidget(QLabel(f"Backlash retour ({pos_unit}):"))
+            backlash_layout.addWidget(QLabel(f"Return backlash ({pos_unit}):"))
             backlash_layout.addWidget(backlash_edit)
             dialog.add_layout(backlash_layout)
 
@@ -121,12 +121,12 @@ def setup_positioner_settings_dialog(dialog):
             backlash_fwd_edit = QLineEdit(str(cur_backlash_fwd))
             backlash_fwd_edit.setObjectName(f"backlash_fwd_edit_{axis_key}")
             backlash_fwd_edit.setToolTip(
-                "Backlash aller (µm) — lignes paires (gauche→droite).\n"
-                "Le stage dépasse de cette valeur le premier pixel\n"
-                "de chaque ligne directe avant de revenir.\n"
-                "Valeur positive = dépasse vers X+ ; négative = vers X−."
+                "Forward backlash (µm) — even lines (left→right).\n"
+                "The stage overshoots the first pixel of each forward\n"
+                "line by this amount before coming back.\n"
+                "Positive value = overshoots towards X+ ; negative = towards X−."
             )
-            backlash_fwd_layout.addWidget(QLabel(f"Backlash aller ({pos_unit}):"))
+            backlash_fwd_layout.addWidget(QLabel(f"Forward backlash ({pos_unit}):"))
             backlash_fwd_layout.addWidget(backlash_fwd_edit)
             dialog.add_layout(backlash_fwd_layout)
         else:
@@ -145,8 +145,8 @@ def setup_positioner_settings_dialog(dialog):
             off_edit = QLineEdit(str(cur_offset))
             off_edit.setObjectName(f"offset_edit_{axis_key}")
             off_edit.setToolTip(
-                "Offset de montage : le 0° (relatif) du positioner correspond\n"
-                "à cet angle physique de la lame."
+                "Mounting offset: the positioner's relative 0° corresponds\n"
+                "to this physical angle of the waveplate."
             )
             off_layout.addWidget(QLabel(f"Offset ({pos_unit}):"))
             off_layout.addWidget(off_edit)
@@ -156,8 +156,8 @@ def setup_positioner_settings_dialog(dialog):
             cd_layout = QHBoxLayout()
             cd_edit = QLineEdit(str(cur_cd))
             cd_edit.setObjectName(f"cd_edit_{axis_key}")
-            cd_edit.setToolTip("Position (relative) de cette lame pour la polarisation circulaire droite (CD).")
-            cd_layout.addWidget(QLabel(f"CD — circ. droite ({pos_unit}):"))
+            cd_edit.setToolTip("Relative position of this waveplate for right circular polarisation (CD).")
+            cd_layout.addWidget(QLabel(f"CD — right circ. ({pos_unit}):"))
             cd_layout.addWidget(cd_edit)
             dialog.add_layout(cd_layout)
 
@@ -165,8 +165,8 @@ def setup_positioner_settings_dialog(dialog):
             cg_layout = QHBoxLayout()
             cg_edit = QLineEdit(str(cur_cg))
             cg_edit.setObjectName(f"cg_edit_{axis_key}")
-            cg_edit.setToolTip("Position (relative) de cette lame pour la polarisation circulaire gauche (CG).")
-            cg_layout.addWidget(QLabel(f"CG — circ. gauche ({pos_unit}):"))
+            cg_edit.setToolTip("Relative position of this waveplate for left circular polarisation (CG).")
+            cg_layout.addWidget(QLabel(f"CG — left circ. ({pos_unit}):"))
             cg_layout.addWidget(cg_edit)
             dialog.add_layout(cg_layout)
 
@@ -647,12 +647,12 @@ class PositionerWidget(QWidget):
             QPushButton:hover { background-color: #444; }
         """
         self.button_circular_right = QPushButton("CD")
-        self.button_circular_right.setToolTip("Polarisation circulaire droite (CD) : positionne λ/2 et λ/4.")
+        self.button_circular_right.setToolTip("Right circular polarisation (CD): positions λ/2 and λ/4.")
         self.button_circular_right.setStyleSheet(_CIRC_BTN_STYLE)
         self.button_circular_right.clicked.connect(lambda: self.apply_circular("CD"))
 
         self.button_circular_left = QPushButton("CG")
-        self.button_circular_left.setToolTip("Polarisation circulaire gauche (CG) : positionne λ/2 et λ/4.")
+        self.button_circular_left.setToolTip("Left circular polarisation (CG): positions λ/2 and λ/4.")
         self.button_circular_left.setStyleSheet(_CIRC_BTN_STYLE)
         self.button_circular_left.clicked.connect(lambda: self.apply_circular("CG"))
 
@@ -700,8 +700,8 @@ class PositionerWidget(QWidget):
 
             if not self.manager.is_rel_target_allowed(axis_key, target_rel):
                 logger.warning(
-                    f"[PositionerWidget] {kind} target {target_rel}° hors limites "
-                    f"pour {axis_key} — ignoré."
+                    f"[PositionerWidget] {kind} target {target_rel}° out of range "
+                    f"for {axis_key} — ignored."
                 )
                 continue
 
@@ -855,8 +855,8 @@ class PositionerWidget(QWidget):
         if speed > self.axis_velocity_limits[axis]["max"]:
             QMessageBox.warning(
                 self,
-                "Vitesse invalide",
-                f"La vitesse {speed} pour l'axe {axis} dépasse la limite autorisée "
+                "Invalid speed",
+                f"Speed {speed} for axis {axis} exceeds the allowed limit "
                 f"({self.axis_velocity_limits[axis]['max']} mm/s)."
             )
             ui["speed"].setText(str(self.axis_velocity_limits[axis]["max"]))
@@ -887,9 +887,9 @@ class PositionerWidget(QWidget):
             min_abs, max_abs = self.manager.get_limits(axis)
             QMessageBox.warning(
                 self,
-                "Position invalide",
-                f"La cible relative {target_rel:.2f} pour l'axe {axis} est hors limites "
-                f"(plage absolue device : {min_abs:.2f} à {max_abs:.2f})."
+                "Invalid position",
+                f"Relative target {target_rel:.2f} for axis {axis} is out of range "
+                f"(device absolute range: {min_abs:.2f} to {max_abs:.2f})."
             )
             return
 
@@ -961,9 +961,9 @@ class PositionerWidget(QWidget):
                     target_abs = self.manager.rel_to_abs(a, rel_target)
                     QMessageBox.warning(
                         self,
-                        "Position invalide",
-                        f"La position absolue correspondante {target_abs:.2f} pour l'axe {a} "
-                        f"dépasse les limites autorisées ({min_abs:.2f} à {max_abs:.2f})."
+                        "Invalid position",
+                        f"The corresponding absolute position {target_abs:.2f} for axis {a} "
+                        f"exceeds the allowed limits ({min_abs:.2f} to {max_abs:.2f})."
                     )
                     return
 

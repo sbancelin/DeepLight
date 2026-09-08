@@ -260,13 +260,13 @@ class StitchingWidget(QWidget):
         )
         self.combo_scan_order.setCurrentText("XYZ Tiles")
         self.combo_scan_order.setToolTip(
-            "XYZ Tiles : pour chaque tuile XY, pile Z complète, puis tuile suivante.\n"
-            "XY Tiles Z : mosaïque XY complète pour chaque plan Z, puis plan Z suivant\n"
-            "(l'axe Z ne bouge qu'entre deux balayages).\n"
-            "XYP Tiles : pour chaque tuile XY, pile P (polarisation) complète, puis tuile suivante.\n"
-            "XY Tiles P : mosaïque XY complète pour chaque plan P, puis plan P suivant.\n"
-            "Le mode 'Tiles <axe>' est sans effet si l'axe stack correspondant\n"
-            "(Z ou P) n'est pas le seul axe stack actif."
+            "XYZ Tiles: for each XY tile, the full Z stack, then the next tile.\n"
+            "XY Tiles Z: the full XY mosaic for each Z plane, then the next Z plane\n"
+            "(the Z axis only moves between two sweeps).\n"
+            "XYP Tiles: for each XY tile, the full P (polarisation) stack, then the next tile.\n"
+            "XY Tiles P: the full XY mosaic for each P plane, then the next P plane.\n"
+            "The 'Tiles <axis>' mode has no effect if the matching stack axis\n"
+            "(Z or P) is not the only active stack axis."
         )
         self.combo_scan_order.setStyleSheet(self.combo_channel.styleSheet())
         self.combo_scan_order.setMinimumWidth(96)
@@ -284,7 +284,7 @@ class StitchingWidget(QWidget):
         self.button_save = QPushButton("Save")
         self.button_save.setStyleSheet(_BUTTON_STYLE)
         self.button_save.setFixedWidth(58)
-        self.button_save.setToolTip("Sauvegarder la mosaïque acquise (OME-TIFF).")
+        self.button_save.setToolTip("Save the acquired mosaic (OME-TIFF).")
         controls_layout.addWidget(self.button_save)
 
         main_layout.addWidget(controls_frame)

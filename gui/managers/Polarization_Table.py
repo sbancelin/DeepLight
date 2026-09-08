@@ -104,13 +104,13 @@ class PolarizationTable:
                         continue
                     pts[az] = (l2, l4)
         except Exception as e:
-            logger.warning(f"[PolarizationTable] lecture CSV échouée ({path}): {e}")
+            logger.warning(f"[PolarizationTable] CSV read failed ({path}): {e}")
             return False
 
         if not pts:
             return False
         self._set_points(pts)
-        logger.info(f"[PolarizationTable] table chargée depuis {path} ({len(pts)} points)")
+        logger.info(f"[PolarizationTable] table loaded from {path} ({len(pts)} points)")
         return True
 
     def save_csv(self, path: str = _CSV_PATH) -> bool:
@@ -122,7 +122,7 @@ class PolarizationTable:
                     w.writerow([a, l2, l4])
             return True
         except Exception as e:
-            logger.warning(f"[PolarizationTable] écriture CSV échouée ({path}): {e}")
+            logger.warning(f"[PolarizationTable] CSV write failed ({path}): {e}")
             return False
 
 

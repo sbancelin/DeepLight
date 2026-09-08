@@ -277,22 +277,22 @@ class SpectroPanelWidget(QWidget):
         t_label = QLabel("T (s)")
         t_label.setToolTip(
             "Time lapse\n"
-            "#Pix  = nombre d'acquisitions\n"
-            "Step  = intervalle entre acquisitions (s)\n"
-            "Size  = durée totale calculée = (#Pix - 1) × Step"
+            "#Pix  = number of acquisitions\n"
+            "Step  = interval between acquisitions (s)\n"
+            "Size  = computed total duration = (#Pix - 1) × Step"
         )
         mapping_layout.addWidget(t_label, 4, 0)
 
         self.total_t_edit = QLineEdit("0.0")
         self.total_t_edit.setReadOnly(True)
         self.total_t_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
-        self.total_t_edit.setToolTip("Durée totale (calculée)")
+        self.total_t_edit.setToolTip("Total duration (computed)")
         mapping_layout.addWidget(self.total_t_edit, 4, 1)
 
         self.pix_t_edit = QLineEdit("1")
         self.pix_t_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.pix_t_edit.setValidator(int_val)
-        self.pix_t_edit.setToolTip("Nombre d'acquisitions temporelles")
+        self.pix_t_edit.setToolTip("Number of time-lapse acquisitions")
         mapping_layout.addWidget(self.pix_t_edit, 4, 2)
 
         self.step_t_edit = QLineEdit("0")
@@ -471,38 +471,37 @@ class SpectroPanelWidget(QWidget):
         row2.addWidget(QLabel("Offset backlash X (µm):"))
         line_offset_edit = QLineEdit(str(self._line_offset_x_um))
         line_offset_edit.setToolTip(
-            "Compensation directionnelle du jeu mécanique (backlash) en X.\n"
-            "Décalage signé appliqué à la position commandée des lignes\n"
-            "retour (impaires, droite→gauche) pour les faire coïncider\n"
-            "physiquement avec les lignes aller. La position enregistrée\n"
-            "reste nominale.\n"
-            "Valeur positive = décale vers X+ ; négative = vers X−."
+            "Directional compensation of the mechanical play (backlash) in X.\n"
+            "Signed offset applied to the commanded position of the return\n"
+            "lines (odd, right→left) so that they physically coincide with\n"
+            "the forward lines. The recorded position stays nominal.\n"
+            "Positive value = shifts towards X+ ; negative = towards X−."
         )
         row2.addWidget(line_offset_edit)
         dialog.add_layout(row2)
 
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Overshoot retour origine (µm):"))
+        row3.addWidget(QLabel("Origin return overshoot (µm):"))
         origin_overshoot_edit = QLineEdit(str(self._origin_overshoot_um))
         origin_overshoot_edit.setToolTip(
-            "Anti-backlash du retour à l'origine en fin de scan (axe X).\n"
-            "L'origine est toujours abordée en venant de la gauche\n"
-            "(déplacement final en +X) pour rattraper le jeu mécanique.\n"
-            "Si la platine est à droite du centre (cas normal), elle passe\n"
-            "d'abord à gauche de cette distance puis approche ; si elle est\n"
-            "déjà à gauche, approche directe (pas de move en plus).\n"
-            "Au plus un seul déplacement supplémentaire par scan.\n"
-            "0 = désactivé. Doit être > au jeu mécanique (~2 µm)."
+            "Anti-backlash for the return to origin at the end of a scan (X axis).\n"
+            "The origin is always approached from the left (final move in +X)\n"
+            "so as to take up the mechanical play.\n"
+            "If the stage is right of centre (the normal case) it first moves\n"
+            "left by this distance then approaches; if it is already on the\n"
+            "left, it approaches directly (no extra move).\n"
+            "At most one additional move per scan.\n"
+            "0 = disabled. Must be greater than the mechanical play (~2 µm)."
         )
         row3.addWidget(origin_overshoot_edit)
         dialog.add_layout(row3)
 
         row4 = QHBoxLayout()
-        row4.addWidget(QLabel("Vitesse platine XY (mm/s):"))
+        row4.addWidget(QLabel("XY stage speed (mm/s):"))
         speed_edit = QLineEdit(str(self._stage_speed_mm_s))
         speed_edit.setToolTip(
-            "Vitesse de déplacement de la platine XY.\n"
-            "Utilisée uniquement pour estimer le temps d'acquisition."
+            "Travel speed of the XY stage.\n"
+            "Used only to estimate the acquisition time."
         )
         row4.addWidget(speed_edit)
         dialog.add_layout(row4)

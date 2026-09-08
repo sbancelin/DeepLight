@@ -108,7 +108,7 @@ class SaveWidget(QWidget):
 
         # Champ pour le nom du fichier
         self.filename_line_edit = QLineEdit()
-        self.filename_line_edit.setPlaceholderText("Nom du fichier")
+        self.filename_line_edit.setPlaceholderText("File name")
         self.filename_line_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.filename_line_edit.setMinimumWidth(0)
         self.filename_line_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)

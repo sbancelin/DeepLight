@@ -577,9 +577,9 @@ class ScanWidget(QWidget):
             mode_combo.addItems(["Around", "From"])
             mode_combo.setCurrentText("Around")
             mode_combo.setToolTip(
-                "Around : ±size/2 autour de la position relative courante.\n"
-                "From : taille complète À PARTIR de la position relative\n"
-                "courante (départ = position actuelle)."
+                "Around: ±size/2 around the current relative position.\n"
+                "From: the full size STARTING FROM the current relative\n"
+                "position (start = current position)."
             )
             mode_combo.setStyleSheet(SCAN_COMBO_STYLE)
             mode_combo.setMinimumWidth(0)

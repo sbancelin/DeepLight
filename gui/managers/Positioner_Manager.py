@@ -175,22 +175,22 @@ class PositionerManager(QObject):
         st = self._state[axis]
 
         if not math.isfinite(float(target_abs)):
-            logger.warning(f"Target position invalide pour l'axe {axis}: {target_abs}")
+            logger.warning(f"Invalid target position for axis {axis}: {target_abs}")
             return False
 
         if float(target_abs) < float(st.min_pos) or float(target_abs) > float(st.max_pos):
             logger.warning(
-                f"Position absolue {target_abs} hors limites pour l'axe {axis} "
-                f"(range device: {st.min_pos} .. {st.max_pos})."
+                f"Absolute position {target_abs} out of range for axis {axis} "
+                f"(device range: {st.min_pos} .. {st.max_pos})."
             )
             return False
 
         if float(speed) < 0:
-            logger.warning(f"Vitesse négative invalide pour l'axe {axis}: {speed}")
+            logger.warning(f"Invalid negative speed for axis {axis}: {speed}")
             return False
 
         if float(speed) > float(st.max_speed):
-            logger.warning(f"Vitesse {speed} trop élevée pour l'axe {axis}.")
+            logger.warning(f"Speed {speed} too high for axis {axis}.")
             return False
 
         return True
