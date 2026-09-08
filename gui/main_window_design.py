@@ -505,6 +505,19 @@ class MainWindowLayout:
         self.shortcut_stop.setContext(Qt.ApplicationShortcut)
         self.shortcut_stop.activated.connect(self._shortcut_stop)
 
+        # ---- Contraste : F1 cale le point noir, F2 le point blanc ----
+        self.shortcut_levels_min = QShortcut(QKeySequence(Qt.Key_F1), window)
+        self.shortcut_levels_min.setContext(Qt.ApplicationShortcut)
+        self.shortcut_levels_min.activated.connect(
+            lambda: self.pull_levels_to_image_extreme("min")
+        )
+
+        self.shortcut_levels_max = QShortcut(QKeySequence(Qt.Key_F2), window)
+        self.shortcut_levels_max.setContext(Qt.ApplicationShortcut)
+        self.shortcut_levels_max.activated.connect(
+            lambda: self.pull_levels_to_image_extreme("max")
+        )
+
         # ---- Bandeaux latéraux : bascules + raccourcis ----
         # Câblé ici plutôt que dans MainWindow : cela ne touche que des widgets
         # de ce module, aucun slot de la fenêtre n'est nommé.
@@ -670,6 +683,46 @@ class MainWindowLayout:
 
         lo, hi = self._get_image_minmax_from_widget(im, channel=channel)
         self._apply_levels(im, hist_lut, lo, hi)
+
+    def _levels_targets(self):
+        """Which images a contrast shortcut acts on.
+
+        The one under the cursor when there is one, so a shortcut does what the
+        user is looking at; otherwise every displayed channel.
+        """
+        hovered = [
+            (ch, im) for ch, im in self.im_widgets.items()
+            if im is not None and im.underMouse()
+        ]
+        return hovered or [
+            (ch, im) for ch, im in self.im_widgets.items() if im is not None
+        ]
+
+    def _current_levels(self, im):
+        try:
+            lo, hi = im.getLevels()
+            return float(lo), float(hi)
+        except Exception:
+            return None
+
+    def pull_levels_to_image_extreme(self, which: str):
+        """Pull one LUT bound onto the image's own minimum or maximum.
+
+        F1 brings the black point down to the darkest pixel, F2 the white point
+        up to the brightest, each leaving the other bound where the user put it.
+        """
+        for channel, im in self._levels_targets():
+            lo_img, hi_img = self._get_image_minmax_from_widget(im, channel=channel)
+
+            current = self._current_levels(im)
+            lo, hi = current if current is not None else (lo_img, hi_img)
+
+            if which == "min":
+                lo = lo_img
+            else:
+                hi = hi_img
+
+            self.apply_levels_to_channel(channel, lo, hi)
 
     def sync_channel_lut_axis_from_current_levels(self, channel):
         im = self.im_widgets.get(channel)
