@@ -158,6 +158,30 @@ y_axis_id = 0
 dll_path = ''
 
 
+# --- Raman spectrometer (Princeton Instruments IsoPlane 320 + camera) ------
+[raman]
+# "mock" runs the whole Raman path in software; "isoplane320" drives the real
+# spectrograph over its serial port.
+spectrograph = "mock"
+spectrograph_port = "COM13"
+spectrograph_baudrate = 9600
+spectrograph_timeout_s = 20.0      # a grating turret takes seconds to move
+
+# Optics, used to label the wavelength axis.
+focal_length_mm = 320.0            # IsoPlane 320
+groove_density_per_mm = 600.0      # grating currently installed
+camera_pixel_size_um = 20.0        # detector pixel pitch along the dispersion
+
+# Rows of the sensor summed to form the spectrum, centred on the slit image.
+# 0 = sum the full height.
+bin_rows = 0
+
+# Measured wavelength calibration, highest order first, evaluated on the pixel
+# index: [a, b, c] means lambda = a*i^2 + b*i + c. Leave empty to fall back on
+# the optical model, which labels the axis but is not a calibration.
+calibration_poly = []
+
+
 # --- Where acquisitions are written ---------------------------------------
 [data]
 # Root of the data tree. Dated sub-folders (year/month/day) are created below

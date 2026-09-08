@@ -514,7 +514,10 @@ class SpectroWidget(QWidget):
         self.raman_plot_item.showGrid(True, True)
         self.raman_plot_item.enableAutoRange()
 
-        self.raman_curve = self.raman_plot_item.plot(self.raman_x, self.raman_y)
+        # Même orange que les autres helpers (profil de ligne, histogramme, FRC).
+        self.raman_curve = self.raman_plot_item.plot(
+            self.raman_x, self.raman_y, pen=pg.mkPen(color="#FF7700", width=2)
+        )
 
         self.raman_plot_item.setXRange(float(self.raman_x[0]), float(self.raman_x[-1]), padding=0)
         self.raman_plot_item.setYRange(0.0, 1.0, padding=0)
