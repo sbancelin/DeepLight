@@ -541,7 +541,8 @@ class StitchingManager(QObject):
                     self._cfg.stage_speed_y_mm_s,
                 )
             else:
-                # fallback legacy
+                # This positioner manager has no combined XY move: drive the two
+                # axes one after the other.
                 self.positioner_manager.move_to_rel("x", self._target_x_rel, self._cfg.stage_speed_x_mm_s)
                 self.positioner_manager.move_to_rel("y", self._target_y_rel, self._cfg.stage_speed_y_mm_s)
         except Exception as e:

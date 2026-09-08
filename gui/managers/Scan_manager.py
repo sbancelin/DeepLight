@@ -717,30 +717,6 @@ class ScanManager(QObject):
 
         self._sched_ms = t1
 
-    def _infer_mode_from_legacy_call(self, scan_params: dict, repeat: bool) -> str:
-        """
-        Compatibilité avec ton main_window actuel qui appelle encore prepare_run(..., repeat=...).
-        """
-        explicit = scan_params.get("_run_mode", None)
-        if isinstance(explicit, str) and explicit.strip():
-            return explicit.strip()
-
-        if bool(repeat):
-            return "preview_continuous"
-
-        # Heuristique raisonnable si l'ancien main_window est encore utilisé.
-        repetitions = max(int(scan_params.get("repetitions", 1) or 1), 1)
-        delay_s = float(scan_params.get("delay_between_rep", 0.0) or 0.0)
-
-        axis_order, active_rows = self._get_active_rows_from_params(scan_params)
-
-        # Si plus de 2 axes actifs, ou reps > 1, ou delay > 0 -> acquisition
-        if len(active_rows) >= 3 or repetitions > 1 or delay_s > 0:
-            return "acquisition"
-
-        # Sinon, sans info supplémentaire, on considère que repeat=False = single preview
-        return "preview_single"
-
     def _stairs_from_per_frame(
         self,
         frame_starts_ms: np.ndarray,
@@ -874,20 +850,14 @@ class ScanManager(QObject):
 
         return t_ms, x_v, y_v
 
-    def prepare_run(self, scan_params: dict, repeat: bool = True, mode: str | None = None):
+    def prepare_run(self, scan_params: dict, mode: str):
         """
         Prépare le plan analog/stepper.
 
-        Compatibilité:
-        - ancien code: prepare_run(scan_params, repeat=True/False)
-        - nouveau code: prepare_run(scan_params, mode="preview_single"/"preview_continuous"/"acquisition")
+        mode: "preview_single" | "preview_continuous" | "acquisition"
         """
         self._last_scan_params = dict(scan_params)
-
-        if mode is None:
-            self._mode = self._infer_mode_from_legacy_call(scan_params, repeat)
-        else:
-            self._mode = str(mode)
+        self._mode = str(mode)
 
         self._plan_driven_stream = False
         # Transition douce vers ScanParams

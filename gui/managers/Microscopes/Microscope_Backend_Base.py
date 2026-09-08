@@ -49,12 +49,8 @@ class MicroscopeBackendBase(QObject):
         self.channels = list(self.scan_parameters.get("active_channels", [])) or ["default"]
         self.repetitions = int(self.scan_parameters.get("repetitions", 1) or 1)
 
-        # tolère les deux clés tant qu'il reste du legacy
         self.laser_off_between_rep = bool(
-            self.scan_parameters.get(
-                "laser_off_between_rep",
-                self.scan_parameters.get("turn_off_laser_between_rep", False)
-            )
+            self.scan_parameters.get("laser_off_between_rep", False)
         )
 
         self.shared_images = {}

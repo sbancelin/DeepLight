@@ -124,25 +124,17 @@ class _SpectroMappingWorker(QObject):
         if callable(move_xy_blocking):
             speed_x = max(0.01, float(pm.get_max_speed("x")))
             speed_y = max(0.01, float(pm.get_max_speed("y")))
-            try:
-                move_xy_blocking(
-                    float(x_um),
-                    float(y_um),
-                    float(speed_x),
-                    float(speed_y),
-                    timeout_s=30.0,
-                    tolerance_um=tolerance_um,
-                )
-            except TypeError:
-                # implémentation legacy sans tolerance_um
-                move_xy_blocking(
-                    float(x_um),
-                    float(y_um),
-                    float(speed_x),
-                    float(speed_y),
-                    timeout_s=30.0,
-                )
+            move_xy_blocking(
+                float(x_um),
+                float(y_um),
+                float(speed_x),
+                float(speed_y),
+                timeout_s=30.0,
+                tolerance_um=tolerance_um,
+            )
         else:
+            # This positioner manager has no combined blocking XY move: drive
+            # the two axes one after the other and wait for each target.
             speed_x = max(0.01, float(pm.get_max_speed("x")))
             speed_y = max(0.01, float(pm.get_max_speed("y")))
             pm.move_to_rel("x", float(x_um), float(speed_x))
@@ -625,10 +617,6 @@ class SpectroManager(QObject):
         self.running = False
         self.sigStatusMessage.emit("Spectro acquisition stopped")
 
-    def stop(self):
-        # compat legacy
-        self.stop_mapping()
-
     def stop_all_live(self):
         self.stop_live_brillouin()
         self.stop_live_raman()
@@ -692,7 +680,8 @@ class SpectroManager(QObject):
                 timeout_s=30.0,
             )
         else:
-            # fallback legacy
+            # This positioner manager has no combined blocking XY move: drive
+            # the two axes one after the other and wait for each target.
             speed_x = max(0.01, float(pm.get_max_speed("x")))
             speed_y = max(0.01, float(pm.get_max_speed("y")))
             pm.move_to_rel("x", float(x_um), float(speed_x))

@@ -173,7 +173,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self.repetitions = max(1, int(self.scan_parameters.get("repetitions", 1) or 1))
         self.delay_between_rep = float(self.scan_parameters.get("delay_between_rep", 0.0) or 0.0)
         self.laser_off_between_rep = bool(
-            self.scan_parameters.get("laser_off_between_rep", self.scan_parameters.get("turn_off_laser_between_rep", False))
+            self.scan_parameters.get("laser_off_between_rep", False)
         )
 
         # Keep the channel names from the UI if present.
@@ -183,7 +183,8 @@ class NidaqMicroscope(MicroscopeBackendBase):
         self.channel_specs = list(self.scan_parameters.get("detector_channels") or [])
 
         if not self.channel_specs:
-            # fallback legacy
+            # No structured specs supplied (the detector widget can legitimately
+            # return an empty list): describe the channels ourselves.
             self.channel_specs = []
             for i, ch in enumerate(self.channels):
                 self.channel_specs.append({
