@@ -4,27 +4,7 @@ from PySide6.QtCore import Qt, QPointF, QLocale
 from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
-
-class DoubleClickAxis(pg.AxisItem):
-    def __init__(self, orientation, on_double_click=None, *args, **kwargs):
-        super().__init__(orientation=orientation, *args, **kwargs)
-        self.on_double_click = on_double_click
-
-    def mouseDoubleClickEvent(self, ev):
-        ev.accept()
-        if callable(self.on_double_click):
-            self.on_double_click(self.orientation)
-
-
-class DoubleClickViewBox(pg.ViewBox):
-    def __init__(self, on_double_click=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.on_double_click = on_double_click
-
-    def mouseDoubleClickEvent(self, ev):
-        ev.accept()
-        if callable(self.on_double_click):
-            self.on_double_click()
+from ._pg_common import DoubleClickAxis, DoubleClickViewBox
 
 
 class HistogramWidget(QWidget):
