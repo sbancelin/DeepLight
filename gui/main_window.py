@@ -927,6 +927,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
+        # La compensation en profondeur suit l'axe Z : elle se désarme seule si
+        # Z cesse d'être balayé.
+        try:
+            self.ui.depth_comp_widget.update_from_scan_parameters(scan_params)
+        except Exception as e:
+            logger.debug(f"[MainWindow] depth compensation refresh failed: {e}")
+
         # Adapte les choix d'ordre de balayage (Z vs P) à l'axe stack actif.
         try:
             rows = [r for r in scan_params.get("rows", []) if r.get("axis") != "None"]
