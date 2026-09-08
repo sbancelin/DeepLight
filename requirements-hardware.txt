@@ -1,0 +1,19 @@
+# Vendor drivers for a real acquisition PC:
+#
+#     pip install -r requirements-hardware.txt
+#
+# Every import below is guarded in the code (_HAS_CLR, _HAS_PI, and the
+# try/except around nidaqmx), and Microscopes/Factory.py imports the nidaq
+# backend lazily, so DeepLight runs headless with --backend mock when none of
+# them is installed. Each raises a clear "install X" error if the matching
+# device is actually used.
+#
+# Versions are deliberately left open: these track the vendor software already
+# installed on the machine (NI-DAQmx, Thorlabs Kinesis, PI GCS). Pin them in a
+# lock file generated on that machine rather than here.
+
+-r requirements.txt
+
+nidaqmx      # NI acquisition card    -> Nidaq_Microscope, PMT_Digital_Manager
+pythonnet    # Thorlabs Kinesis .NET  -> _ThorlabsShutterController / _ThorlabsRotationController
+pipython     # Physik Instrumente GCS -> PI V-308 Z stage

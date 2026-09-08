@@ -1,13 +1,27 @@
-PySide6==6.10.2
-tomli>=2.0 ; python_version < "3.11"
+# DeepLight runtime dependencies.
+#
+# Policy: a lower bound for every library, and an upper bound only where a
+# known-breaking major release exists. To reproduce an exact environment on an
+# acquisition PC, generate a lock file there --
+#     pip freeze > requirements-lock.txt
+# -- rather than tightening the bounds in this file. This file says what the
+# code needs; a lock file says what one machine runs.
+#
+# Vendor drivers for real hardware live in requirements-hardware.txt.
+
+# --- GUI and numerics ---
+PySide6>=6.10.2,<7        # tested against 6.10.2
 pyqtgraph>=0.13.3
 numpy>=1.24
-h5py>=3.10
+psutil>=5.9
+
+# --- Data output ---
 tifffile>=2023.7.10
-zarr
-numcodecs
-ome-zarr
-pipython
-pythonnet
-nidaqmx
-psutil
+zarr>=2.16,<3             # Save_Manager targets the zarr v2 API (Group.create_dataset)
+
+# --- Imported unconditionally, so needed even with --backend mock ---
+pyserial>=3.5             # Elliptec / Cobolt / Scientifica serial controllers
+opencv-python>=4.8        # Motic / OpenCV camera backend
+
+# --- Configuration file (tomllib is in the standard library from 3.11) ---
+tomli>=2.0 ; python_version < "3.11"
