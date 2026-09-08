@@ -1,7 +1,7 @@
 """Helper panel: raise the laser power with depth during a Z stack."""
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QGridLayout, QLabel, QLineEdit, QComboBox,
+    QWidget, QVBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QSizePolicy,
 )
 from PySide6.QtCore import Signal, Qt
@@ -9,7 +9,6 @@ from PySide6.QtGui import QDoubleValidator
 
 from ..managers.Depth_Compensation import (
     DepthCompensation,
-    SUPPORTED_ORDERS,
     compute_power_profile,
     depth_axis_um,
     max_reachable_depth_um,
@@ -33,22 +32,6 @@ LINE_EDIT_STYLE = """
         background-color: #1e1e1e;
         color: #555;
         border: 1px solid #333;
-    }
-"""
-
-COMBO_STYLE = """
-    QComboBox {
-        background-color: #333;
-        color: white;
-        border: 1px solid #555;
-        border-radius: 3px;
-        font-weight: bold;
-        padding: 2px;
-        min-height: 20px;
-    }
-    QComboBox:disabled {
-        background-color: #1e1e1e;
-        color: #555;
     }
 """
 
@@ -105,32 +88,24 @@ class DepthCompensationWidget(QWidget):
         self.attenuation_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.attenuation_edit.setValidator(QDoubleValidator(0.0, 10.0, 6))
         self.attenuation_edit.setToolTip(
-            "Attenuation coefficient fitted on the signal decay of an n-photon\n"
-            "z-stack, in µm⁻¹.\n"
-            "An n-photon signal follows the n-th power of the excitation, so a\n"
-            "signal decaying as exp(-µz) comes from a beam decaying as exp(-µz/n):\n"
-            "the compensation applied is P(z) = P(0)·exp(µ·z/n)."
+            "Attenuation coefficient of the excitation beam in the sample, in µm⁻¹.\n"
+            "Beer-Lambert: the focus receives I(0)·exp(-µz), so the incident power\n"
+            "is raised by exp(+µz) to keep the intensity in the focal volume\n"
+            "constant at every depth.\n"
+            "This does not depend on the process order: holding the focal intensity\n"
+            "constant holds an n-photon signal constant for any n."
         )
         self.attenuation_edit.textChanged.connect(self._recompute)
         grid.addWidget(self.attenuation_edit, 0, 1)
 
-        # --- process order
-        grid.addWidget(QLabel("Process"), 1, 0)
-        self.order_combo = QComboBox()
-        self.order_combo.addItems([f"{n} photon" for n in SUPPORTED_ORDERS])
-        self.order_combo.setCurrentIndex(1)          # 2-photon by default
-        self.order_combo.setStyleSheet(COMBO_STYLE)
-        self.order_combo.currentIndexChanged.connect(self._recompute)
-        grid.addWidget(self.order_combo, 1, 1)
-
         # --- surface power
-        grid.addWidget(QLabel("Surface power (%)"), 2, 0)
+        grid.addWidget(QLabel("Surface power (%)"), 1, 0)
         self.base_power_edit = QLineEdit("20")
         self.base_power_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.base_power_edit.setValidator(QDoubleValidator(0.0, 100.0, 3))
         self.base_power_edit.setToolTip("Power applied at the top of the stack.")
         self.base_power_edit.textChanged.connect(self._recompute)
-        grid.addWidget(self.base_power_edit, 2, 1)
+        grid.addWidget(self.base_power_edit, 1, 1)
 
         main_layout.addLayout(grid)
 
@@ -191,7 +166,6 @@ class DepthCompensationWidget(QWidget):
     def get_compensation(self) -> DepthCompensation:
         return DepthCompensation(
             attenuation_um_inv=self._read_float(self.attenuation_edit, 0.0),
-            order=SUPPORTED_ORDERS[max(0, self.order_combo.currentIndex())],
             enabled=bool(self.activate_button.isChecked() and self._z_active),
         )
 

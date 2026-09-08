@@ -2,23 +2,23 @@
 
 Pure computation: no Qt, no hardware. The widget is a thin shell over this.
 
-Convention, which matters
--------------------------
-`mu` is the attenuation coefficient measured on the **signal** of an n-photon
-z-stack, in µm^-1 -- the quantity you actually get by imaging a homogeneous
-sample and fitting the decay.
+What is being held constant
+---------------------------
+The intensity **in the focal volume**, at every depth.
 
-Because an n-photon signal goes as the n-th power of the excitation intensity,
-a signal decaying as exp(-mu*z) comes from an excitation decaying as
-exp(-mu*z/n). Restoring a constant signal therefore needs
+`mu` is the attenuation coefficient of the excitation beam in the sample, in
+µm^-1. Beer-Lambert gives the intensity reaching the focus as
+I(z) = I(0) * exp(-mu*z), so keeping it constant means raising the incident
+power by exactly the inverse:
 
-    P(z) = P(0) * exp(mu * z / n)
+    P(z) = P(0) * exp(mu * z)
 
-which is why the process order belongs in the formula. For n = 1 it collapses
-back to plain Beer-Lambert on the beam.
-
-If instead `mu` describes the excitation beam itself, pass
-MU_ON_EXCITATION and the order drops out: P(z) = P(0) * exp(mu * z).
+There is deliberately no process order here, and none is needed. An n-photon
+signal follows the n-th power of the focal intensity, so once that intensity is
+held constant the signal is too, whatever n may be: writing the condition out,
+(P * exp(-mu*z))^n = const gives P = const * exp(mu*z), and n cancels. A
+1/2/3-photon selector on this ramp would change nothing, which is why there
+isn't one.
 """
 
 from __future__ import annotations
@@ -35,32 +35,22 @@ from .Hardware_Manager import (
     MIRA_ROTATOR_REL_MIN_DEG,
 )
 
-#: `mu` was measured on the n-photon signal decay (default).
-MU_ON_SIGNAL = "signal"
-#: `mu` describes the excitation beam; the process order then plays no part.
-MU_ON_EXCITATION = "excitation"
-
-SUPPORTED_ORDERS = (1, 2, 3)
-
-
 @dataclass
 class DepthCompensation:
     """Settings of the depth ramp."""
 
     attenuation_um_inv: float = 0.0
-    order: int = 2
-    mu_refers_to: str = MU_ON_SIGNAL
     enabled: bool = False
 
     def effective_coefficient(self) -> float:
-        """Coefficient actually applied to the depth, in µm^-1."""
+        """Coefficient applied to the depth, in µm^-1."""
         mu = float(self.attenuation_um_inv)
-        if self.mu_refers_to == MU_ON_EXCITATION:
-            return mu
-        order = int(self.order)
-        if order not in SUPPORTED_ORDERS:
-            raise ValueError(f"Unsupported process order {self.order!r}; expected 1, 2 or 3.")
-        return mu / order
+        if mu < 0.0:
+            raise ValueError(
+                f"Attenuation must be positive, got {mu} µm^-1; a negative value "
+                "would lower the power with depth."
+            )
+        return mu
 
     def power_gain(self, depth_um) -> np.ndarray | float:
         """Multiplier to apply to the surface power at the given depth(s)."""
