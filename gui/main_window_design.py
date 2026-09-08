@@ -159,6 +159,21 @@ def ask_levels_min_max(parent=None, title="LUT Levels", lo0=0.0, hi0=255.0):
         return None
     return lo, hi
 
+def allow_narrow(widget, minimum: int = 0):
+    """Let a widget shrink horizontally below its natural minimum width.
+
+    QMainWindow gives the central widget priority over the docks, so while the
+    central area claims a large minimum width it cannot be narrowed and the side
+    panels cannot be widened on a small screen. The floor came from the widest
+    tab page, not from the image itself. Ignoring the horizontal size hint is
+    what makes the split adjustable.
+    """
+    widget.setMinimumWidth(minimum)
+    policy = widget.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+    widget.setSizePolicy(policy)
+
+
 class MainWindowLayout:
     """Construction de l'interface principale DeepLight et de ses widgets centraux."""
 
@@ -410,6 +425,7 @@ class MainWindowLayout:
 
         self.im_widgets["default"] = self.im_widget
         self.splitter.addWidget(self.im_widgets["default"])
+        allow_narrow(self.im_widget)
 
         # Ajoute l'onglet au QTabWidget avec un titre
         self.tabWidget = QTabWidget(self.centralwidget)
@@ -429,9 +445,45 @@ class MainWindowLayout:
         self.spectro_widget = SpectroWidget(self.centralwidget)
         self.tabWidget.addTab(self.spectro_widget, "Spectro")
 
+        # ---- Largeur de la zone centrale ----
+        # Sans ceci, le minimum du plus large onglet impose un plancher à toute
+        # la zone centrale et les bandeaux ne peuvent plus être élargis.
+        for _w in (self.centralwidget, self.tabWidget, self.splitter,
+                   self.tab_preview, self.stitch_widget, self.camera_widget,
+                   self.spectro_widget):
+            allow_narrow(_w)
+        self.splitter.setChildrenCollapsible(True)
+
         ################# Barre de progression globale (bas du GUI) ######################
         self.global_progress_widget = GlobalProgressWidget(window)
         window.statusBar().addPermanentWidget(self.global_progress_widget, 1)
+
+        # ---- Bascules d'affichage des bandeaux latéraux ----
+        # Placées dans la barre de statut et non dans la barre d'action : celle-ci
+        # partage sa colonne avec le bandeau gauche, donc tout bouton ajouté là
+        # élargirait le bandeau (+68 px mesurés pour ces deux-là).
+        self.pushButton_togglePanelLeft = QPushButton(window)
+        self.pushButton_togglePanelLeft.setObjectName(u"pushButton_togglePanelLeft")
+        self.pushButton_togglePanelLeft.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
+        self.pushButton_togglePanelLeft.setIcon(QIcon(icon_path("panel_left.svg")))
+        self.pushButton_togglePanelLeft.setIconSize(QSize(18, 18))
+        self.pushButton_togglePanelLeft.setFixedSize(24, 22)
+        self.pushButton_togglePanelLeft.setFlat(True)
+        self.pushButton_togglePanelLeft.setCheckable(True)
+        self.pushButton_togglePanelLeft.setChecked(True)
+
+        self.pushButton_togglePanelRight = QPushButton(window)
+        self.pushButton_togglePanelRight.setObjectName(u"pushButton_togglePanelRight")
+        self.pushButton_togglePanelRight.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
+        self.pushButton_togglePanelRight.setIcon(QIcon(icon_path("panel_right.svg")))
+        self.pushButton_togglePanelRight.setIconSize(QSize(18, 18))
+        self.pushButton_togglePanelRight.setFixedSize(24, 22)
+        self.pushButton_togglePanelRight.setFlat(True)
+        self.pushButton_togglePanelRight.setCheckable(True)
+        self.pushButton_togglePanelRight.setChecked(True)
+
+        window.statusBar().addPermanentWidget(self.pushButton_togglePanelLeft, 0)
+        window.statusBar().addPermanentWidget(self.pushButton_togglePanelRight, 0)
 
         ##################  Helpers   ##################
         self._apply_texts(window)
@@ -452,6 +504,21 @@ class MainWindowLayout:
         self.shortcut_stop = QShortcut(QKeySequence(Qt.Key_Escape), window)
         self.shortcut_stop.setContext(Qt.ApplicationShortcut)
         self.shortcut_stop.activated.connect(self._shortcut_stop)
+
+        # ---- Bandeaux latéraux : bascules + raccourcis ----
+        # Câblé ici plutôt que dans MainWindow : cela ne touche que des widgets
+        # de ce module, aucun slot de la fenêtre n'est nommé.
+        self._window = window
+        self.pushButton_togglePanelLeft.toggled.connect(self._set_left_panel_visible)
+        self.pushButton_togglePanelRight.toggled.connect(self.right_panel_dock.setVisible)
+
+        self.shortcut_toggle_panel_left = QShortcut(QKeySequence(Qt.Key_F9), window)
+        self.shortcut_toggle_panel_left.setContext(Qt.ApplicationShortcut)
+        self.shortcut_toggle_panel_left.activated.connect(self.pushButton_togglePanelLeft.toggle)
+
+        self.shortcut_toggle_panel_right = QShortcut(QKeySequence(Qt.Key_F10), window)
+        self.shortcut_toggle_panel_right.setContext(Qt.ApplicationShortcut)
+        self.shortcut_toggle_panel_right.activated.connect(self.pushButton_togglePanelRight.toggle)
 
         self.shortcut_shutter = QShortcut(QKeySequence("Ctrl+Q"), window)
         self.shortcut_shutter.setContext(Qt.ApplicationShortcut)
@@ -627,6 +694,22 @@ class MainWindowLayout:
 
         self._update_lut_axis(hist_lut, lo, hi, n_ticks=5)
     
+    def _set_left_panel_visible(self, visible: bool):
+        """Fold or unfold the left panel, giving its width back to the centre.
+
+        The action bar shares the left dock column with this panel, and Qt keeps
+        a column at the width it had. Without the resize below, folding the panel
+        would hide its content without freeing a single pixel: the action bar
+        would simply hold the column open at the panel's old width.
+        """
+        self.left_panel_dock.setVisible(visible)
+        if not visible and getattr(self, "_window", None) is not None:
+            self._window.resizeDocks(
+                [self.dockWidget_preview],
+                [self.dockWidget_preview.minimumSizeHint().width()],
+                Qt.Horizontal,
+            )
+
     def _focused_widget_blocks_shortcuts(self):
         fw = QApplication.focusWidget()
         return isinstance(fw, QLineEdit)
@@ -682,6 +765,10 @@ class MainWindowLayout:
         self.pushButton_stop.setText("")
         self.pushButton_shutter.setToolTip("Toggle shutter open/closed")
         self.pushButton_shutter.setText("")
+        self.pushButton_togglePanelLeft.setToolTip("Show/hide the left panel (F9)")
+        self.pushButton_togglePanelLeft.setText("")
+        self.pushButton_togglePanelRight.setToolTip("Show/hide the Helpers panel (F10)")
+        self.pushButton_togglePanelRight.setText("")
 
     def get_scan_tab_references(self):
         """Return the references to the ImageView widgets and to the QSplitter."""
@@ -714,6 +801,7 @@ class MainWindowLayout:
         # On fait un seul widget "grid" qu'on met dans le splitter (comme avant),
         # mais en version propre et stable.
         grid_host = QWidget()
+        allow_narrow(grid_host)
         grid = QGridLayout(grid_host)
         grid.setContentsMargins(6, 6, 6, 6)
         grid.setSpacing(8)
@@ -721,6 +809,7 @@ class MainWindowLayout:
         for index, channel in enumerate(channels):
             # Container d’un canal
             container = QWidget()
+            allow_narrow(container)
             v = QVBoxLayout(container)
             v.setContentsMargins(4, 4, 4, 4)
             v.setSpacing(4)
@@ -739,6 +828,7 @@ class MainWindowLayout:
             plot_item.setLabel("bottom", "x (um)")
 
             im = pg.ImageView(parent=self.tab_preview, view=plot_item)
+            allow_narrow(im)
             im.setPredefinedGradient("inferno")
             im.setImage(self.currentImage, autoLevels=False, autoRange=False)
 
