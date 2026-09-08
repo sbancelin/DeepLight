@@ -7,6 +7,7 @@ from pathlib import Path
 from ctypes import POINTER, byref
 import numpy as np
 from ...config import CONFIG
+from .Camera_Manager import CameraBackendBase, CameraParameters
 from ..widgets.Log_Widget import logger
 
 # ----------------------------------------------------------------------
@@ -67,7 +68,7 @@ PicamPixelFormat_Monochrome16Bit = 1
 PicamPixelFormat_Monochrome32Bit = 2
 
 
-class PiCamKuroManager:
+class PiCamKuroManager(CameraBackendBase):
     """
     Minimal PICam manager for Princeton Instruments Kuro.
 
@@ -77,15 +78,20 @@ class PiCamKuroManager:
     - ROI + binning
     - single-frame acquisition
     - returns numpy float32 image for DeepLight SpectroManager
+
+    It honours CameraBackendBase so the Kuro can be driven like any other
+    DeepLight camera. apply_parameters() stays the rich entry point: the
+    CameraParameters dataclass carries no ROI, and the Brillouin path needs one.
     """
 
     def __init__(self, dll_path: str | None = None):
+        super().__init__()   # connected / live_running / params
+
         self.dll_path = self._find_picam_dll(dll_path)
         self.runtime_dir = os.path.dirname(self.dll_path)
 
         self.lib = None
         self.camera = PicamHandle()
-        self.connected = False
 
         self._dll_dir_handle = None
         self._last_shape = (1200, 1200)
@@ -484,12 +490,43 @@ class PiCamKuroManager:
             f"[PICam] apply_parameters done in {(time.perf_counter() - t0) * 1000.0:.1f} ms"
         )
 
+    # ---- CameraBackendBase contract -------------------------------------
+
+    def set_parameters(self, params: CameraParameters) -> None:
+        """Apply the contract's dataclass, keeping any ROI already applied.
+
+        CameraParameters has no ROI fields, so the keys it cannot express are
+        carried over from the last apply_parameters() call rather than dropped.
+        """
+        merged = dict(self._applied_params or {})
+        merged["exposure_ms"] = float(params.exposure_ms)
+        merged["binning"] = str(params.binning)
+        self.apply_parameters(merged)
+        self.params = params
+
+    def get_parameters(self) -> CameraParameters:
+        applied = dict(self._applied_params or {})
+        return CameraParameters(
+            exposure_ms=float(applied.get("exposure_ms", self.params.exposure_ms)),
+            pixel_format="Mono16",
+            binning=str(applied.get("binning", self.params.binning)),
+            auto_exposure=False,
+        )
+
+    def list_pixel_formats(self):
+        # The Kuro only supports Monochrome16Bit natively (see _set_pixel_format).
+        return ["Mono16"]
+
     # ------------------------------------------------------------------
     # acquisition
     # ------------------------------------------------------------------
 
     def snap(self, params: dict | None = None) -> np.ndarray:
-        normalized = dict(params or {})
+        # params=None means "keep what is already applied". The base contract
+        # calls snap() with no argument (get_frame does), and rebuilding from an
+        # empty dict would silently reset the exposure to the 10 ms default in
+        # the middle of a Brillouin acquisition.
+        normalized = dict(self._applied_params or {}) if params is None else dict(params)
         if normalized != self._applied_params:
             logger.debug("[PICam] snap: parameters changed, re-applying (slow path)")
             self.apply_parameters(normalized)
