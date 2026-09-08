@@ -68,9 +68,14 @@ PicamPixelFormat_Monochrome16Bit = 1
 PicamPixelFormat_Monochrome32Bit = 2
 
 
-class PiCamKuroManager(CameraBackendBase):
+#: PICam model ids of the Kuro family, kept as the historical preference so a
+#: caller that names no camera still opens the Brillouin one it always had.
+KURO_MODEL_IDS = (1901, 1902, 1903)
+
+
+class PiCamManager(CameraBackendBase):
     """
-    Minimal PICam manager for Princeton Instruments Kuro.
+    Minimal PICam manager for Teledyne Princeton Instruments cameras.
 
     Scope:
     - lazy connect / disconnect
@@ -79,16 +84,30 @@ class PiCamKuroManager(CameraBackendBase):
     - single-frame acquisition
     - returns numpy float32 image for DeepLight SpectroManager
 
-    It honours CameraBackendBase so the Kuro can be driven like any other
+    PICam drives the whole Princeton Instruments range, so the same class serves
+    the Kuro on the Brillouin path and the LANSIS on the Raman one. Which camera
+    it opens is the caller's decision, not the class's: pass `serial_number`
+    whenever more than one is plugged in, otherwise the first match wins and two
+    cameras on one bench become a coin toss.
+
+    It honours CameraBackendBase so a PI camera can be driven like any other
     DeepLight camera. apply_parameters() stays the rich entry point: the
     CameraParameters dataclass carries no ROI, and the Brillouin path needs one.
     """
 
-    def __init__(self, dll_path: str | None = None):
+    def __init__(
+        self,
+        dll_path: str | None = None,
+        serial_number: str | None = None,
+        preferred_models: tuple[int, ...] = KURO_MODEL_IDS,
+    ):
         super().__init__()   # connected / live_running / params
 
         self.dll_path = self._find_picam_dll(dll_path)
         self.runtime_dir = os.path.dirname(self.dll_path)
+
+        self.serial_number = str(serial_number).strip() if serial_number else None
+        self.preferred_models = tuple(preferred_models or ())
 
         self.lib = None
         self.camera = PicamHandle()
@@ -148,6 +167,35 @@ class PiCamKuroManager(CameraBackendBase):
         raw = bytes(arr)
         return raw.split(b"\x00", 1)[0].decode("ascii", errors="replace")
     
+    def _choose_camera(self, found: list[tuple[int, int, str, str]]) -> int:
+        """Pick which discovered camera to open.
+
+        `found` is [(index, model, sensor_name, serial_number), ...].
+
+        An explicit serial number wins and is an error when absent: silently
+        opening the wrong camera on a bench that has two is far worse than
+        refusing to start.
+        """
+        if self.serial_number:
+            for index, _model, _sensor, serial in found:
+                if serial.strip() == self.serial_number:
+                    return index
+            available = ", ".join(f"{s!r}" for *_, s in found) or "none"
+            raise RuntimeError(
+                f"No PICam camera with serial {self.serial_number!r}. Available: {available}."
+            )
+
+        for index, model, _sensor, _serial in found:
+            if model in self.preferred_models:
+                return index
+
+        if len(found) > 1:
+            logger.warning(
+                f"[PICam] {len(found)} cameras available and none named; opening the "
+                "first one. Set a serial number to make this deterministic."
+            )
+        return 0
+
     def _discover_cameras(self):
         """
         Ask PICAM to actively discover cameras, then stop discovery.
@@ -287,7 +335,7 @@ class PiCamKuroManager(CameraBackendBase):
                     "Check the official PICAM installation and camera driver."
                 )
 
-            chosen_index = None
+            found = []
 
             for i in range(count):
                 cam_id = id_array[i]
@@ -295,19 +343,20 @@ class PiCamKuroManager(CameraBackendBase):
                 iface = int(cam_id.computer_interface)
                 sensor = self._decode_c_string(cam_id.sensor_name)
                 serial = self._decode_c_string(cam_id.serial_number)
+                found.append((i, model, sensor, serial))
 
                 logger.debug(
                     f"[PICam] cam[{i}] model={model} interface={iface} "
                     f"sensor='{sensor}' serial='{serial}'"
                 )
 
-                # Prefer Kuro models
-                if model in (1901, 1902, 1903):
-                    chosen_index = i
-                    break
+            chosen_index = self._choose_camera(found)
 
-            if chosen_index is None:
-                chosen_index = 0
+            _, model, sensor, serial = found[chosen_index]
+            logger.info(
+                f"[PICam] opening cam[{chosen_index}] model={model} "
+                f"sensor='{sensor}' serial='{serial}'"
+            )
 
             self._check(
                 self.lib.Picam_OpenCamera(

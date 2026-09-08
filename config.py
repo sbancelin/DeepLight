@@ -158,6 +158,15 @@ y_axis_id = 0
 dll_path = ''
 
 
+# --- Brillouin arm ---------------------------------------------------------
+[spectro]
+# Serial number of the Kuro. PICam drives every Princeton Instruments camera,
+# so once the Raman LANSIS shares the bench the two must be told apart by
+# serial -- otherwise whichever PICam discovers first is opened. Leave empty
+# when the Kuro is the only PI camera plugged in.
+brillouin_camera_serial = ""
+
+
 # --- Raman spectrometer (Princeton Instruments IsoPlane 320 + camera) ------
 [raman]
 # "mock" runs the whole Raman path in software; "isoplane320" drives the real
@@ -166,6 +175,13 @@ spectrograph = "mock"
 spectrograph_port = "COM13"
 spectrograph_baudrate = 9600
 spectrograph_timeout_s = 20.0      # a grating turret takes seconds to move
+
+# Detector: "mock" synthesises a spectrum, "picam" drives the real camera
+# through PICam -- the same library already used for the Kuro.
+camera = "mock"
+# Serial number of the Teledyne Princeton Instruments LANSIS-261X. Required as
+# soon as the Kuro is plugged in too (see spectro.brillouin_camera_serial).
+camera_serial = ""
 
 # Optics, used to label the wavelength axis.
 focal_length_mm = 320.0            # IsoPlane 320

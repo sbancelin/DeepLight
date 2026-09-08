@@ -58,6 +58,30 @@ class MockRamanCamera(CameraBackendBase):
         return frame.astype(np.float32)
 
 
+def create_raman_camera(name: str | None = None) -> CameraBackendBase:
+    """Build the Raman detector named in the configuration.
+
+    "picam" drives the LANSIS-261X through PICam -- the very library already
+    used for the Kuro, since it covers the whole Princeton Instruments range.
+    The serial number is passed on so the two cameras cannot be confused.
+    """
+    backend = str(name or CONFIG.raman.get("camera", "mock") or "mock").strip().lower()
+
+    if backend in ("mock", "none", ""):
+        return MockRamanCamera()
+
+    if backend in ("picam", "lansis", "lansis261x"):
+        # Imported here: PICam is only needed on a machine that has the camera.
+        from .PiCam_Manager import PiCamManager
+
+        return PiCamManager(
+            serial_number=CONFIG.raman.get("camera_serial", "") or None,
+            preferred_models=(),   # no family preference: the Raman camera is named
+        )
+
+    raise ValueError(f"Unknown Raman camera '{backend}'. Expected one of: mock, picam.")
+
+
 class RamanSpectrometer:
     """Spectrograph + camera, exposing one spectrum."""
 
@@ -65,7 +89,7 @@ class RamanSpectrometer:
         self.spectrograph = spectrograph or create_spectrograph()
         validate_spectrograph_contract(self.spectrograph)
 
-        self.camera = camera if camera is not None else MockRamanCamera()
+        self.camera = camera if camera is not None else create_raman_camera()
         self.pixel_size_um = float(CONFIG.raman.camera_pixel_size_um)
 
     # ---------- lifecycle ----------

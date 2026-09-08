@@ -14,7 +14,7 @@ from ...config import CONFIG
 from .Positioner_Manager import MockPositionerManager, PositionerManager
 from ..widgets.Log_Widget import logger
 from .Motic_Camera_Manager import CameraController, OpenCVCameraBackend, MockCameraBackend
-from .PiCam_Kuro_Manager import PiCamKuroManager
+from .PiCam_Manager import PiCamManager
 
 
 # =============================================================================
@@ -3130,9 +3130,15 @@ class HardwareManager(QObject):
     def _get_brillouin_camera(self):
         """
         Lazy initialization of the Kuro camera backend.
+
+        The serial number matters once a second PI camera (the Raman LANSIS)
+        shares the bench: without it PICam would just open the first one it
+        discovers.
         """
         if self._brillouin_camera is None:
-            self._brillouin_camera = PiCamKuroManager()
+            self._brillouin_camera = PiCamManager(
+                serial_number=CONFIG.spectro.get("brillouin_camera_serial", "") or None
+            )
 
         if not getattr(self._brillouin_camera, "connected", False):
             self._brillouin_camera.connect()
