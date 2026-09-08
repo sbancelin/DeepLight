@@ -387,7 +387,12 @@ class SpectroPanelWidget(QWidget):
         format_label.setStyleSheet("color: white; font-weight: bold;")
         save_layout.addWidget(format_label, 4, 0)
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["OME-TIFF", "OME-Zarr"])
+        self.format_combo.addItems(["OME-TIFF", "OME-Zarr", "HDF5-BLS"])
+        self.format_combo.setToolTip(
+            "OME-TIFF / OME-Zarr: the folder layout used so far.\n"
+            "HDF5-BLS: one self-describing HDF5 file, for exchange with other\n"
+            "Brillouin setups."
+        )
         self.format_combo.setCurrentText("OME-TIFF")
         self.format_combo.setStyleSheet(COMBO_STYLE)
         self.format_combo.setMinimumWidth(0)

@@ -6,6 +6,7 @@ import numpy as np
 from datetime import datetime
 from threading import Lock
 
+import h5py
 import tifffile
 import zarr
 
@@ -104,6 +105,8 @@ class SaveManager:
             return "OME-TIFF"
         if f in ("OME-ZARR", "OMEZARR", "ZARR"):
             return "OME-ZARR"
+        if f in ("HDF5-BLS", "HDF5BLS", "H5-BLS", "H5BLS", "HD5F-BLS"):
+            return "HDF5-BLS"
         return (fmt or "").strip().upper()
 
     def _make_omero_metadata(self, name: str, channels: list[str]) -> dict:
@@ -503,6 +506,99 @@ class SaveManager:
             self._write_json(sidecar, payload)
 
     # ---------- Spectro dataset ----------
+    def _write_hdf5_bls(self, path: str, dataset: dict, metadata: dict, comment: str) -> str:
+        """Write the Brillouin dataset as a single HDF5 file, BLS-style.
+
+        LAYOUT TO BE VALIDATED AGAINST THE SPEC VERSION IN USE. The file is a
+        valid HDF5 and carries everything needed to interpret it, but the group
+        and attribute names below are this project's reading of HDF5-BLS, not a
+        transcription of the published schema, and no reference file was
+        available to check them against. Everything format-specific lives in
+        this one method, so aligning it later means editing here and nowhere
+        else.
+
+            /                      root attributes: creation, comment, version
+            /Data/Raw_data         (T, Z, Y, X, H, W) camera frames, float32
+            /Data/Abscissa         spectral axis when one is known
+            /Data/Positions        (N, 3) stage positions (x, y, z), µm
+            /Attributes/...        acquisition, spectrometer and sample metadata
+        """
+        with h5py.File(path, "w") as h5:
+            h5.attrs["FILEPROP.Name"] = os.path.basename(path)
+            h5.attrs["FILEPROP.Created"] = self._now_iso()
+            h5.attrs["FILEPROP.Comment"] = str(comment or "")
+            h5.attrs["FILEPROP.Producer"] = "DeepLight"
+            h5.attrs["BLS.Format"] = "HDF5-BLS"
+            h5.attrs["BLS.Format_version"] = "0.1-deeplight"
+
+            data = h5.create_group("Data")
+
+            if "brillouin_images" in dataset:
+                arr = np.asarray(dataset["brillouin_images"], dtype=np.float32)
+                if arr.ndim == 5:                    # (Z, Y, X, H, W) -> prepend T
+                    arr = arr[np.newaxis]
+                raw = data.create_dataset(
+                    "Raw_data", data=arr, compression="gzip", compression_opts=4
+                )
+                raw.attrs["Dimensions"] = "T, Z, Y, X, camera_y, camera_x"
+                raw.attrs["Units"] = "counts"
+
+            wavelengths = np.asarray(
+                dataset.get("raman_wavelengths", []), dtype=np.float32
+            )
+            if wavelengths.size:
+                abscissa = data.create_dataset("Abscissa", data=wavelengths)
+                abscissa.attrs["Units"] = "nm"
+
+            positions = self._positions_array(dataset)
+            if positions.size:
+                pos = data.create_dataset("Positions", data=positions)
+                pos.attrs["Dimensions"] = "point, (x, y, z)"
+                pos.attrs["Units"] = "um"
+
+            attrs = h5.create_group("Attributes")
+            for section in ("acquisition_parameters", "brillouin_parameters",
+                            "raman_parameters", "save_parameters", "modalities"):
+                self._write_h5_attrs(attrs, section, metadata.get(section, {}))
+
+            attrs.attrs["MEASURE.Grid_shape"] = str(metadata.get("grid_shape", []))
+            attrs.attrs["MEASURE.Axis_order"] = str(metadata.get("axis_order", []))
+            attrs.attrs["MEASURE.Serpentine"] = bool(metadata.get("serpentine", False))
+
+        return path
+
+    @staticmethod
+    def _write_h5_attrs(group, section: str, values: dict):
+        """Flatten one metadata block into HDF5 attributes.
+
+        HDF5 attributes take scalars and strings, not nested dicts, so anything
+        that is not a plain number or string is stored as its JSON text rather
+        than dropped.
+        """
+        for key, value in dict(values or {}).items():
+            name = f"{section}.{key}"
+            if isinstance(value, (int, float, bool, str)):
+                group.attrs[name] = value
+            else:
+                group.attrs[name] = json.dumps(value, default=str)
+
+    @staticmethod
+    def _positions_array(dataset: dict) -> np.ndarray:
+        """Stage position of each acquired point, in acquisition order.
+
+        Same source as positions.csv, so the two formats describe the same
+        points: each row is (x, y, z) in µm.
+        """
+        # No `or []` here: positions arrive as a numpy array, whose truth value
+        # is ambiguous and raises rather than falling back.
+        positions = dataset.get("acquisition_order_positions_um")
+        if positions is None:
+            return np.zeros((0,), dtype=np.float32)
+        try:
+            return np.asarray(positions, dtype=np.float32)
+        except (TypeError, ValueError):
+            return np.zeros((0,), dtype=np.float32)
+
     def save_spectro_dataset(
         self,
         folder: str,
@@ -532,8 +628,19 @@ class SaveManager:
         os.makedirs(folder, exist_ok=True)
         fmt = self._norm_fmt(fmt)
 
-        if fmt not in ("OME-TIFF", "OME-ZARR"):
+        if fmt not in ("OME-TIFF", "OME-ZARR", "HDF5-BLS"):
             raise ValueError(f"Unsupported spectro format: {fmt}")
+
+        if fmt == "HDF5-BLS":
+            # One self-describing file rather than a folder of side-car files.
+            path = make_unique_path(folder, filename, ext=".h5", default_stem="SPECTRO")
+            block = dict(dataset.get("metadata", {}) or {})
+            block.update({
+                "grid_shape": list(dataset.get("grid_shape", ())),
+                "axis_order": list(dataset.get("axis_order", ())),
+                "serpentine": bool(dataset.get("serpentine", False)),
+            })
+            return self._write_hdf5_bls(path, dataset, block, comment)
 
         root_path = make_unique_path(folder, filename, ext="", default_stem="SPECTRO")
         os.makedirs(root_path, exist_ok=True)

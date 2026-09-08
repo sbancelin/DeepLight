@@ -16,6 +16,7 @@ numpy>=1.24
 psutil>=5.9
 
 # --- Data output ---
+h5py>=3.10                # HDF5-BLS export of Brillouin datasets
 tifffile>=2023.7.10
 zarr>=2.16,<3             # Save_Manager targets the zarr v2 API (Group.create_dataset)
 
