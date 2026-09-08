@@ -1,3 +1,13 @@
+"""Layout definition for the DeepLight main window.
+
+NOTE: this module is **hand-written and hand-maintained**. It follows the
+Qt Designer naming convention (``setupUi`` / ``retranslateUi``) but it is not
+generated: there is no ``.ui`` source file for it anywhere in the repository,
+and it composes the project's own widgets directly. Edit this file by hand —
+do not attempt to regenerate it with ``pyside6-uic``, which would discard the
+custom widgets and stylesheets defined here.
+"""
+
 from PySide6.QtCore import (QCoreApplication, QSize, Qt)
 from PySide6.QtGui import (QIcon, QTransform, QShortcut, QKeySequence)
 from PySide6.QtWidgets import (QApplication, QLineEdit, QCheckBox, QDockWidget, QGridLayout, QGroupBox, QSplitter, QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox,
