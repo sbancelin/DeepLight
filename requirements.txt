@@ -1,4 +1,5 @@
 PySide6==6.10.2
+tomli>=2.0 ; python_version < "3.11"
 pyqtgraph>=0.13.3
 numpy>=1.24
 h5py>=3.10

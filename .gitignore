@@ -34,3 +34,7 @@ temp/
 Thumbs.db
 
 .claude/
+
+# Local machine configuration (see config.py). Each acquisition PC has its own;
+# it must never be committed.
+deeplight.toml
