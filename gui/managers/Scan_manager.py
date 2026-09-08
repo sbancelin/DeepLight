@@ -893,8 +893,8 @@ class ScanManager(QObject):
             # Inform stepper visualizer of the XY frame duration
             try:
                 self.xy_frame_duration_ready.emit(float(self._xy_frame_duration_ms))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[ScanManager] xy_frame_duration_ready not emitted: {e}")
 
             self._completed_xy_frames = 0
             self._total_xy_frames = len(plan.frame_slices)
@@ -1010,8 +1010,8 @@ class ScanManager(QObject):
         self._xy_frame_duration_ms = self._samples_per_xy_frame * dt_ms
         try:
             self.xy_frame_duration_ready.emit(float(self._xy_frame_duration_ms))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[ScanManager] xy_frame_duration_ready not emitted: {e}")
 
         self._i = 0
         self._pending_t.clear()

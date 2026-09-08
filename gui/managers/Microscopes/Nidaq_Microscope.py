@@ -39,7 +39,7 @@ try:
     from nidaqmx.stream_readers import AnalogMultiChannelReader
     from nidaqmx.errors import DaqError, DaqWarning
     _HAS_NIDAQ = True
-except Exception:
+except Exception as _exc:
     nidaqmx = None
     AcquisitionType = None
     TerminalConfiguration = None
@@ -47,6 +47,12 @@ except Exception:
     AnalogMultiChannelWriter = None
     AnalogMultiChannelReader = None
     _HAS_NIDAQ = False
+    # Lazy import, as in _log(), to keep this guard free of import-order concerns.
+    from ...widgets.Log_Widget import logger as _logger
+    _logger.warning(
+        f"[NidaqMicroscope] nidaqmx unavailable ({type(_exc).__name__}: {_exc}). "
+        "The nidaq backend cannot acquire; use --backend mock."
+    )
 if _HAS_NIDAQ:
     warnings.filterwarnings(
         "ignore",
@@ -718,8 +724,8 @@ class NidaqMicroscope(MicroscopeBackendBase):
             if digital_started:
                 try:
                     self.digital_manager.stop_frame()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"stopping the digital frame failed: {e}")
 
     def _acquire_plan_frame(
         self,
@@ -995,12 +1001,13 @@ class NidaqMicroscope(MicroscopeBackendBase):
         if callable(move_xy_blocking):
             try:
                 speed_x = max(0.01, float(pm.get_max_speed("x")))
-            except Exception:
-                pass
+            except Exception as e:
+                # Keeps the previously chosen speed rather than the stage's own.
+                self._log(f"max speed X unavailable, keeping {speed_x}: {e}")
             try:
                 speed_y = max(0.01, float(pm.get_max_speed("y")))
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"max speed Y unavailable, keeping {speed_y}: {e}")
 
         fallback_wait_xy = False
         if pm is not None and not callable(move_xy_blocking):
@@ -1041,8 +1048,8 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 if ai_task is not None:
                     try:
                         ai_task.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log(f"closing the pre-created AI task failed: {e}")
                 ai_task = None
                 ai_reader = None
                 ai_result_buf = None
@@ -1192,14 +1199,15 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
         finally:
             if ai_task is not None:
+                # Once per frame, not per pixel: safe to report.
                 try:
                     ai_task.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"stopping the AI task failed: {e}")
                 try:
                     ai_task.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"closing the AI task failed: {e}")
 
         emit_flush()
         return {ch: arr.copy() for ch, arr in arrays.items()}
@@ -1317,9 +1325,10 @@ class NidaqMicroscope(MicroscopeBackendBase):
             try:
                 task.stop()
             except DaqWarning as w:
+                # 200010: finite acquisition stopped early -- expected here.
                 if getattr(w, "error_code", None) != 200010:
                     raise
-            except DaqError:
-                pass
-            except Exception:
-                pass
+            except DaqError as e:
+                self._log(f"stopping a DAQ task failed: {e}")
+            except Exception as e:
+                self._log(f"unexpected error stopping a DAQ task: {e}")

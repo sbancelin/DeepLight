@@ -26,7 +26,7 @@ try:
     from nidaqmx.stream_readers import CounterReader
     from nidaqmx.errors import DaqError, DaqWarning
     _HAS_NIDAQ = True
-except Exception:
+except Exception as _exc:
     nidaqmx = None
     AcquisitionType = None
     Edge = None
@@ -35,6 +35,10 @@ except Exception:
     DaqError = Exception
     DaqWarning = Warning
     _HAS_NIDAQ = False
+    logger.warning(
+        f"[PMT] nidaqmx unavailable ({type(_exc).__name__}: {_exc}). "
+        "Digital photon counting is disabled."
+    )
 
 
 @dataclass
@@ -272,8 +276,13 @@ class PMTDigitalManager(QObject):
 
             try:
                 task.triggers.start_trigger.cfg_dig_edge_start_trig(trigger_source)
-            except Exception:
-                pass
+            except Exception as e:
+                # Without its start trigger the counter free-runs, so the counts
+                # no longer line up with the scan. Never fail this silently.
+                logger.warning(
+                    f"[PMT] start trigger on {trigger_source} not configured, "
+                    f"counting will not be synchronised with the scan: {e}"
+                )
 
             runtime.task = task
             runtime.reader = CounterReader(task.in_stream)
@@ -327,8 +336,8 @@ class PMTDigitalManager(QObject):
                     try:
                         if runtime.task is not None:
                             runtime.task.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[PMT] closing the counter task failed: {e}")
                     runtime.task = None
                     runtime.reader = None
                     runtime.prev_count = 0
@@ -355,12 +364,12 @@ class PMTDigitalManager(QObject):
             if task is not None:
                 try:
                     task.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[PMT] stopping a counter task failed: {e}")
                 try:
                     task.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[PMT] closing a counter task failed: {e}")
             runtime.task = None
             runtime.reader = None
             runtime.prev_count = 0
@@ -412,4 +421,6 @@ class PMTDigitalManager(QObject):
         try:
             self.close()
         except Exception:
+            # Deliberately silent: exceptions in __del__ are ignored by the
+            # interpreter anyway, and logging during shutdown can itself fail.
             pass

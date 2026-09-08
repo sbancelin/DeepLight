@@ -525,7 +525,9 @@ class _ElliptecELL14Controller:
     def get_power_percent(self, offset_deg: float = 0.0) -> float:
         try:
             angle = self.get_angle_deg()
-        except Exception:
+        except Exception as e:
+            # Falls back to the last known angle: the value shown may be stale.
+            logger.debug(f"[ELL14] angle read failed, using the last known one: {e}")
             angle = self._last_angle_deg
 
         return self._absolute_angle_deg_to_power_percent(
@@ -1035,14 +1037,16 @@ class _KinesisLoader:
         try:
             from Thorlabs.MotionControl.KCube.DCServoCLI import KCubeDCServo
             cls.KCubeDCServo = KCubeDCServo
-        except Exception:
+        except Exception as e:
             cls.KCubeDCServo = None
+            logger.warning(f"[Kinesis] KCubeDCServo unavailable: {e}")
 
         try:
             from Thorlabs.MotionControl.KCube.StepperMotorCLI import KCubeStepperMotor
             cls.KCubeStepperMotor = KCubeStepperMotor
-        except Exception:
+        except Exception as e:
             cls.KCubeStepperMotor = None
+            logger.warning(f"[Kinesis] KCubeStepperMotor unavailable: {e}")
 
         cls.DeviceManagerCLI.BuildDeviceList()
         cls._loaded = True
@@ -1114,13 +1118,14 @@ class _PIVoiceCoilController:
 
         try:
             self.device.SVO(self.axis, 1)
-        except Exception:
-            pass
+        except Exception as e:
+            # Without servo control the stage accepts moves and silently ignores them.
+            logger.warning(f"[PI] could not enable servo control on axis {self.axis}: {e}")
 
         try:
             self.device.VEL(self.axis, float(PI_Z_DEFAULT_VEL_MM_S))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[PI] could not set the velocity on axis {self.axis}: {e}")
 
         self.connected = True
 
@@ -1141,7 +1146,10 @@ class _PIVoiceCoilController:
             return False
         try:
             return bool(self.device.IsMoving(self.axis))
-        except Exception:
+        except Exception as e:
+            # Reported as "stopped", so a caller waiting for the end of a move
+            # will believe it arrived. Worth seeing in the log.
+            logger.debug(f"[PI] IsMoving({self.axis}) failed, assuming stopped: {e}")
             return False
     
     def get_travel_range_um(self) -> tuple[float, float]:
@@ -1167,6 +1175,8 @@ class _PIVoiceCoilController:
                     mn = getter_min(self.axis)
                     mx = getter_max(self.axis)
                 except TypeError:
+                    # Deliberate signature probe: some GCS builds expose these
+                    # getters without an axis argument. Not logged, it is routine.
                     mn = getter_min()
                     mx = getter_max()
 
@@ -1218,8 +1228,8 @@ class _PIVoiceCoilController:
         if self.connected and self.device is not None:
             try:
                 self.device.STP()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[PI] stop command (STP) failed on axis {self.axis}: {e}")
 
     def wait_until_xy_reached(self, x_rel_target: float, y_rel_target: float, timeout_s: float = 30.0):
         """
@@ -1417,12 +1427,13 @@ class _ThorlabsRotationController:
         if self.connected and self.device is not None:
             try:
                 self.device.StopImmediate()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"[Kinesis] StopImmediate failed, restarting polling: {e}")
                 try:
                     self.device.StopPolling()
                     self.device.StartPolling(250)
-                except Exception:
-                    pass
+                except Exception as e2:
+                    logger.debug(f"[Kinesis] polling restart failed: {e2}")
 
     def get_angle_deg(self) -> float:
         return float(self._last_angle_deg)
@@ -2093,7 +2104,9 @@ class RealHardwarePositionerManager(PositionerManager):
             return
         try:
             x_um, y_um = self._xy.get_xy_abs_um()
-        except Exception:
+        except Exception as e:
+            # The displayed XY position silently stops updating without this.
+            logger.debug(f"[Positioner] XY position read failed: {e}")
             return
         for axis, new_abs in (("x", float(x_um)), ("y", float(y_um))):
             if axis not in self._state:
@@ -2117,7 +2130,8 @@ class RealHardwarePositionerManager(PositionerManager):
         ):
             try:
                 x_um, y_um = self._xy.get_xy_abs_um()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"[Positioner] XY polling read failed: {e}")
                 x_um = y_um = None
 
             if x_um is not None:
@@ -2758,14 +2772,15 @@ class RealHardwarePositionerManager(PositionerManager):
     def close(self):
         try:
             self._poll_timer.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Positioner] stopping the poll timer failed: {e}")
 
         try:
             if self._xy is not None:
                 self._xy.close()
-        except Exception:
-            pass
+        except Exception as e:
+            # A port left open here is what makes the next start fail.
+            logger.debug(f"[Positioner] closing the XY stage failed: {e}")
 
 # =============================================================================
 # HARDWARE MANAGER
@@ -3173,26 +3188,26 @@ class HardwareManager(QObject):
         try:
             if self._camera_controller is not None:
                 self._camera_controller.stop_live()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Hardware] stopping the camera live view failed: {e}")
 
         try:
             if self._camera_backend is not None:
                 self._camera_backend.disconnect()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Hardware] disconnecting the camera failed: {e}")
 
         try:
             if self._brillouin_camera is not None:
                 self._brillouin_camera.disconnect()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Hardware] disconnecting the Brillouin camera failed: {e}")
 
         try:
             if self._laser_manager is not None:
                 self._laser_manager.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Hardware] closing the laser manager failed: {e}")
 
         for dev in (self._shutter, self._xy_controller, self._z_controller, *self._rotators.values()):
             try:
