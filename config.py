@@ -38,6 +38,7 @@ Usage::
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import sys
@@ -298,14 +299,31 @@ def data_root() -> Path:
 
 
 def dated_data_folder(year: str, month: str = "", day: str = "") -> str:
-    """``<data root>/<year>[/<month>[/<day>]]`` as a string.
-
-    Single helper for the default save location, so the Save and Spectro
-    panels cannot drift apart again.
-    """
+    """``<data root>/<year>[/<month>[/<day>]]`` as a string."""
     path = data_root() / year
     if month:
         path = path / month
     if day:
         path = path / day
     return str(path)
+
+
+# Month names are spelled out rather than taken from the C library so the
+# folder name cannot change with the machine's locale. This matches what
+# QDate.toString("MMMM") produces, since DeepLight forces QLocale.c().
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def default_dated_folder(when: "datetime.date | None" = None) -> str:
+    """Default save folder: ``<data root>/YYYY/Month/DD``.
+
+    The single source of the default save location, so the Save panel and the
+    Spectro panel cannot drift apart again.
+    """
+    day = when or datetime.date.today()
+    return dated_data_folder(
+        f"{day.year:04d}", _MONTH_NAMES[day.month - 1], f"{day.day:02d}"
+    )

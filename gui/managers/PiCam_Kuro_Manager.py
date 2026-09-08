@@ -6,6 +6,7 @@ import ctypes
 from pathlib import Path
 from ctypes import POINTER, byref
 import numpy as np
+from ...config import CONFIG
 from ..widgets.Log_Widget import logger
 
 # ----------------------------------------------------------------------
@@ -107,6 +108,12 @@ class PiCamKuroManager:
         if user_path:
             candidates.append(Path(user_path))
 
+        # picam.dll_path in the configuration file wins over the standard
+        # install locations; leave it empty to search them.
+        configured = str(CONFIG.picam.get("dll_path", "") or "").strip()
+        if configured:
+            candidates.append(Path(configured))
+
         picam_root = os.environ.get("PicamRoot")
         if picam_root:
             candidates.append(Path(picam_root) / "Runtime" / "Picam.dll")
@@ -120,10 +127,11 @@ class PiCamKuroManager:
             if p.is_file():
                 return str(p.resolve())
 
+        looked_in = "\n  ".join(str(p) for p in candidates)
         raise FileNotFoundError(
-            "Picam.dll not found in official PICAM installation paths. "
-            "Expected something like "
-            r"C:\Program Files\Princeton Instruments\PICam\Runtime\Picam.dll"
+            "Picam.dll not found. Set picam.dll_path in the DeepLight "
+            "configuration file to the full path of Picam.dll.\nLooked in:\n  "
+            + looked_in
         )
     
     def _check(self, err: int, where: str):

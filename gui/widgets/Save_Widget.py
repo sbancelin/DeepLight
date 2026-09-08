@@ -1,6 +1,8 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QGridLayout, QLabel, 
                                QLineEdit, QComboBox, QFileDialog, QPlainTextEdit, QMessageBox, QSizePolicy)
-from PySide6.QtCore import Qt, Signal, QDate
+from PySide6.QtCore import Qt, Signal
+
+from ...config import default_dated_folder
 from PySide6.QtGui import QIcon
 
 import os
@@ -82,14 +84,8 @@ class SaveWidget(QWidget):
         folder_label.setStyleSheet("color: white; font-weight: bold;")
         grid_layout.addWidget(folder_label, 0, 0)
 
-        # Champ pour l'adresse du dossier
-        current_date = QDate.currentDate()
-        year = current_date.toString("yyyy")
-        month = current_date.toString("MMMM")
-        day = current_date.toString("dd")
-        default_folder = fr"C:\Data\{year}\{month}\{day}"
-
-        self.folder_line_edit = QLineEdit(default_folder)
+        # Champ pour l'adresse du dossier (racine configurable, voir config.py)
+        self.folder_line_edit = QLineEdit(default_dated_folder())
         self.folder_line_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.folder_line_edit.setMinimumWidth(0)
         self.folder_line_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)

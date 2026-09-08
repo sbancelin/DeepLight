@@ -3,7 +3,9 @@ from PySide6.QtWidgets import (
     QPushButton, QSizePolicy, QLineEdit, QFileDialog,
     QPlainTextEdit, QComboBox, QMessageBox, QFrame, QProgressBar
 )
-from PySide6.QtCore import Signal, QDate, Qt
+from PySide6.QtCore import Signal, Qt
+
+from ...config import default_dated_folder
 from PySide6.QtGui import QIcon, QDoubleValidator, QIntValidator
 
 import os
@@ -345,12 +347,7 @@ class SpectroPanelWidget(QWidget):
         save_layout.setColumnStretch(1, 1)
         save_layout.setColumnStretch(2, 0)
 
-        current_date = QDate.currentDate()
-        default_folder = (
-            fr"C:\Data\{current_date.toString('yyyy')}"
-            fr"\{current_date.toString('MMMM')}"
-            fr"\{current_date.toString('dd')}"
-        )
+        default_folder = default_dated_folder()
 
         folder_label = QLabel("Folder")
         folder_label.setStyleSheet("color: white; font-weight: bold;")
