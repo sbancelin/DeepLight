@@ -50,13 +50,13 @@ class MosaicRunConfig:
 
 class StitchingManager(QObject):
     """
-    Orchestrateur de mosaïque XY non bloquant.
+    Non-blocking XY mosaic orchestrator.
 
-    Philosophie :
-    - ne bloque jamais l'UI
-    - s'appuie sur les managers existants
-    - avance par événements : move terminé -> acquisition -> collage -> move suivant
-    - compatible future backend hardware tant que l'API stable est conservée
+    Philosophy:
+    - never blocks the UI
+    - builds on the existing managers
+    - advances by events: move done -> acquisition -> stitch -> next move
+    - ready for a future hardware backend as long as the stable API is kept
     """
 
     mosaic_updated = Signal(object)         # np.ndarray
@@ -331,8 +331,10 @@ class StitchingManager(QObject):
         )
 
     def _compute_stack_positions(self, row: dict, mode: str) -> list[float]:
-        """Positions relatives des plans de l'axe stack (mêmes conventions que
-        Scan_manager._compute_axis_positions : Z-Vcoil descend ; around/from)."""
+        """
+        Relative positions of the stack-axis planes (same conventions as
+        Scan_manager._compute_axis_positions: Z-Vcoil goes down; around/from).
+        """
         n = max(1, int(row.get("pixels", 1) or 1))
         size = float(row.get("size_um", 0.0) or 0.0)
         offset = float(row.get("offset_um", 0.0) or 0.0)  # base relative + offset
@@ -355,9 +357,11 @@ class StitchingManager(QObject):
 
     @staticmethod
     def _strip_stack_axis(scan_params: dict, stack_display: str) -> dict:
-        """Retourne une copie des scan_params sans l'axe stack (Z/P), pour une
-        acquisition XY seule : l'axe est retiré de axis_order/active_axes/rows
-        et son slot pixel mis à 1 -> le plan galvo ne contient plus que XY."""
+        """
+        Return a copy of scan_params without the stack axis (Z/P), for an XY-only
+        acquisition: the axis is removed from axis_order/active_axes/rows and its
+        pixel slot set to 1 -> the galvo plan then contains XY only.
+        """
         p = dict(scan_params or {})
 
         axis_order = list(p.get("axis_order", []))
@@ -405,19 +409,20 @@ class StitchingManager(QObject):
         stack_range_um: float = 0.0,
         stack_speed_mm_s: float = 1.0,
     ) -> float:
-        """Durée totale estimée d'un run de mosaïque.
+        """
+        Estimated total duration of a mosaic run.
 
-        Prend en compte, en plus du temps d'acquisition des tuiles :
-        - les trajets XY de la platine le long du serpentin (distance / vitesse) ;
-        - en mode 'per plane' : les déplacements de l'axe stack (Z/P) et les
-          resets XY entre plans ;
-        - une latence fixe par mouvement et par acquisition (cf. constantes) ;
-        - le retour à la position de départ.
+        On top of the tile acquisition time, it accounts for:
+        - the XY travel of the stage along the serpentine (distance / speed);
+        - in 'per plane' mode: the stack-axis (Z/P) moves and the XY resets
+          between planes;
+        - a fixed latency per move and per acquisition (see the constants);
+        - the return to the starting position.
 
-        `per_acq_full_s` = durée d'UNE acquisition complète (pile Z/P incluse),
-        telle qu'affichée par le ScanWidget. Le temps d'acquisition total vaut
-        n_tiles × per_acq_full_s dans les deux ordres de balayage (en 'per plane'
-        chaque acquisition ne fait qu'un plan, mais il y en a n_planes× plus).
+        `per_acq_full_s` = duration of ONE complete acquisition (Z/P stack
+        included), as displayed by the ScanWidget. The total acquisition time is
+        n_tiles × per_acq_full_s in both sweep orders (in 'per plane' each
+        acquisition covers a single plane, but there are n_planes× more of them).
         """
         tiles_x = max(1, int(tiles_x))
         tiles_y = max(1, int(tiles_y))
@@ -552,7 +557,7 @@ class StitchingManager(QObject):
         self._poll_timer.start()
 
     def _move_stack_to(self, stack_rel_um: float):
-        """Déplace l'axe stack (Z/P) à une position relative (mode Z per plane)."""
+        """Move the stack axis (Z/P) to a relative position (Z per plane mode)."""
         self._target_stack_rel = float(stack_rel_um)
         self._waiting_for_move = True
         self._waiting_for_acq = False
@@ -698,8 +703,8 @@ class StitchingManager(QObject):
 
     def _extract_channel_image(self, acquired, channel: str):
         """
-        Pour la v1, la source de vérité est l'image 2D effectivement affichée
-        et stockée côté MainWindow dans last_images.
+        For v1 the source of truth is the 2D image actually displayed, stored on
+        the MainWindow side in last_images.
         """
         if callable(self.image_getter):
             try:
@@ -731,12 +736,12 @@ class StitchingManager(QObject):
     
     def _extract_channel_stack(self, acquired, channel: str):
         """
-        Construit la pile 3D (P, H, W) d'une tuile pour un canal donné, à partir
-        de la structure `acquired` du microscope : rep -> idx_tuple -> ch -> 2D.
-        Les plans sont ordonnés par index d'axe stack (tri des idx_tuple).
+        Build the 3D stack (P, H, W) of one tile for a given channel, from the
+        microscope's `acquired` structure: rep -> idx_tuple -> ch -> 2D.
+        The planes are ordered by stack-axis index (idx_tuple sort).
 
-        Même orientation que l'image affichée (acquired stocke une copie de
-        shared_images). Retourne None si extraction impossible.
+        Same orientation as the displayed image (acquired holds a copy of
+        shared_images). Returns None when extraction is not possible.
         """
         if not isinstance(acquired, dict) or not acquired:
             return None
@@ -771,9 +776,9 @@ class StitchingManager(QObject):
 
     def _mosaic_nominal_view(self):
         """
-        Vue de la mosaïque à la taille nominale (sans la marge interne
-        de recalage), telle qu'affichée par l'UI. 2D si un seul plan,
-        3D (P, H, W) sinon.
+        View of the mosaic at its nominal size (without the internal registration
+        margin), as displayed by the UI. 2D for a single plane, 3D (P, H, W)
+        otherwise.
         """
         m = int(getattr(self, "_reg_margin_px", 0) or 0)
         view = self._mosaic if m <= 0 else self._mosaic[:, m:-m, m:-m]
@@ -853,12 +858,12 @@ class StitchingManager(QObject):
 
     def _correlate_covered_strip(self, y0, y1, x0, x1, mov, max_shift, ref_plane=0):
         """
-        Corrèle la strip mosaïque [y0:y1, x0:x1] avec `mov` en se limitant à
-        la sous-zone réellement couverte (poids non nul). Les bandes vides
-        (tuile voisine décalée ou pas encore posée) corrompent la corrélation
-        si on les laisse dans la strip.
+        Correlate the mosaic strip [y0:y1, x0:x1] with `mov`, restricted to the
+        sub-area actually covered (non-zero weight). Empty bands (a neighbouring
+        tile shifted, or not yet placed) corrupt the correlation if they are left
+        in the strip.
 
-        Retourne (dy, dx) ou None si la zone couverte est insuffisante.
+        Returns (dy, dx), or None when the covered area is too small.
         """
         ref = self._mosaic[int(ref_plane), y0:y1, x0:x1]
         w = self._mosaic_weight[y0:y1, x0:x1]
@@ -886,9 +891,9 @@ class StitchingManager(QObject):
 
     def _estimate_tile_registration(self, arr, x0_nom, y0_nom, ix, iy, ref_plane=0):
         """
-        Estime la correction (dy, dx) à appliquer à la position nominale
-        par cross-corrélation dans la zone de recouvrement avec les tuiles voisines.
-        Le recalage se fait sur le plan `ref_plane` de la mosaïque.
+        Estimate the correction (dy, dx) to apply to the nominal position, by
+        cross-correlation over the overlap area with the neighbouring tiles.
+        Registration is done on the mosaic's `ref_plane` plane.
         """
         ov = self._cfg.overlap_px
         max_shift = max(2, ov // 3)
@@ -951,14 +956,13 @@ class StitchingManager(QObject):
     @staticmethod
     def _cross_correlate(ref, mov, max_shift):
         """
-        Cross-corrélation normalisée entre deux strips de même taille.
-        Retourne (dy, dx) entiers bornés à ±max_shift.
+        Normalised cross-correlation between two strips of equal size.
+        Returns integer (dy, dx) bounded to ±max_shift.
 
-        La recherche du pic est restreinte à la fenêtre ±max_shift AVANT
-        l'argmax : auparavant un pic lointain (texture périodique, bruit)
-        était écrêté à ±max_shift, ce qui produisait des décalages
-        systématiques faisant dériver les tuiles. Un pic trop faible
-        (corrélation non fiable) est également rejeté.
+        The peak search is restricted to the ±max_shift window BEFORE the argmax:
+        previously a distant peak (periodic texture, noise) was clipped to
+        ±max_shift, which produced systematic offsets that made the tiles drift.
+        A peak that is too weak (unreliable correlation) is rejected as well.
         """
         r_std = float(ref.std())
         m_std = float(mov.std())
@@ -1004,9 +1008,9 @@ class StitchingManager(QObject):
 
     def _build_tile_weight(self, tile_h, tile_w, overlap, ix, iy, max_ix, max_iy):
         """
-        Construit une carte de poids 2D pour faire un fondu dans les zones de recouvrement.
-        Le poids reste à 1 au centre et décroît linéairement vers les bords qui recouvrent
-        une tuile voisine.
+        Build a 2D weight map to blend across the overlap regions.
+        The weight stays at 1 in the centre and decreases linearly towards the
+        edges that overlap a neighbouring tile.
         """
         wx = np.ones(tile_w, dtype=np.float32)
         wy = np.ones(tile_h, dtype=np.float32)

@@ -9,10 +9,10 @@ MOCK_DIGITAL_MAX_COUNTS = 65535.0
 
 class MockDetectorManager(QObject):
     """
-    Générateur mock de signaux détecteurs.
+    Mock generator of detector signals.
 
-    Il génère une frame 2D synthétique complète, puis la sert
-    comme un flux 1D raster compatible avec le pipeline d'acquisition.
+    It builds a complete synthetic 2D frame, then serves it as a 1D raster
+    stream compatible with the acquisition pipeline.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -60,8 +60,8 @@ class MockDetectorManager(QObject):
     
     def _mock_digital_counts(self, channel: str, dwell_time_s: float) -> float:
         """
-        Mock photon counting correspondant au PMT H16721 + C8855.
-        La saturation est fixée par la linéarité du H16721 (~1.5 MHz).
+        Mock photon counting matching the H16721 PMT + C8855.
+        Saturation is set by the linearity of the H16721 (~1.5 MHz).
         """
 
         rng = np.random.default_rng(
@@ -77,9 +77,9 @@ class MockDetectorManager(QObject):
         
     def _digital_max_counts_for_dwell(self, dwell_time_s: float) -> float:
         """
-        Plafond mock cohérent avec le PMT/compteur utilisé.
-        On garde une saturation réaliste autour de ~16721 counts par pixel,
-        avec borne de sécurité 16 bits si nécessaire.
+        Mock ceiling consistent with the PMT/counter in use.
+        Saturation is kept realistic around ~16721 counts per pixel, with a
+        16-bit safety bound where needed.
         """
         target_max = 16721.0
 
@@ -90,7 +90,7 @@ class MockDetectorManager(QObject):
     
     def acquire_integrated_scalar(self, channel: str, dwell_time_s: float, source_kind: str = "analog_integrating") -> float:
         """
-        Retourne un scalaire intégré mock pour un canal et un dwell donnés.
+        Return a mock integrated scalar for a given channel and dwell.
         """
 
         if source_kind == "analog_integrating":
@@ -118,13 +118,13 @@ class MockDetectorManager(QObject):
         trailing_skip_px: int = 0,
     ):
         """
-        Configure le format technique attendu par l'acquisition.
+        Configure the technical layout the acquisition expects.
 
-        - dim_x / dim_y : dimensions image logiques
-        - dim_fast / dim_slow : dimensions raster utiles acquises
-        - fast_axis_is_image_x :
-            True  -> fast -> X image
-            False -> fast -> Y image
+        - dim_x / dim_y: logical image dimensions
+        - dim_fast / dim_slow: useful raster dimensions actually acquired
+        - fast_axis_is_image_x:
+            True  -> fast -> image X
+            False -> fast -> image Y
         """
         self.dim_image_x = int(dim_image_x)
         self.dim_image_y = int(dim_image_y)
@@ -152,8 +152,8 @@ class MockDetectorManager(QObject):
         noise_off: float | None = None,
     ):
         """
-        Configuration interne du mock uniquement.
-        À appeler depuis le mock lui-même ou manuellement pendant les tests.
+        Internal configuration of the mock only.
+        To be called from the mock itself, or by hand during tests.
         """
         if random_mode is not None:
             self.random_mode = bool(random_mode)
@@ -180,7 +180,7 @@ class MockDetectorManager(QObject):
         axis4_value: float | None = None,
     ):
         """
-        Prépare une nouvelle frame complète et remet le curseur de lecture à zéro.
+        Prepare a new complete frame and reset the read cursor to zero.
         """
         self._reset_frame_cache()
 
@@ -206,8 +206,8 @@ class MockDetectorManager(QObject):
         axis4_value: float | None = None,
     ) -> dict[str, np.ndarray]:
         """
-        Renvoie le prochain bloc de samples dans le flux raster de la frame.
-        Si la frame est épuisée, le bloc est complété au niveau bas.
+        Return the next block of samples in the frame's raster stream.
+        Once the frame is exhausted, the block is padded at the low level.
         """
         n_samples = max(1, int(n_samples))
 
@@ -245,15 +245,15 @@ class MockDetectorManager(QObject):
 
     def _frame_to_raster_stream(self, frame: np.ndarray) -> np.ndarray:
         """
-        Transforme une image logique frame[y, x] en flux 1D dans l'ordre
-        temporel réellement acquis.
+        Turn a logical image frame[y, x] into a 1D stream in the order in which
+        it is really acquired in time.
 
-        Le flux raster peut être plus large que l'image logique à cause de
-        l'overscan. Dans ce cas :
-        - les pixels utiles sont insérés entre leading_skip_px et trailing_skip_px
-        - les zones overscan sont remplies au niveau bas
-        - si bidirectional=True, une ligne slow sur deux est lue en sens inverse
-        sur le flux technique complet
+        The raster stream can be wider than the logical image because of the
+        overscan. In that case:
+        - the useful pixels are inserted between leading_skip_px and trailing_skip_px
+        - the overscan regions are filled at the low level
+        - if bidirectional=True, every other slow line is read backwards over the
+        full technical stream
         """
         flat = np.full((self.dim_fast * self.dim_slow,), self.low_level, dtype=np.float64)
 

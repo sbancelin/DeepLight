@@ -19,9 +19,9 @@ class SettingsDialog(QDialog):
         self.main_layout.addWidget(self.ok_button)
 
     def add_widget(self, widget):
-        """Ajoute un widget personnalisé au dialogue."""
+        """Add a custom widget to the dialog."""
         self.content_layout.addWidget(widget)
 
     def add_layout(self, layout):
-        """Ajoute un layout personnalisé au dialogue."""
+        """Add a custom layout to the dialog."""
         self.content_layout.addLayout(layout)

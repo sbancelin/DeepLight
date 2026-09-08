@@ -539,11 +539,12 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _open_shutter_for_spectro(self):
-        """Ouvre le shutter (laser) au lancement d'une acquisition spectro.
+        """
+        Open the (laser) shutter when a spectro acquisition starts.
 
-        Symetrique de _close_shutter_after_spectro : le chemin spectro gere
-        lui-meme le shutter (le scan laser passe, lui, par l'Acquisition_Manager).
-        No-op cote hardware si backend non-nidaq.
+        Symmetric with _close_shutter_after_spectro: the spectro path handles the
+        shutter itself, whereas the laser scan goes through the Acquisition_Manager.
+        A no-op on the hardware side for a non-nidaq backend.
         """
         try:
             self.user_shutter_override = None
@@ -556,12 +557,13 @@ class MainWindow(QMainWindow):
             logger.debug(f"[MainWindow] spectro shutter UI update failed: {e}")
 
     def _close_shutter_after_spectro(self):
-        """Ferme le shutter (laser) en fin d'acquisition spectro/Brillouin.
+        """
+        Close the (laser) shutter at the end of a spectro/Brillouin acquisition.
 
-        Contrairement au scan laser (Acquisition_Manager), le chemin spectro
-        n'ouvre/ferme pas le shutter automatiquement : on force donc la
-        fermeture ici pour ne pas laisser le laser sur l'échantillon après
-        l'acquisition. No-op côté hardware si backend non-nidaq.
+        Unlike the laser scan (Acquisition_Manager), the spectro path does not
+        open and close the shutter automatically, so the close is forced here so
+        the laser is not left on the sample after the acquisition. A no-op on the
+        hardware side for a non-nidaq backend.
         """
         try:
             self.user_shutter_override = None
@@ -884,12 +886,12 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def _start_stitch_preview_single(self, scan_parameters: dict):
         """
-        Lance l'acquisition d'une tuile pour le stitching.
+        Start the acquisition of one tile for the stitching.
 
-        On utilise le pipeline d'acquisition COMPLET (run_acquisition) et non
-        preview_single : preview_single n'acquiert qu'une frame et ne remplit
-        pas `acquired`, alors que le stitching multi-axes (XYZ/XYP) a besoin de
-        toute la pile de plans (un par index d'axe Z/P) via `acquired`.
+        The FULL acquisition pipeline (run_acquisition) is used rather than
+        preview_single: preview_single acquires a single frame and does not fill
+        `acquired`, whereas multi-axis stitching (XYZ/XYP) needs the whole stack
+        of planes (one per Z/P axis index) through `acquired`.
         """
         self.acquisition_manager.set_scan_parameters(scan_parameters)
         self.start_scan_outputs(scan_parameters, mode="acquisition")
@@ -949,8 +951,10 @@ class MainWindow(QMainWindow):
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
     def _compute_stitching_estimate_s(self, scan_params: dict) -> float:
-        """Estimation réaliste de la durée totale d'une mosaïque (voir
-        StitchingManager.estimate_duration_seconds)."""
+        """
+        Realistic estimate of the total duration of a mosaic (see
+        StitchingManager.estimate_duration_seconds).
+        """
         rows = [r for r in scan_params.get("rows", []) if r.get("axis") != "None"]
         row_x = next((r for r in rows if str(r.get("axis", "")).startswith("X")), None)
         row_y = next((r for r in rows if str(r.get("axis", "")).startswith("Y")), None)
@@ -1094,8 +1098,8 @@ class MainWindow(QMainWindow):
         
     def _capture_stepper_return_targets(self):
         """
-        Mémorise la position relative initiale de X, Y, Z et P
-        au début d'une acquisition.
+        Remember the initial relative position of X, Y, Z and P at the start of an
+        acquisition.
         """
         for axis in ("x", "y", "z", "p"):
             try:
@@ -1106,8 +1110,8 @@ class MainWindow(QMainWindow):
     
     def _attach_initial_relative_positions(self, scan_parameters: dict) -> dict:
         """
-        Attache au dict de scan les positions relatives initiales des axes stepper.
-        Ne modifie pas le dict d'origine : renvoie une copie.
+        Attach the initial relative positions of the stepper axes to the scan dict.
+        The original dict is not modified: a copy is returned.
         """
         params = dict(scan_parameters or {})
 
@@ -1134,9 +1138,9 @@ class MainWindow(QMainWindow):
     
     def _attach_detector_specs(self, scan_parameters: dict) -> dict:
         """
-        Attache au dict de scan:
+        Attach to the scan dict:
         - active_channels
-        - detector_channels (description structurée)
+        - detector_channels (structured description)
         """
         params = dict(scan_parameters or {})
 
@@ -1156,7 +1160,7 @@ class MainWindow(QMainWindow):
     
     def _channel_unit_label(self, channel: str) -> str:
         """
-        Retourne l'unité affichée pour un canal.
+        Return the unit displayed for a channel.
         - analog  -> V
         - digital -> counts
         """
@@ -1174,7 +1178,7 @@ class MainWindow(QMainWindow):
         return "value"
     
     def start_scan_outputs(self, scan_parameters: dict, mode: str):
-        """Prépare le plan analog/stepper; le temps réel viendra de l'acquisition."""
+        """Prepare the analog/stepper plan; the real timing will come from the acquisition."""
         self.ui.analog_out_widget.reset_buffer()
         try:
             self.ui.visu_step_widget.reset_buffer()
@@ -1305,7 +1309,7 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def on_samples_progress(self, delta_samples: int):
         """
-        Horloge réelle du run: appelée à partir du thread d'acquisition.
+        The run's real clock: called from the acquisition thread.
         """
         try:
             scan_kind = str(self.ui.scan_widget.get_scan_kind())
@@ -1438,7 +1442,7 @@ class MainWindow(QMainWindow):
     
     def _get_display_axes_from_scan_params(self, scan_parameters: dict):
         """
-        Retourne les deux axes réellement affichés dans l'image.
+        Return the two axes actually displayed in the image.
         """
         rows = [row for row in scan_parameters.get("rows", []) if row.get("axis") != "None"]
 
@@ -1593,8 +1597,8 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def on_shutter_requested(self, open_: bool):
         """
-        Demande venant de l'acquisition (logique auto).
-        Si l'utilisateur a forcé un état, on ne l'écrase pas.
+        Request coming from the acquisition (automatic logic).
+        If the user has forced a state, it is not overridden.
         """
         if self.user_shutter_override is not None:
             # L'utilisateur a la main pendant l'acquisition
@@ -1614,11 +1618,11 @@ class MainWindow(QMainWindow):
             btn.setIcon(QIcon(None))
 
     def _connect_actions(self):
-        """Branche les boutons de la barre d'action sur les slots de la fenêtre.
+        """
+        Connect the action-bar buttons to the window's own slots.
 
-        Ces connexions vivaient auparavant dans main_window_design.py, ce qui
-        obligeait le module de layout à connaître les noms de méthodes de
-        MainWindow. Elles appartiennent ici.
+        These connections used to live in main_window_design.py, which forced the
+        layout module to know MainWindow's method names. They belong here.
         """
         ui = self.ui
         ui.pushButton_previewSingle.clicked.connect(self.previewsingleButtonClicked)
@@ -1645,7 +1649,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def on_acquisition_started(self):
-        """Gère le démarrage d'un run acquisition/preview."""
+        """Handle the start of an acquisition/preview run."""
         try:
             self.ui.visu_step_widget.set_running(True)
         except Exception as e:
@@ -1674,7 +1678,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def on_acquisition_stopped(self):
-        """Gère l'arrêt de l'acquisition."""
+        """Handle the end of the acquisition."""
         # En stitching, la fin d'une acquisition tuile ne clôt PAS la barre
         # globale (elle représente la mosaïque complète, gérée par le run).
         if not self.stitching_manager.is_running():
@@ -1805,8 +1809,8 @@ class MainWindow(QMainWindow):
     @Slot(str, np.ndarray)
     def _forward_image_to_frc(self, channel: str, image_data: np.ndarray):
         """
-        Relais vers le widget FRC.
-        On lui envoie exactement l'image affichée dans les ImageView.
+        Relay to the FRC widget.
+        It receives exactly the image displayed in the ImageView widgets.
         """
         try:
             if getattr(self.ui, "frc_widget", None) is None:
@@ -1819,8 +1823,8 @@ class MainWindow(QMainWindow):
     
     def _update_frc_channels(self):
         """
-        Met à jour la combobox Channel du widget FRC
-        à partir des détecteurs actuellement actifs.
+        Update the Channel combobox of the FRC widget from the detectors that are
+        currently active.
         """
         try:
             channels = list(self.ui.detector_widget.detectors) or []
@@ -1831,7 +1835,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def on_frc_request_single_frame(self, channel: str):
         """
-        Lance un single pour fournir une image fraîche au FRC widget.
+        Run a single acquisition to give the FRC widget a fresh image.
         """
         scan_parameters = self.ui.scan_widget.get_scan_parameters()
 
@@ -1861,7 +1865,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def previewsingleButtonClicked(self, checked: bool = False):
-        """Démarre une acquisition en mode preview single."""
+        """Start an acquisition in single-preview mode."""
         self._capture_stepper_return_targets()
         scan_parameters = self.ui.scan_widget.get_scan_parameters()
         scan_parameters = self._attach_detector_specs(scan_parameters)
@@ -1955,7 +1959,7 @@ class MainWindow(QMainWindow):
             lbl.setText(text)
 
     def connect_image_mouse_tracking(self):
-        """Connecte sigMouseMoved de chaque ImageView vers le slot MainWindow."""
+        """Connect sigMouseMoved of every ImageView to the MainWindow slot."""
         # structure: channel -> (scene, proxy)
         if not isinstance(self._mouse_move_proxies, dict):
             self._mouse_move_proxies = {}
@@ -2038,7 +2042,7 @@ class MainWindow(QMainWindow):
     
     @Slot()
     def stopButtonClicked(self):
-        """Arrête l'acquisition en cours."""
+        """Stop the running acquisition."""
         
         self.acquisition_manager.stop_acquisition()
 

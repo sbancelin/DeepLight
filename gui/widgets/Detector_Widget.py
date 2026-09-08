@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QGridLayout, Q
 from PySide6.QtCore import Signal, Qt
 
 class ToggleButton(QPushButton):
-    """Bouton circulaire checkable utilisé pour activer/désactiver un détecteur."""
+    """Checkable round button used to enable/disable a detector."""
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
 
@@ -51,7 +51,7 @@ class ToggleButton(QPushButton):
         """)
 
 class DetectorWidget(QWidget):
-    """Widget de sélection des détecteurs actifs."""
+    """Widget for selecting the active detectors."""
     detectors_changed = Signal(list)
 
     def __init__(self, parent=None):
@@ -103,11 +103,11 @@ class DetectorWidget(QWidget):
 
     def get_detector_specs(self):
         """
-        Retourne la description structurée des 4 canaux détecteurs.
+        Return the structured description of the 4 detector channels.
 
-        Convention V1 DeepLight:
-        - PMT-Vis, PMT-IR -> analogiques
-        - Ch 0, Ch 1      -> digitaux
+        DeepLight V1 convention:
+        - PMT-Vis, PMT-IR -> analog
+        - Ch 0, Ch 1      -> digital
         """
         ordered_names = ["PMT-Vis", "PMT-IR", "Ch 0", "Ch 1"]
         specs = []
@@ -134,7 +134,7 @@ class DetectorWidget(QWidget):
         return specs
     
     def on_detector_toggled(self, detector_name):
-        """Met à jour la liste des détecteurs actifs puis émet le signal associé."""
+        """Update the list of active detectors, then emit the matching signal."""
         is_checked = self.toggle_buttons[detector_name].isChecked()
 
         if is_checked and detector_name not in self.detectors:

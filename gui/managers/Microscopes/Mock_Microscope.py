@@ -12,7 +12,7 @@ from ..Sample_Detector_Integrator import SampleDetectorIntegrator
 
 
 class MockMicroscope(MicroscopeBackendBase):
-    """Classe pour simuler un microscope en mode mock."""
+    """Class simulating a microscope in mock mode."""
 
     def __init__(self, scan_parameters=None):
         super().__init__(scan_parameters=None)

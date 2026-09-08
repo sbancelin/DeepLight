@@ -9,7 +9,7 @@ from ..resources import icon_path
 
 class AnalogOutVisualizerWidget(QWidget):
     def reset_buffer(self):
-        """Réinitialise le buffer de monitoring (nouvelle acquisition)."""
+        """Reset the monitoring buffer (new acquisition)."""
         self._t_full = np.zeros((0,), dtype=np.float64)
         self._x_full = np.zeros((0,), dtype=np.float64)
         self._y_full = np.zeros((0,), dtype=np.float64)
@@ -294,7 +294,7 @@ class AnalogOutVisualizerWidget(QWidget):
         plot.addItem(zero_line)
 
     def toggle_autoscale(self, plot, checkbox):
-        """Active ou désactive l'autoscale pour un graphique donné."""
+        """Enable or disable autoscaling for a given plot."""
         if checkbox.isChecked():
             plot.enableAutoRange()
             plot.autoRange()
@@ -316,7 +316,7 @@ class AnalogOutVisualizerWidget(QWidget):
                 self.galvo_x_plot.setYRange(-5, 5, padding=0)
 
     def on_axis_double_click(self, event, plot):
-        """Gère le double-clic sur les axes pour ouvrir une fenêtre de modification des échelles."""
+        """Handle a double-click on the axes to open the scale editing dialog."""
         if event.double():
             pos = event.scenePos()
             if plot.sceneBoundingRect().contains(pos):
@@ -324,7 +324,7 @@ class AnalogOutVisualizerWidget(QWidget):
                 self.show_axis_range_dialog(axis, plot)
 
     def show_axis_range_dialog(self, axis, plot):
-        """Affiche une fenêtre pour modifier les échelles de l'axe."""
+        """Show a dialog for editing the axis scales."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Set Axis Range")
         dialog.setStyleSheet("background-color: #333; color: white;")

@@ -48,7 +48,7 @@ COMBO_STYLE = """
 """
 
 class SaveWidget(QWidget):
-    """Widget pour la gestion de la sauvegarde des fichiers."""
+    """Widget handling how files are saved."""
 
     sigSaveClicked = Signal(str, str, str, str)  # Signal émis lors de la sauvegarde (dossier, nom, format, comment)
 
@@ -183,10 +183,10 @@ class SaveWidget(QWidget):
         self.main_layout.addStretch()
 
     def choose_folder(self):
-        """Ouvre une boîte de dialogue pour choisir un dossier."""
+        """Open a dialog for choosing a folder."""
         folder = QFileDialog.getExistingDirectory(
             self,
-            "Sélectionner un dossier",
+            "Select a folder",
             self.folder_line_edit.text(),
             QFileDialog.ShowDirsOnly
         )
@@ -194,7 +194,7 @@ class SaveWidget(QWidget):
             self.folder_line_edit.setText(folder)
 
     def save_file(self):
-        """Émet un signal avec les informations de sauvegarde."""
+        """Emit a signal carrying the save information."""
         folder = self.folder_line_edit.text().strip()
         filename = self.filename_line_edit.text().strip()
         file_format = self.format_combo.currentText()

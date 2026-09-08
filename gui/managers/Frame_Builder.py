@@ -4,20 +4,20 @@ from .Scan_Types import FrameReconstructionPlan
 
 class FrameBuilder:
     """
-    Reconstruit une frame XY à partir d'un flux de samples.
+    Reconstruct an XY frame from a stream of samples.
 
-    Objectif:
-    - garder exactement le même contrat externe que la version précédente
-    - supprimer la boucle Python sample-par-sample
-    - conserver un remplissage progressif de l'image pendant l'acquisition
+    Goal:
+    - keep exactly the same external contract as the previous version
+    - remove the sample-by-sample Python loop
+    - keep filling the image progressively during the acquisition
 
-    Hypothèses :
-    - le flux brut est ordonné ligne par ligne
-    - chaque ligne brute contient :
-          [leading skip] + [samples utiles] + [trailing skip]
-    - les samples utiles d'une ligne correspondent à la largeur logique de l'image
-      sur l'axe rapide
-    - chaque pixel = moyenne de samples_per_pixel samples consécutifs
+    Assumptions:
+    - the raw stream is ordered line by line
+    - each raw line contains:
+          [leading skip] + [useful samples] + [trailing skip]
+    - the useful samples of a line correspond to the logical width of the image
+      along the fast axis
+    - each pixel = mean of samples_per_pixel consecutive samples
     """
 
     def __init__(
@@ -111,8 +111,8 @@ class FrameBuilder:
 
     def _write_new_pixels_in_current_line(self):
         """
-        Écrit dans les arrays uniquement les pixels nouvellement complets
-        de la ligne courante.
+        Write to the arrays only the pixels of the current line that have
+        just become complete.
         """
         completed_pixels = self._useful_samples_filled // self.samples_per_pixel
         if completed_pixels <= self._written_pixels_in_line:
@@ -190,9 +190,9 @@ class FrameBuilder:
 
     def _finish_current_line_if_needed(self):
         """
-        Si on a consommé toute la ligne brute
-        (leading skip + utile + trailing skip),
-        on passe à la ligne suivante.
+        Once the whole raw line has been consumed
+        (leading skip + useful + trailing skip),
+        move on to the next line.
         """
         if self._raw_pos_in_line < self.line_total_samples:
             return
@@ -204,10 +204,10 @@ class FrameBuilder:
 
     def consume_samples(self, samples_by_channel: dict[str, np.ndarray]) -> int:
         """
-        Consomme un bloc de samples et remplit les pixels au fur et à mesure.
+        Consume a block of samples, filling in pixels as it goes.
 
-        Retour :
-            nombre de pixels nouvellement reconstruits.
+        Returns:
+            the number of newly reconstructed pixels.
         """
         if not samples_by_channel or self.is_complete():
             return 0

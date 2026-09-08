@@ -20,18 +20,19 @@ class SamplePixelEvent:
 
 class SampleScanManager:
     """
-    Planificateur sample-scanning point par point.
+    Point-by-point sample-scanning planner.
 
-    Rôle:
-    - choisir les 2 axes image (XY)
-    - déduire les positions discrètes des axes supplémentaires (axis3/axis4)
-    - générer les positions relatives pixel par pixel
+    Role:
+    - choose the 2 image axes (XY)
+    - derive the discrete positions of the extra axes (axis3/axis4)
+    - generate the relative positions pixel by pixel
 
     Important:
-    - toutes les positions générées sont *relatives* au zéro courant du positioner
-    - les offsets consommés ici sont donc les `relative_offset_um` issus du ScanWidget
-    - l'ordre des frames suit la même convention que le chemin laser:
-      axis4 extérieur, axis3 intérieur
+    - every position generated is *relative* to the positioner's current zero
+    - the offsets consumed here are therefore the `relative_offset_um` coming from
+      the ScanWidget
+    - the frame order follows the same convention as the laser path:
+      axis4 outermost, axis3 innermost
     """
 
     def __init__(self):

@@ -137,7 +137,7 @@ def ask_levels_min_max(parent=None, title="LUT Levels", lo0=0.0, hi0=255.0):
 
 
 class StitchingWidget(QWidget):
-    """Widget de prévisualisation et de pilotage d'une acquisition mosaïque."""
+    """Widget for previewing and driving a mosaic acquisition."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -393,12 +393,14 @@ class StitchingWidget(QWidget):
     }
 
     def set_stack_axis(self, axis):
-        """Adapte les choix du combo 'Scan order' à l'axe stack réellement actif
-        dans l'onglet Scan.
+        """
+        Adapt the choices of the 'Scan order' combo to the stack axis actually
+        active in the Scan tab.
             axis == 'z'  -> XYZ Tiles / XY Tiles Z
             axis == 'p'  -> XYP Tiles / XY Tiles P
-            sinon (aucun ou plusieurs axes stack) -> XY Tiles (par tuile)
-        On évite ainsi de proposer un ordre P alors que seul Z est balayé."""
+            otherwise (no stack axis, or several) -> XY Tiles (per tile)
+        This avoids offering a P order when only Z is being swept.
+        """
         if axis == "z":
             items = ["XYZ Tiles", "XY Tiles Z"]
         elif axis == "p":
@@ -434,7 +436,7 @@ class StitchingWidget(QWidget):
         self.label_status.setText(str(text))
 
     def set_estimated_time(self, total_seconds: float):
-        """Durée totale estimée du run de mosaïque (déjà calculée en amont)."""
+        """Estimated total duration of the mosaic run (computed upstream)."""
         try:
             self._total_seconds = max(0.0, float(total_seconds or 0.0))
         except Exception:

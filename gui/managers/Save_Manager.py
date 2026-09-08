@@ -26,13 +26,13 @@ def make_unique_path(
     default_stem: str,
 ) -> str:
     """
-    Construit un chemin unique dans 'folder' en garantissant l'extension 'ext'.
-    - si name vide -> default_stem + HHMMSS + ext
-    - si name sans extension -> ajoute ext
-    - si name a déjà une extension:
-        - si ext est fourni et différent, on remplace par ext (comportement contrôlé)
-        - sinon on garde l'extension existante
-    - si le fichier existe -> ajoute _001, _002, ... avant l'extension
+    Build a unique path inside 'folder', guaranteeing the extension 'ext'.
+    - empty name -> default_stem + HHMMSS + ext
+    - name without an extension -> ext is appended
+    - name that already has an extension:
+        - if ext is given and differs, it is replaced by ext (controlled behaviour)
+        - otherwise the existing extension is kept
+    - if the file exists -> _001, _002, ... is inserted before the extension
     """
     os.makedirs(folder, exist_ok=True)
 
@@ -66,15 +66,15 @@ def make_unique_path(
 
 class SaveManager:
     """
-    Gestion des sauvegardes manuelles et des sessions REC.
+    Handles manual saves and REC sessions.
 
     Save current view:
       - OME-TIFF (CYX)
-      - OME-Zarr (TCZYX avec T=1, Z=1)
+      - OME-Zarr (TCZYX with T=1, Z=1)
 
     REC:
-      - OME-TIFF : buffer RAM puis écriture finale
-      - OME-Zarr : écriture streaming au fil de l'eau (TCZYX)
+      - OME-TIFF: buffered in RAM, then written at the end
+      - OME-Zarr: streamed as it goes (TCZYX)
     """
 
     def __init__(self):
@@ -149,7 +149,7 @@ class SaveManager:
         scan_params: dict,
     ) -> str:
         """
-        images_by_channel: channel -> 2D array déjà transposé (exactement ce que tu vois)
+        images_by_channel: channel -> 2D array, already transposed (exactly what is on screen)
         """
         os.makedirs(folder, exist_ok=True)
         fmt = self._norm_fmt(fmt)
@@ -171,8 +171,8 @@ class SaveManager:
         scan_params: dict,
     ) -> str:
         """
-        1 fichier OME-TIFF multicanal : axes CYX.
-        -> Fiji Bio-Formats OK, Napari OK.
+        One multi-channel OME-TIFF file: axes CYX.
+        -> works with Fiji Bio-Formats and with Napari.
         """
         path = make_unique_path(folder, filename, ext=".ome.tif", default_stem="VIEW")
 
@@ -214,8 +214,8 @@ class SaveManager:
         scan_params: dict,
     ) -> str:
         """
-        Ecrit un OME-Zarr "simple" pour la vue courante:
-        data shape = (T=1, C, Z=1, Y, X) avec axes "tczyx"
+        Write a "simple" OME-Zarr for the current view:
+        data shape = (T=1, C, Z=1, Y, X) with axes "tczyx"
         """
         os.makedirs(folder, exist_ok=True)
 
@@ -260,12 +260,12 @@ class SaveManager:
         mosaic_params: dict | None = None,
     ) -> str:
         """
-        Sauvegarde une mosaïque de stitching en OME-TIFF.
+        Save a stitching mosaic as OME-TIFF.
 
-        - mosaïque 2D  -> axes "YX"
-        - mosaïque 3D  -> axes "ZYX" (un plan par index d'axe stack Z/P)
+        - 2D mosaic -> axes "YX"
+        - 3D mosaic -> axes "ZYX" (one plane per Z/P stack-axis index)
 
-        Un sidecar JSON accompagne le fichier (params scan + mosaïque + commentaire).
+        A JSON sidecar accompanies the file (scan params + mosaic + comment).
         """
         os.makedirs(folder, exist_ok=True)
 
@@ -311,8 +311,8 @@ class SaveManager:
     ) -> bool:
         """
         REC session:
-        - OME-TIFF : buffer en RAM (T,C,Z,Y,X) puis écriture à finish_rec_session()
-        - OME-Zarr : streaming (écrit au fil de l'eau)
+        - OME-TIFF: buffered in RAM (T,C,Z,Y,X), written at finish_rec_session()
+        - OME-Zarr: streamed (written as it goes)
         """
         self.finish_rec_session()
 
@@ -417,8 +417,8 @@ class SaveManager:
     
     def append_rec_frame(self, rep: int, idx_tuple: tuple, images_by_channel: dict):
         """
-        Streaming uniquement (OME-Zarr):
-          écrit arr0[rep, c, z, :, :]
+        Streaming only (OME-Zarr):
+          writes arr0[rep, c, z, :, :]
         idx_tuple: () or (i2,) or (i2,i3)
         """
         if not self._rec_active:
@@ -452,8 +452,8 @@ class SaveManager:
     
     def finish_rec_session(self):
         """
-        - OME-TIFF: écrit le fichier à la fin (stack TCZYX)
-        - OME-Zarr: rien à faire, on reset l'état
+        - OME-TIFF: writes the file at the end (TCZYX stack)
+        - OME-Zarr: nothing to do, the state is just reset
         """
         with self._lock:
             mode = self._rec_mode
@@ -512,22 +512,22 @@ class SaveManager:
         fmt: str = "OME-TIFF",
     ) -> str:
         """
-        Sauvegarde d'un dataset spectro en format clair :
+        Save a spectro dataset in a plain layout:
 
         OME-TIFF:
             <root>/
                 metadata.json
                 positions.csv
-                brillouin.ome.tif   (si présent)
-                raman.ome.tif       (si présent)
+                brillouin.ome.tif   (when present)
+                raman.ome.tif       (when present)
 
         OME-ZARR:
             <root>/
                 metadata.json
                 positions.csv
-                brillouin.zarr      (si présent)
-                raman.zarr          (si présent)
-                raman_wavelengths.npy (si Raman présent)
+                brillouin.zarr      (when present)
+                raman.zarr          (when present)
+                raman_wavelengths.npy (when Raman is present)
         """
         os.makedirs(folder, exist_ok=True)
         fmt = self._norm_fmt(fmt)

@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
 
 class FRCWidget(QWidget):
     """
-    Dock de calcul FRC sur une image unique,
-    découpée en deux sous-images complémentaires.
+    Dock computing the FRC on a single image,
+    split into two complementary sub-images.
     """
 
     frc_resolution_computed = Signal(float)   # résolution estimée en µm
@@ -305,9 +305,9 @@ class FRCWidget(QWidget):
     @Slot(str, object)
     def on_new_image(self, channel: str, image: np.ndarray):
         """
-        Reçoit les images du flux final affiché.
-        Si le dock est armé, capture l'image du canal sélectionné
-        et calcule la FRC.
+        Receive the images of the final displayed stream.
+        When the dock is armed, capture the image of the selected channel
+        and compute the FRC.
         """
         if image is None:
             return
@@ -328,8 +328,8 @@ class FRCWidget(QWidget):
 
     def _split_single_image_for_frc(self, image: np.ndarray):
         """
-        Découpe une image unique en 2 sous-images complémentaires
-        par split damier équilibré.
+        Split a single image into 2 complementary sub-images
+        using a balanced checkerboard split.
         """
         arr = np.asarray(image, dtype=np.float64)
         if arr.ndim != 2:

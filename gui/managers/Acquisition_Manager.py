@@ -65,12 +65,12 @@ class AcquisitionManager(QObject):
             self.shutter_requested.emit(False)
     
     def set_scan_parameters(self, scan_parameters: dict):
-        """Met à jour le backend microscope avec les paramètres actuels."""
+        """Update the microscope backend with the current parameters."""
         self.microscope.configure(scan_parameters)
 
     def set_execution_plan(self, plan):
         """
-        Injecte un ExecutionPlan pour le prochain run.
+        Inject an ExecutionPlan for the next run.
         """
         self.execution_plan = plan
         self.microscope.configure_execution_plan(plan)
@@ -88,7 +88,7 @@ class AcquisitionManager(QObject):
 
     @Slot()
     def start_preview_single(self):
-        """Démarre une acquisition en mode preview single."""
+        """Start an acquisition in single-preview mode."""
         if self.is_running:
             return
     
@@ -101,7 +101,7 @@ class AcquisitionManager(QObject):
 
     @Slot()
     def start_preview_continuous(self):
-        """Boucle infinie jusqu'à stop."""
+        """Loop forever until stopped."""
         if self.is_running:
             return
 
@@ -114,7 +114,7 @@ class AcquisitionManager(QObject):
 
     @Slot()
     def stop_acquisition(self):
-        """Arrête l'acquisition en cours."""
+        """Stop the running acquisition."""
         if not self.is_running:
             return
 
@@ -128,7 +128,7 @@ class AcquisitionManager(QObject):
         self.acquisition_stopped.emit()
 
     def close(self):
-        """Fermeture propre : arrête l'acquisition puis tue le thread."""
+        """Clean shutdown: stop the acquisition, then kill the thread."""
         if self.is_running:
             self.stop_acquisition()
         self.acquisition_thread.quit()
@@ -151,7 +151,7 @@ class AcquisitionManager(QObject):
 
     @Slot()
     def update_image(self):
-        """Met à jour l'image avec les données acquises."""
+        """Update the image with the acquired data."""
         with self.lock:
             for ch, img in self.microscope.shared_images.items():
                 if isinstance(img, np.ndarray):

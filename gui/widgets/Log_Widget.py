@@ -36,7 +36,7 @@ QPushButton:hover {
 
 
 class _AppLogger(QObject):
-    """Singleton émettant des signaux de log thread-safe."""
+    """Singleton emitting thread-safe log signals."""
     message_logged = Signal(str, str)   # (message_html, level)
 
     def _emit(self, level: str, msg: str):

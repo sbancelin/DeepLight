@@ -30,12 +30,12 @@ INFO_LABEL_STYLE = "color: #ccc;"
 
 class GlobalProgressWidget(QWidget):
     """
-    Barre de progression globale affichée en bas du GUI.
+    Global progress bar shown at the bottom of the GUI.
 
-    Partagée par les acquisitions Spectro et Scan :
-    - barre de progression (style spectro) avec done/total et %
-    - temps écoulé / restant, actualisé à la seconde
-    - utilisation CPU (via psutil si disponible)
+    Shared by the Spectro and Scan acquisitions:
+    - progress bar (spectro style) with done/total and %
+    - elapsed / remaining time, refreshed every second
+    - CPU usage (through psutil when available)
     """
 
     def __init__(self, parent=None):

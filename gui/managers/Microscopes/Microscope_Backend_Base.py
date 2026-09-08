@@ -6,13 +6,13 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 class MicroscopeBackendBase(QObject):
     """
-    Contrat commun de tous les backends microscope.
+    Contract common to every microscope backend.
 
-    Ce backend :
-    - reçoit des scan parameters
-    - reçoit éventuellement un ExecutionPlan
-    - produit des images / événements de progression
-    - expose toujours les mêmes attributs runtime
+    Such a backend:
+    - receives scan parameters
+    - optionally receives an ExecutionPlan
+    - produces images / progress events
+    - always exposes the same runtime attributes
     """
 
     acquisition_finished = Signal()
@@ -82,7 +82,7 @@ class MicroscopeBackendBase(QObject):
 
 def validate_backend_contract(backend) -> None:
     """
-    Vérifie à chaud que le backend respecte le contrat minimal attendu.
+    Check at runtime that the backend honours the expected minimal contract.
     """
     required_methods = (
         "configure",

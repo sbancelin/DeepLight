@@ -200,8 +200,8 @@ class StepperVisualizerWidget(QWidget):
 
     def set_xy_frame_hold_ms(self, hold_ms: float):
         """
-        Permet au ScanManager/MainWindow d'indiquer combien de temps
-        une position stepper doit visuellement rester constante.
+        Lets the ScanManager/MainWindow say how long a stepper position
+        should visually stay constant.
         """
         try:
             hold_ms = float(hold_ms)
@@ -217,11 +217,11 @@ class StepperVisualizerWidget(QWidget):
 
     def _merged_points_for_axis(self, axis_name: str):
         """
-        Fusionne intelligemment :
-        - la courbe complète planifiée (_full_points)
-        - les positions réelles (_position_stream_points)
+        Merge, carefully:
+        - the full planned curve (_full_points)
+        - the real positions (_position_stream_points)
 
-        On conserve toujours le point initial de _full_points si disponible.
+        The first point of _full_points is always kept when available.
         """
         full_buf = self._full_points.get(axis_name)
         pos_buf = self._position_stream_points.get(axis_name)
@@ -261,11 +261,11 @@ class StepperVisualizerWidget(QWidget):
     
     def _stairs_from_points(self, tt, yy, final_hold_ms=None):
         """
-        Convertit une suite de points (t, y) en vraie courbe en paliers.
+        Turn a sequence of (t, y) points into a true staircase curve.
 
-        Règle :
-        - le point i est tenu jusqu'au point i+1
-        - le dernier point est prolongé de hold_ms
+        Rule:
+        - point i is held until point i+1
+        - the last point is extended by hold_ms
         """
         if not tt or not yy:
             return [], []
@@ -365,7 +365,7 @@ class StepperVisualizerWidget(QWidget):
 
     def on_stepper_waveform_ready(self, axis_name: str, x_data, y_data):
         """
-        Si un vrai waveform complet est fourni, on le montre directement hors run.
+        When a real complete waveform is supplied, show it directly outside a run.
         """
         if self._is_running:
             return
@@ -375,8 +375,8 @@ class StepperVisualizerWidget(QWidget):
 
     def on_stepper_waveform_chunk(self, axis_name: str, t_ms, pos):
         """
-        Reçoit un chunk de waveform stepper et l'ajoute au buffer live.
-        On ne stocke que si Monitor est actif.
+        Receive a chunk of stepper waveform and append it to the live buffer.
+        Nothing is stored unless Monitor is active.
         """
         if not self.monitor_btn.isChecked():
             return
@@ -412,8 +412,9 @@ class StepperVisualizerWidget(QWidget):
     # Refresh plot
     def _refresh_stream_curve(self, axis_name: str):
         """
-        Rafraîchit la courbe live pour l'axe sélectionné. On conserve toujours le point initial du plan complet si disponible,
-        puis on affiche les positions réelles reçues.
+        Refresh the live curve for the selected axis. The first point of the full
+        plan is always kept when available, then the real positions received are
+        displayed.
         """
         tt, yy = self._merged_points_for_axis(axis_name)
 
@@ -456,8 +457,8 @@ class StepperVisualizerWidget(QWidget):
     @Slot(str, float)
     def on_positioner_relative_position_changed(self, axis_name: str, rel_pos: float):
         """
-        Reçoit la position relative réelle et l'aligne sur la dernière
-        abscisse planifiée connue, pour garder un affichage temporel cohérent.
+        Receive the real relative position and align it on the last known planned
+        abscissa, so the time display stays consistent.
         """
         if not self.monitor_btn.isChecked():
             return

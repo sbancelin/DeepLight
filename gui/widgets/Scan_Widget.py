@@ -198,7 +198,7 @@ SAMPLE_TOGGLE_STYLE = """
 
 
 def setup_scan_settings_dialog(dialog):
-    """Construit le dialogue des réglages avancés des axes de scan."""
+    """Build the dialog for the advanced settings of the scan axes."""
     scan_widget = dialog.parent()
     axes = ["X-Galvo", "Y-Galvo"]
 
@@ -396,7 +396,7 @@ def setup_scan_settings_dialog(dialog):
     dialog.accepted.connect(on_dialog_accepted)
 
 class ScanWidget(QWidget):
-    """Widget pour les contrôles de scan."""
+    """Widget holding the scan controls."""
     view_update_requested = Signal(object)   # pix_x, pix_y
 
     def __init__(self, parent=None):
@@ -924,7 +924,7 @@ class ScanWidget(QWidget):
         self.main_layout.addStretch()
 
     def set_settings_manager(self, manager):
-        """Injection du AxisSettingsManager partagé."""
+        """Inject the shared AxisSettingsManager."""
         self.axis_settings_manager = manager
 
         for axis_name, defaults in SCAN_AXIS_DEFAULTS.items():
@@ -986,12 +986,12 @@ class ScanWidget(QWidget):
 
     def _would_exceed_dimension_limit(self, extra_dim: int = 0, replacing_none: bool = False) -> bool:
         """
-        Channel occupe déjà 1 dimension.
-        Il reste donc max 4 dimensions pour le scan :
+        Channel already takes up 1 dimension, so at most 4 dimensions are left
+        for the scan:
         X, Y, Z, P, Rep
 
-        extra_dim = 1 pour tester l'ajout d'une nouvelle dimension
-        replacing_none = True si on passe de None -> axe actif
+        extra_dim = 1 to test adding a new dimension
+        replacing_none = True when going from None -> active axis
         """
         active_dims = self._count_active_scan_dimensions()
         rep_dim = 1 if self.rep_checkbox.isChecked() else 0
@@ -1118,7 +1118,7 @@ class ScanWidget(QWidget):
         self.sample_mode_button.blockSignals(False)
     
     def set_settle_ms(self, ms: float):
-        """Reçoit le settle time partagé depuis le widget Spectro."""
+        """Receive the settle time shared from the Spectro widget."""
         self._settle_ms = max(0.0, float(ms))
         self.settle_ms_display.setText(f"{self._settle_ms:.1f}")
         self._update_scan_duration()
@@ -1229,7 +1229,7 @@ class ScanWidget(QWidget):
     
     def _is_laser_xy_primary(self) -> bool:
         """
-        True si les 2 premiers axes actifs sont les galvos X/Y (ordre quelconque).
+        True when the first 2 active axes are the X/Y galvos, in either order.
         """
         active_axes = self._get_active_scan_axes()
         if len(active_axes) < 2:
@@ -1240,11 +1240,11 @@ class ScanWidget(QWidget):
 
     def _should_skip_stage_speed_check(self, row_index: int, axis_name: str) -> bool:
         """
-        Pour un vrai Z-stack laser :
-        - les 2 premiers axes actifs sont X/Y galvo
-        - Z-Vcoil est un axe supplémentaire (row >= 2)
-        Dans ce cas, Z ne bouge pas au rythme du dwell pixel,
-        donc le test de vitesse step/dwell est faux et doit être ignoré.
+        For a genuine laser Z-stack:
+        - the first 2 active axes are the X/Y galvos
+        - Z-Vcoil is an extra axis (row >= 2)
+        In that case Z does not move at the pixel dwell rate, so the step/dwell
+        speed check is meaningless and must be skipped.
         """
         if axis_name != "Z-Vcoil":
             return False
@@ -1258,7 +1258,7 @@ class ScanWidget(QWidget):
         return self._is_laser_xy_primary()
     
     def _reset_to_defaults(self):
-        """Réinitialise complètement le widget selon le mode courant."""
+        """Fully reset the widget according to the current mode."""
         if self.scan_kind == "sample":
             self._apply_sample_mode_defaults()
         else:
@@ -1284,7 +1284,7 @@ class ScanWidget(QWidget):
         self._on_param_changed()
 
     def _on_bidirectional_toggled(self, checked):
-        """Gère l'état du bouton Bidirectional."""
+        """Handle the state of the Bidirectional button."""
         if checked:
             self.bidirectional_shift_edit.setEnabled(True)
             self._set_editable_lineedit_style(self.bidirectional_shift_edit)
@@ -1303,7 +1303,7 @@ class ScanWidget(QWidget):
         line_edit.setStyleSheet(READONLY_LINEEDIT_STYLE)
     
     def _on_rep_checkbox_toggled(self, checked):
-        """Active/désactive les champs liés aux répétitions avec contrôle de limite de dimensions."""
+        """Enable/disable the repetition fields, respecting the dimension limit."""
         if checked:
             # Activer Rep ajoute 1 dimension de scan.
             if self._count_active_scan_dimensions() >= 4:
@@ -1371,15 +1371,17 @@ class ScanWidget(QWidget):
         self.samples_per_pixel_edit.blockSignals(False)    
     
     def get_estimated_scan_duration_s(self) -> float:
-        """Durée estimée d'UNE acquisition (le champ 'duration', en s), telle
-        qu'affichée. Utilisée par le stitching pour estimer le temps total."""
+        """
+        Estimated duration of ONE acquisition (the 'duration' field, in s), as
+        displayed. Used by the stitching to estimate the total time.
+        """
         try:
             return max(0.0, float((self.duration_edit.text() or "0").replace(",", ".")))
         except Exception:
             return 0.0
 
     def _update_scan_duration(self):
-        """Met à jour la durée de scan."""
+        """Update the scan duration."""
         try:
             dwell_us = float(self.dwell_edit.text() or "0")
             self._update_daq_samples_per_pixel_display()
@@ -1543,7 +1545,7 @@ class ScanWidget(QWidget):
             self._on_param_changed()   # allume le bouton
     
     def _get_xy_row_indices(self):
-        """Retourne les indices de lignes (0..3) qui correspondent aux 2 premiers axes actifs."""
+        """Return the row indices (0..3) matching the first 2 active axes."""
         active_rows = [i for i, cb in enumerate(self.scan_dim_combos) if cb.currentText() != "None"]
         if len(active_rows) < 2:
             return None, None
@@ -1551,8 +1553,9 @@ class ScanWidget(QWidget):
 
     def _get_fast_axis_overscan_fraction(self) -> float:
         """
-        Retourne l'overscan de l'axe rapide (1er axe actif) depuis les settings.
-        Ne code aucune valeur en dur hors fallback ultime sur SCAN_AXIS_DEFAULTS.
+        Return the overscan of the fast axis (first active axis) from the settings.
+        No value is hard-coded here beyond the final fallback on
+        SCAN_AXIS_DEFAULTS.
         """
         ix, _ = self._get_xy_row_indices()
         if ix is None:
@@ -1573,7 +1576,7 @@ class ScanWidget(QWidget):
     
     def _get_frame_flyback_time_s(self) -> float:
         """
-        Retourne le frame flyback de l'axe lent (2ème axe actif) depuis les settings.
+        Return the frame flyback of the slow axis (second active axis) from the settings.
         """
         _, iy = self._get_xy_row_indices()
         if iy is None:
@@ -1593,7 +1596,7 @@ class ScanWidget(QWidget):
         return max(0.0, float(s.get("frame_flyback_time_s", default_value) or 0.0))
     
     def get_xy_pixels(self):
-        """Retourne pix_x, pix_y (basé sur les 2 premiers axes actifs)."""
+        """Return pix_x, pix_y (based on the first 2 active axes)."""
         ix, iy = self._get_xy_row_indices()
         if ix is None:
             return 1, 1
@@ -1611,8 +1614,10 @@ class ScanWidget(QWidget):
             return float(default)
 
     def _get_axis_current_position_um(self, axis_name: str) -> float:
-        """Position ABSOLUE actuelle de l'axe (Positioner). Sert au contrôle
-        des limites device (bornes absolues)."""
+        """
+        Current ABSOLUTE position of the axis (Positioner). Used to check the
+        device limits, which are absolute.
+        """
         if axis_name == "None":
             return 0.0
         if self.axis_settings_manager is None:
@@ -1620,9 +1625,11 @@ class ScanWidget(QWidget):
         return float(self.axis_settings_manager.get_axis_position_um(axis_name))
 
     def _get_axis_current_relative_position_um(self, axis_name: str) -> float:
-        """Position RELATIVE actuelle de l'axe (repère set-0). Sert de base au
-        scan : on balaye autour/à partir du relatif, pas de l'absolu.
-        Pour les galvos (sans platine) le relatif vaut 0."""
+        """
+        Current RELATIVE position of the axis (set-0 frame). This is the basis of
+        the scan: the sweep is around/from the relative position, not the absolute
+        one. For the galvos, which have no stage, the relative position is 0.
+        """
         if axis_name == "None":
             return 0.0
         if self.axis_settings_manager is None:
@@ -1846,7 +1853,7 @@ class ScanWidget(QWidget):
         self._on_param_changed()
 
     def get_scan_parameters(self):
-        """Récupère tous les paramètres de scan sous forme de dictionnaire."""
+        """Collect every scan parameter into a dictionary."""
         # Récupérer les valeurs de #Pix pour tous les axes actifs
         pixel_values = []
         for pixel_edit in self.pixel_edits:
@@ -2009,12 +2016,12 @@ class ScanWidget(QWidget):
         }
 
     def _reset_button_style(self):
-        """Réinitialise le style du bouton quand on clique dessus."""
+        """Reset the button style when it is clicked."""
         self.params_changed = False
         self._update_button_style()
 
     def _update_total_pixels(self):
-        """Calcule le nombre total de pixels en multipliant les dimensions actives."""
+        """Compute the total number of pixels by multiplying the active dimensions."""
         total_pixels = 1
 
         for i, combo in enumerate(self.scan_dim_combos):
@@ -2030,7 +2037,7 @@ class ScanWidget(QWidget):
         self._update_scan_duration()
 
     def _update_pixel_default(self, pixel_edit, selected_dim):
-        """Met à jour la valeur par défaut du champ # Pix selon l'axe sélectionné."""
+        """Update the default value of the # Pix field for the selected axis."""
         if selected_dim == "None":
             pixel_edit.setText("")
         else:
@@ -2113,7 +2120,7 @@ class ScanWidget(QWidget):
         self._on_param_changed()
         
     def _enable_axis_fields(self, row_index, axis):
-        """Active les champs pour les axes actifs avec les valeurs par défaut."""
+        """Enable the fields of the active axes, with their default values."""
         self.size_edits[row_index].setEnabled(True)
         self._set_editable_lineedit_style(self.size_edits[row_index])
         self.pixel_edits[row_index].setEnabled(True)
@@ -2132,7 +2139,7 @@ class ScanWidget(QWidget):
         self._update_steps(self.size_edits[row_index], self.pixel_edits[row_index], self.step_edits[row_index])
     
     def _disable_axis_fields(self, row_index):
-        """Désactive et grise les champs pour les axes non actifs."""
+        """Disable and grey out the fields of the inactive axes."""
         self.size_edits[row_index].setEnabled(False)
         self._set_disabled_lineedit_style(self.size_edits[row_index])
         self.pixel_edits[row_index].setEnabled(False)
@@ -2148,11 +2155,13 @@ class ScanWidget(QWidget):
         self._update_scan_mode_combo(row_index, "None")
 
     def _apply_polarization_row_lock(self, row_index):
-        """Axe Polarization : valeurs imposées et non modifiables (pour l'instant).
+        """
+        Polarization axis: the values are imposed and not editable, for now.
 
-        size = 180°, 19 points -> pas de 10°. L'axe balaie l'AZIMUT de 0 à 180° ;
-        les positions physiques des lames (λ/2, λ/4) sont dérivées de la table de
-        calibration au moment du scan (cf. Positioner_Manager)."""
+        size = 180°, 19 points -> a 10° step. The axis sweeps the AZIMUTH from 0 to
+        180°; the physical positions of the waveplates (λ/2, λ/4) are derived from
+        the calibration table at scan time (see Positioner_Manager).
+        """
         for edit, val in (
             (self.size_edits[row_index], "180"),
             (self.pixel_edits[row_index], "19"),
@@ -2174,11 +2183,11 @@ class ScanWidget(QWidget):
         )
 
     def _is_stack_mode_axis(self, axis_name: str) -> bool:
-        """Axes platine 'stack' pour lesquels le mode Around/From s'applique."""
+        """The 'stack' stage axes to which the Around/From mode applies."""
         return axis_name in ("Z-Vcoil", "Polarization")
 
     def _get_row_scan_mode(self, row_index: int, axis_name: str) -> str:
-        """Mode de balayage ('around'/'from') de la ligne pour un axe stack."""
+        """The row's sweep mode ('around'/'from') for a stack axis."""
         if not self._is_stack_mode_axis(axis_name):
             return "around"
         if row_index >= len(self.scan_mode_combos):
@@ -2187,8 +2196,10 @@ class ScanWidget(QWidget):
 
     def _scan_range_for_mode(self, center_um: float, size_um: float,
                              axis_name: str, mode: str) -> tuple[float, float]:
-        """Bornes [lo, hi] du balayage selon le mode (around/from) et le sens
-        de l'axe (Z-Vcoil descend, les autres montent)."""
+        """
+        Sweep bounds [lo, hi], from the mode (around/from) and the axis direction
+        (Z-Vcoil goes down, the others go up).
+        """
         if str(mode) == "from":
             if axis_name == "Z-Vcoil":
                 return center_um - size_um, center_um
@@ -2196,8 +2207,10 @@ class ScanWidget(QWidget):
         return center_um - size_um / 2.0, center_um + size_um / 2.0
 
     def _update_scan_mode_combo(self, row_index, axis_name):
-        """Active la combobox Mode pour les axes stack (Z/P), la désactive et
-        la remet sur 'Around' sinon."""
+        """
+        Enable the Mode combobox for the stack axes (Z/P); otherwise disable it and
+        set it back to 'Around'.
+        """
         if row_index >= len(self.scan_mode_combos):
             return
         combo = self.scan_mode_combos[row_index]
@@ -2210,12 +2223,12 @@ class ScanWidget(QWidget):
             combo.blockSignals(False)
     
     def _on_param_changed(self):
-        """Marque que les paramètres ont changé."""
+        """Mark the parameters as changed."""
         self.params_changed = True
         self._update_button_style()
 
     def _update_steps(self, size_edit, pixel_edit, step_edit):
-        """Met à jour la taille de pas (µm) à partir de Size et # Pix."""
+        """Update the step size (µm) from Size and # Pix."""
         try:
             size = float(size_edit.text() or "0")
             pixel = float(pixel_edit.text() or "1")
@@ -2230,7 +2243,7 @@ class ScanWidget(QWidget):
             step_edit.setText("0")
 
     def _update_button_style(self):
-        """Met à jour le style du bouton en fonction des changements."""
+        """Update the button style according to the pending changes."""
         if hasattr(self, "params_changed") and self.params_changed:
             self.apply_button.setStyleSheet(APPLY_BUTTON_STYLE)
         else:

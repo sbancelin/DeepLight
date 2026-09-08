@@ -121,7 +121,7 @@ HEADER_LABEL_STYLE = "color: white; font-weight: bold; padding-bottom: 2px;"
 
 class SpectroPanelWidget(QWidget):
     """
-    Panneau d'acquisition Spectro indépendant de la logique Scan raster.
+    Spectro acquisition panel, independent of the raster Scan logic.
     """
 
     sigSpectroModeChanged = Signal(bool, bool)   # brillouin, raman

@@ -14,8 +14,8 @@ DAQ_SAMPLE_PERIOD_US = DAQ_SAMPLE_PERIOD_S * 1e6
 
 class ScanManager(QObject):
     """
-    Génère les signaux analogiques X/Y pour un raster scan (pixel-clocked),
-    et les expose via un signal pour visualisation et futur envoi NI-DAQ.
+    Generate the X/Y analog signals for a (pixel-clocked) raster scan and
+    expose them through a signal, for display and for the future NI-DAQ output.
     """
     # streaming oscillo analogique (t_ms, x_v, y_v)
     analog_waveforms_chunk = Signal(object, object, object)
@@ -102,8 +102,9 @@ class ScanManager(QObject):
     
     def to_scan_params(self, scan_params_dict: dict, mode: str = "acquisition") -> ScanParams:
         """
-        Convertit le dict historique issu du ScanWidget/UI en dataclass ScanParams.
-        Cette méthode n'altère pas encore le reste du pipeline : elle prépare la transition.
+        Convert the historical dict coming from the ScanWidget/UI into a ScanParams
+        dataclass. This does not yet change the rest of the pipeline: it prepares
+        the transition.
         """
         d = dict(scan_params_dict or {})
 
@@ -183,7 +184,7 @@ class ScanManager(QObject):
     
     def _get_xy_axes_from_scan_params_obj(self, sp: ScanParams) -> tuple[str, str]:
         """
-        Retourne les deux axes analogiques XY à utiliser pour le raster.
+        Return the two XY analog axes to use for the raster.
         """
         active = [ax for ax in sp.axis_order if ax != "None"]
         if len(active) < 2:
@@ -192,7 +193,7 @@ class ScanManager(QObject):
 
     def _make_hold_segment(self, n_samples: int, x_value: float = 0.0, y_value: float = 0.0):
         """
-        Crée un segment de maintien analogique.
+        Create an analog hold segment.
         """
         n_samples = max(int(n_samples), 0)
         if n_samples == 0:
@@ -209,19 +210,19 @@ class ScanManager(QObject):
     def _compute_axis_positions(self, axis_name: str, n: int, size: float, offset: float,
                                 mode: str = "around"):
         """
-        Génère les positions pour un axe discret.
+        Generate the positions of a discrete axis.
 
-        `offset` = position de référence (déjà en coordonnées RELATIVES :
-        position courante relative + offset utilisateur).
+        `offset` = reference position (already in RELATIVE coordinates: current
+        relative position + user offset).
 
-        Convention de sens :
-        - axes normaux : sens croissant (offset -> plus grand)
-        - Z-Vcoil : sens décroissant (on commence en haut / abs plus grand
-          et on finit en bas / plus profond)
+        Direction convention:
+        - normal axes: increasing (offset -> larger)
+        - Z-Vcoil: decreasing (start at the top / larger abs and finish at the
+          bottom / deeper)
 
-        Convention d'étendue selon `mode` :
-        - "around" : ±size/2 autour de `offset` (offset = centre)
-        - "from"   : taille complète À PARTIR de `offset` (offset = départ)
+        Extent convention, depending on `mode`:
+        - "around": ±size/2 around `offset` (offset = centre)
+        - "from"  : the full size STARTING FROM `offset` (offset = start)
         """
         n = max(int(n), 1)
 
@@ -256,13 +257,13 @@ class ScanManager(QObject):
     
     def build_execution_plan(self, sp: ScanParams) -> ExecutionPlan:
         """
-        Construit un plan d'exécution maître à partir de ScanParams.
+        Build a master execution plan from ScanParams.
 
-        Étape 4:
-        - gère XY
-        - gère repetitions
-        - gère delay_between_rep
-        - pas encore de stepper
+        Step 4:
+        - handles XY
+        - handles repetitions
+        - handles delay_between_rep
+        - no stepper yet
         """
         fast_axis, slow_axis = self._get_xy_axes_from_scan_params_obj(sp)
         image_x_axis, image_y_axis = self._infer_image_axes(fast_axis, slow_axis)
@@ -628,10 +629,10 @@ class ScanManager(QObject):
     
     def _get_axis_row_map(self, sp: ScanParams) -> dict[str, int]:
         """
-        Retourne la correspondance :
-            nom d'axe -> index de ligne dans l'UI / axis_order / pixel_values
+        Return the mapping:
+            axis name -> row index in the UI / axis_order / pixel_values
 
-        Exemple:
+        Example:
             axis_order = ["Y-Galvo", "X-Galvo", "Z-Stage", "None"]
             -> {"Y-Galvo": 0, "X-Galvo": 1, "Z-Stage": 2}
         """
@@ -649,14 +650,14 @@ class ScanManager(QObject):
         slow_wave: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Convertit des waveforms exprimées dans le repère fast/slow
-        vers le repère physique Galvo X / Galvo Y.
+        Convert waveforms expressed in the fast/slow frame into the physical
+        Galvo X / Galvo Y frame.
 
-        Règle:
-        - x_v = tension réellement envoyée au X-Galvo
-        - y_v = tension réellement envoyée au Y-Galvo
+        Rule:
+        - x_v = voltage actually sent to the X galvo
+        - y_v = voltage actually sent to the Y galvo
 
-        fast/slow ne sert qu'à décrire l'ordre de balayage.
+        fast/slow only describes the sweep order.
         """
         fast_wave = np.asarray(fast_wave, dtype=np.float64)
         slow_wave = np.asarray(slow_wave, dtype=np.float64)
@@ -701,8 +702,8 @@ class ScanManager(QObject):
 
     def _append_hold_segment(self, duration_ms: float, x_hold: float = 0.0, y_hold: float = 0.0):
         """
-        Ajoute un segment "pause" à 0 V (ou autre valeur fixée) dans le buffer analogique.
-        Sert à rendre visibles les pauses de step / delay inter-répétition.
+        Append a "pause" segment at 0 V (or another fixed value) to the analog
+        buffer. Makes the step pauses and inter-repetition delays visible.
         """
         duration_ms = float(duration_ms)
         if duration_ms <= 0:
@@ -724,8 +725,8 @@ class ScanManager(QObject):
         per_frame_pos: np.ndarray
     ):
         """
-        Convertit une position par frame (N,) en deux arrays (x_plot, y_plot) de taille (2N,)
-        pour tracer des steps sans 'stepMode' côté visualizer.
+        Convert a per-frame position (N,) into two arrays (x_plot, y_plot) of size
+        (2N,), so steps can be drawn without 'stepMode' on the visualizer side.
         """
         n = int(per_frame_pos.size)
         if n <= 0:
@@ -852,7 +853,7 @@ class ScanManager(QObject):
 
     def prepare_run(self, scan_params: dict, mode: str):
         """
-        Prépare le plan analog/stepper.
+        Prepare the analog/stepper plan.
 
         mode: "preview_single" | "preview_continuous" | "acquisition"
         """
@@ -1026,8 +1027,8 @@ class ScanManager(QObject):
 
     def consume_samples(self, n_samples: int):
         """
-        Avance le plan analogique d'un nombre réel de samples acquis.
-        En acquisition planifiée, on lit simplement les AO du plan maître.
+        Advance the analog plan by a real number of acquired samples.
+        In a planned acquisition the AO values are simply read from the master plan.
         """
 
         n_samples = int(n_samples)
@@ -1103,7 +1104,7 @@ class ScanManager(QObject):
 
     def flush_pending_buffers(self):
         """
-        Emet vers les visualizers les points accumulés depuis le dernier refresh GUI.
+        Emit to the visualizers the points accumulated since the last GUI refresh.
         """
         if self._pending_t:
             t_ms = np.concatenate(self._pending_t)
@@ -1142,7 +1143,7 @@ class ScanManager(QObject):
     @Slot(dict)
     def generate_from_scan_parameters(self, scan_params: dict):
         """
-        Génération "statique" des waveforms analogiques complets à partir des paramètres de scan.
+        "Static" generation of the complete analog waveforms from the scan parameters.
         """
         pix_vals = scan_params.get("pixel_values", [256, 256])
         active_axes = scan_params.get("active_axes", ["X-Galvo", "Y-Galvo"])

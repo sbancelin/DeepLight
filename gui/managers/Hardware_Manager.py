@@ -250,13 +250,13 @@ _ELLIPTEC_BUSES_LOCK = Lock()
 
 class _ElliptecBus:
     """
-    Bus série partagé par plusieurs montures Elliptec derrière un même hub ELLB.
+    Serial bus shared by several Elliptec mounts behind the same ELLB hub.
 
-    Toutes les montures d'un hub partagent UN SEUL port COM ; sous Windows on ne
-    peut pas ouvrir deux fois le même port. Ce bus détient l'unique objet Serial
-    et sérialise les échanges : une transaction adressée (write + read) est
-    exécutée sous un verrou unique, pour éviter tout entrelacement entre adresses
-    ou entre threads (poll positioner, commande puissance laser, etc.).
+    All the mounts of a hub share ONE COM port; under Windows the same port
+    cannot be opened twice. This bus owns the single Serial object and
+    serialises the exchanges: an addressed transaction (write + read) runs
+    under one lock, so nothing interleaves between addresses or between
+    threads (positioner poll, laser power command, and so on).
     """
 
     def __init__(self, port, baudrate=9600, timeout_s=1.0):
@@ -298,7 +298,7 @@ class _ElliptecBus:
                 self.serial = None
 
     def command(self, address: str, payload: str, timeout_s: float = 2.0) -> str:
-        """Envoie '<address><payload>\\r' et lit la réponse, sous verrou unique."""
+        """Send '<address><payload>\r' and read the reply, under a single lock."""
         if not self.connected:
             self.connect()
 
@@ -332,7 +332,7 @@ class _ElliptecBus:
 
 
 def _get_elliptec_bus(port, baudrate=9600, timeout_s=1.0) -> "_ElliptecBus":
-    """Retourne le bus partagé pour ce port (créé à la demande, singleton)."""
+    """Return the shared bus for this port (created on demand, singleton)."""
     key = str(port).upper()
     with _ELLIPTEC_BUSES_LOCK:
         bus = _ELLIPTEC_BUSES.get(key)
@@ -346,10 +346,10 @@ class _ElliptecELL14Controller:
     """
     Minimal Thorlabs ELL14 / ELLC serial controller.
 
-    Utilisé pour la lame demi-onde de puissance du Cobolt (adresse 0) ET comme
-    contrôleur d'angle générique pour les positioners P(λ/2) et P(λ/4) (adresses
-    1 et 2). Toutes les instances d'un même port passent par un _ElliptecBus
-    partagé (une seule connexion série, cf. hub ELLB).
+    Used for the Cobolt power half-wave plate (address 0) AND as a generic
+    angle controller for the P(λ/2) and P(λ/4) positioners (addresses 1 and 2).
+    Every instance on a given port goes through a shared _ElliptecBus (a single
+    serial connection, see the ELLB hub).
 
     Protocol used:
     - ASCII serial
@@ -466,7 +466,7 @@ class _ElliptecELL14Controller:
         return sign * extra
 
     def _parse_position_response(self, response: str):
-        """Extrait l'angle (deg) d'un message 'PO' Elliptec, ou None."""
+        """Extract the angle (deg) from an Elliptec 'PO' message, or None."""
         idx = response.find("PO")
         if idx < 0 or len(response) < idx + 10:
             return None
@@ -487,11 +487,12 @@ class _ElliptecELL14Controller:
         return float(self._last_angle_deg)
 
     def move_to_angle_deg(self, angle_deg: float, blocking: bool = True) -> float:
-        """Déplacement absolu. Retourne l'angle final (deg).
+        """
+        Absolute move. Returns the final angle (deg).
 
-        La réponse à 'ma' n'arrive qu'une fois le mouvement terminé et contient
-        déjà la position finale (message PO) : on l'exploite directement, sans
-        pause ni relecture — l'appelant est souvent le thread GUI.
+        The reply to 'ma' only arrives once the move is over and already carries
+        the final position (PO message): it is used directly, with no pause and no
+        re-read — the caller is often the GUI thread.
         """
         self._ensure_connected()
 
@@ -1233,11 +1234,11 @@ class _PIVoiceCoilController:
 
     def wait_until_xy_reached(self, x_rel_target: float, y_rel_target: float, timeout_s: float = 30.0):
         """
-        Attend que la platine XY atteigne la cible relative demandée.
-        Critère robuste:
-        - lecture réelle de position
-        - plusieurs lectures stables à la cible
-        - timeout basé aussi sur la distance à parcourir
+        Wait for the XY stage to reach the requested relative target.
+        Robust criterion:
+        - a real position read
+        - several stable readings at the target
+        - a timeout that also accounts for the distance to travel
         """
         if self._xy is None:
             raise RuntimeError("XY controller is not available.")
@@ -2004,8 +2005,8 @@ class _ScientificaMotion8XYController:
 
 class _XYStallError(RuntimeError):
     """
-    La platine XY s'est arrêtée hors tolérance (jeu mécanique, deadband
-    contrôleur). err_um = erreur résiduelle max sur X/Y.
+    The XY stage stopped outside tolerance (mechanical play, controller
+    deadband). err_um = maximum residual error on X/Y.
     """
 
     def __init__(self, message: str, err_um: float):
@@ -2017,9 +2018,9 @@ class RealHardwarePositionerManager(PositionerManager):
     """
     Real V1 hardware positioner manager.
     Implemented:
-    - z  -> PI V-308 via USB
-    - p  -> P(λ/2) : monture Elliptec ELL14 (degrés), adresse 1
-    - p4 -> P(λ/4) : monture Elliptec ELL14 (degrés), adresse 2
+    - z  -> PI V-308 over USB
+    - p  -> P(λ/2): Elliptec ELL14 mount (degrees), address 1
+    - p4 -> P(λ/4): Elliptec ELL14 mount (degrees), address 2
     Not implemented in this V1:
     - x / y stages, because no hardware/controller was provided for them
     """
@@ -2097,9 +2098,11 @@ class RealHardwarePositionerManager(PositionerManager):
             return False
 
     def refresh_xy_position(self):
-        """Relit immédiatement la position XY (une seule transaction série) et
-        met à jour le cache. Utilisé par le stitching pour détecter l'arrivée
-        d'une tuile sans attendre le prochain poll (~poll_ms) du manager."""
+        """
+        Re-read the XY position immediately (a single serial transaction) and
+        refresh the cache. Used by the stitching to detect the arrival of a tile
+        without waiting for the manager's next poll (~poll_ms).
+        """
         if self._xy is None or self._xy_blocking_busy:
             return
         try:
@@ -2203,8 +2206,8 @@ class RealHardwarePositionerManager(PositionerManager):
     
     def validate_scan_targets(self, scan_parameters: dict):
         """
-        Vérifie que tous les offsets absolus / retours possibles des axes stepper
-        restent dans la plage device.
+        Check that every absolute offset, and every possible return, of the stepper
+        axes stays within the device range.
         """
         if not scan_parameters:
             return
@@ -2360,9 +2363,9 @@ class RealHardwarePositionerManager(PositionerManager):
     @Slot(float, float, float, float)
     def move_xy_to_rel(self, x_rel_target: float, y_rel_target: float, speed_x: float, speed_y: float):
         """
-        Déplacement XY atomique en coordonnées relatives DeepLight.
-        Important pour les contrôleurs XY couplés comme la Scientifica :
-        on calcule les deux cibles puis on envoie un seul move XY.
+        Atomic XY move in DeepLight relative coordinates.
+        This matters for coupled XY controllers such as the Scientifica: both
+        targets are computed first, then a single XY move is sent.
         """
         if self._xy is None:
             raise RuntimeError("XY controller is not available.")
@@ -2404,14 +2407,14 @@ class RealHardwarePositionerManager(PositionerManager):
         stall_window_s: float = 0.7,
     ):
         """
-        Attend que la platine XY atteigne la cible relative demandée.
-        Source de vérité = position réellement relue sur le hardware.
-        Une seule transaction série par itération (lecture XY atomique).
+        Wait for the XY stage to reach the requested relative target.
+        The source of truth is the position actually read back from the hardware.
+        One serial transaction per iteration (atomic XY read).
 
-        tolerance_um : tolérance d'arrivée optionnelle (>= tolérance des axes).
-        Détection de blocage : si la position n'évolue plus pendant
-        stall_window_s alors qu'on est hors tolérance, lève _XYStallError
-        immédiatement au lieu d'attendre le timeout complet.
+        tolerance_um: optional arrival tolerance (>= the axes' own tolerance).
+        Stall detection: if the position stops changing for stall_window_s while
+        still out of tolerance, _XYStallError is raised immediately instead of
+        waiting for the full timeout.
         """
         if self._xy is None:
             raise RuntimeError("XY controller is not available.")
@@ -2497,17 +2500,17 @@ class RealHardwarePositionerManager(PositionerManager):
         tolerance_um: float | None = None,
     ):
         """
-        Déplacement XY atomique + attente de la cible.
-        Utilisé pour le sample scan point par point.
+        Atomic XY move, then wait for the target.
+        Used by the point-by-point sample scan.
 
-        Robustesse:
-        - envoi du move puis attente de la cible
-        - si la platine se bloque hors tolérance (jeu mécanique / deadband),
-          réémission immédiate de la commande (nouveau profil de mouvement,
-          consigne franche) jusqu'à _XY_MAX_RESENDS fois au lieu d'attendre
-          le timeout complet
-        - en dernier recours, une erreur résiduelle <= _XY_FINAL_ACCEPT_UM
-          est acceptée avec warning pour ne pas avorter le scan
+        Robustness:
+        - the move is sent, then the target is waited for
+        - if the stage stalls out of tolerance (mechanical play / deadband), the
+          command is re-sent immediately (a fresh motion profile, a clean
+          setpoint) up to _XY_MAX_RESENDS times, rather than waiting for the full
+          timeout
+        - as a last resort a residual error <= _XY_FINAL_ACCEPT_UM is accepted,
+          with a warning, so the scan is not aborted
         """
         self._xy_blocking_busy = True
         try:
@@ -3137,9 +3140,9 @@ class HardwareManager(QObject):
 
     def ensure_brillouin_camera_ready(self):
         """
-        Force l'initialisation / connexion de la caméra Brillouin (Kuro)
-        sans lancer d'acquisition.
-        Utilisé pour préchauffer la caméra dès l'activation du mode Brillouin.
+        Force the initialisation / connection of the Brillouin camera (Kuro)
+        without starting an acquisition.
+        Used to warm the camera up as soon as Brillouin mode is enabled.
         """
         if self.backend_name == "mock":
             return None
@@ -3149,8 +3152,8 @@ class HardwareManager(QObject):
     
     def prepare_brillouin_for_scan(self, params: dict | None = None):
         """
-        Pré-initialise la caméra Brillouin et applique les paramètres une fois avant
-        le début de la boucle de scan pour éviter de les ré-appliquer à chaque pixel.
+        Pre-initialise the Brillouin camera and apply the parameters once before the
+        scan loop starts, so they are not re-applied at every pixel.
         """
         if self.backend_name == "mock":
             return

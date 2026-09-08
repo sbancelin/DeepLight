@@ -63,17 +63,17 @@ class ScanParams:
 @dataclass
 class StepEvent:
     """
-    Evénement discret planifié dans la timeline maître.
+    Discrete event scheduled on the master timeline.
 
     IMPORTANT:
-    - target_rel est exprimé dans l'unité native de l'axe
-      (µm pour X/Y/Z, degrés pour Polarization, etc.)
-    - velocity est exprimée dans l'unité native de l'axe, par seconde.
+    - target_rel is expressed in the axis's native unit
+      (µm for X/Y/Z, degrees for Polarization, etc.)
+    - velocity is expressed in the axis's native unit, per second.
 
     Note:
-    - acceleration_max et jerk ne font plus partie du modèle.
-    - l'overscan raster est porté par overscan_fraction.
-    - le retour de frame Y est porté par frame_flyback_time_s.
+    - acceleration_max and jerk are no longer part of the model.
+    - the raster overscan is carried by overscan_fraction.
+    - the Y frame flyback is carried by frame_flyback_time_s.
     """
     sample_index: int
     axis_name: str
@@ -84,7 +84,7 @@ class StepEvent:
 @dataclass
 class FrameSlice:
     """
-    Portion de timeline correspondant à une image XY.
+    Portion of the timeline corresponding to one XY image.
     """
     sample_start: int
     sample_stop: int
@@ -99,7 +99,7 @@ class FrameSlice:
 @dataclass
 class SampleFramePlan:
     """
-    Décrit une frame sample-scan 2D au sein d'un run multi-axes.
+    Describes one 2D sample-scan frame within a multi-axis run.
     """
     axis3_index: int = 0
     axis4_index: int = 0
@@ -118,8 +118,8 @@ class SampleFramePlan:
 @dataclass
 class FrameReconstructionPlan:
     """
-    Plan minimal nécessaire pour reconstruire une frame XY
-    à partir d'un flux temporel détecteur.
+    Minimal plan needed to reconstruct an XY frame
+    from a detector time stream.
     """
     dim_x: int                  # largeur image logique
     dim_y: int                  # hauteur image logique
@@ -139,9 +139,9 @@ class FrameReconstructionPlan:
 @dataclass
 class ExecutionPlan:
     """
-    Plan complet d'exécution d'un run.
-    Toute la vérité temporelle du système doit pouvoir être dérivée
-    de ce plan via sample_index / sample_rate_hz.
+    Complete execution plan for a run.
+    All the timing truth of the system must be derivable from this
+    plan through sample_index / sample_rate_hz.
     """
     mode: str
 

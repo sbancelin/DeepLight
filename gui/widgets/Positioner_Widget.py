@@ -34,7 +34,7 @@ CHECKBOX_STYLE = """
 """
 
 def setup_positioner_settings_dialog(dialog):
-    """Construit le dialogue de configuration des limites/vitesses/tolérances des axes stepper."""
+    """Build the dialog configuring the limits, speeds and tolerances of the stepper axes."""
     positioner_widget = dialog.parent()
 
     axes = [
@@ -310,7 +310,7 @@ def setup_positioner_settings_dialog(dialog):
     dialog.accepted.connect(on_dialog_accepted)
 
 class PositionerWidget(QWidget):
-    """Widget pour les contrôles des détecteurs."""
+    """Widget holding the positioner controls."""
     stepperPositionForVisualizer = Signal(str, float)  # axis label UI, relative position
 
     def __init__(self, manager=None, parent=None):
@@ -681,8 +681,10 @@ class PositionerWidget(QWidget):
     _WAVEPLATE_SHARED_NAMES = {"p": "Polarization", "p4": "Polarization-L4"}
 
     def apply_circular(self, kind: str):
-        """Positionne λ/2 (p) et λ/4 (p4) pour une polarisation circulaire droite
-        (CD) ou gauche (CG), d'après les valeurs des settings positioner."""
+        """
+        Position λ/2 (p) and λ/4 (p4) for right (CD) or left (CG) circular
+        polarisation, using the values from the positioner settings.
+        """
         if self.manager is None:
             return
 
@@ -711,13 +713,13 @@ class PositionerWidget(QWidget):
                 logger.error(f"[PositionerWidget] apply_circular({kind}) {axis_key} failed: {e}")
     
     def set_limits(self, axis, min_limit, max_limit, velocity_limit):
-        """Définir les limites pour un axe donné."""
+        """Set the limits of a given axis."""
         self.axis_limits[axis]["min"] = min_limit
         self.axis_limits[axis]["max"] = max_limit
         self.axis_velocity_limits[axis]["max"] = velocity_limit
     
     def set_settings_manager(self, manager):
-        """Injection du AxisSettingsManager partagé."""
+        """Inject the shared AxisSettingsManager."""
         self.axis_settings_manager = manager
 
         for axis_name, defaults in STEPPER_AXIS_DEFAULTS.items():
@@ -798,7 +800,7 @@ class PositionerWidget(QWidget):
                 pass
     
     def set_manager(self, manager):
-        """Permet d’injecter (ou remplacer) le manager après construction."""
+        """Inject (or replace) the manager after construction."""
         self.manager = manager
 
         # IMPORTANT: pousser les limites/settings dans le manager
@@ -983,7 +985,7 @@ class PositionerWidget(QWidget):
         self.stop_all_button.clicked.connect(self.manager.stop_all)
 
     def stop_all_axes(self):
-        """Arrête le mouvement de tous les axes."""
+        """Stop the motion of every axis."""
         if self.manager is not None:
             for axis in self.axis_ui.keys():
                 self.manager.stop(axis)

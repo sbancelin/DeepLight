@@ -391,11 +391,11 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
     def _write_ao_idle_offset(self):
         """
-        Force immédiatement les sorties AO X/Y au voltage correspondant
-        aux offsets définis dans le ScanWidget.
-        Si offset = 0 µm, les galvos reçoivent 0 V.
-        Utilisé en fin de run pour éviter de laisser les galvos
-        sur la dernière valeur du waveform fini.
+        Immediately force the X/Y AO outputs to the voltage matching the
+        offsets defined in the ScanWidget.
+        If offset = 0 µm the galvos receive 0 V.
+        Used at the end of a run so the galvos are not left on the last
+        value of the finite waveform.
         """
         self._require_nidaq()
 
@@ -454,8 +454,8 @@ class NidaqMicroscope(MicroscopeBackendBase):
 
     def _next_step_event_sample_after(self, sample_cursor: int, frame_stop: int) -> int | None:
         """
-        Retourne le sample_index du prochain step event strictement après sample_cursor
-        et au plus tard dans cette frame. Sinon None.
+        Return the sample_index of the next step event strictly after sample_cursor
+        and no later than this frame. None otherwise.
         """
         if self.execution_plan is None:
             return None
@@ -1044,7 +1044,7 @@ class NidaqMicroscope(MicroscopeBackendBase):
                 ai_reader = AnalogMultiChannelReader(ai_task.in_stream)
                 ai_result_buf = np.zeros((ai_count, hw_spp), dtype=np.float64)
             except Exception as e:
-                self._log(f"Échec pré-création tâche AI sample: {e} — fallback par pixel")
+                self._log(f"AI sample task pre-creation failed: {e} — falling back to per-pixel")
                 if ai_task is not None:
                     try:
                         ai_task.close()

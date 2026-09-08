@@ -64,7 +64,7 @@ class SliderWithNyquistLine(QWidget):
         self.update()
 
 class NyquistWidget(QWidget):
-    """DockWidget pour les paramètres de Nyquist."""
+    """DockWidget for the Nyquist parameters."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -90,7 +90,7 @@ class NyquistWidget(QWidget):
         self.main_layout.addStretch()
 
     def _add_nyquist_controls(self):
-        """Ajoute les contrôles pour les paramètres de Nyquist."""
+        """Add the controls for the Nyquist parameters."""
 
         # GroupBox pour les paramètres de Nyquist
         nyquist_group = QGroupBox()
@@ -541,7 +541,7 @@ class NyquistWidget(QWidget):
         self.slider_z.blockSignals(False)
 
     def update_values(self):
-        """Met à jour NA/RefIndex selon l'objectif, puis calcule res/pixel."""
+        """Update NA/RefIndex from the objective, then compute res/pixel."""
         objective = self.objective_combo.currentText()
 
         if objective == "Custom":

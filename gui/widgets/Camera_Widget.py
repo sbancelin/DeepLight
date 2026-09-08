@@ -606,11 +606,11 @@ class CameraWidget(QWidget):
 
     def _set_view_range_to_full_frame_context(self):
         """
-        Lorsque le ROI est actif, positionne la vue pour montrer le capteur complet.
-        L'image croppée (à l'origine (0,0) en coords data) apparaît visuellement
-        à sa vraie position dans le champ total.
-        Les widgets d'analyse restent alignés sur l'image (leurs coords data
-        correspondent directement aux pixels du crop).
+        When the ROI is active, set the view so the whole sensor is shown.
+        The cropped image (at origin (0,0) in data coordinates) visually appears
+        at its true position within the full field.
+        The analysis widgets stay aligned with the image (their data coordinates
+        map directly onto the pixels of the crop).
         """
         scale = self._get_scale_um_per_px()
         roi_x = int(self.spin_roi_x.value())

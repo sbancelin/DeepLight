@@ -6,8 +6,8 @@ from typing import Dict, Iterable
 
 class SampleDetectorIntegrator:
     """
-    Abstraction minimale pour produire une valeur scalaire par pixel.
-    Le chemin par défaut est "analog_integrating".
+    Minimal abstraction producing one scalar value per pixel.
+    The default path is "analog_integrating".
     """
 
     def __init__(self, detector_manager=None):
@@ -25,7 +25,7 @@ class SampleDetectorIntegrator:
         axis3_value=None,
         axis4_value=None,
     ):
-        """Initialise le contexte de frame courant et prépare le détecteur si nécessaire."""
+        """Initialise the current frame context and prepare the detector if needed."""
         channels = list(channels)
 
         self._frame_context = {
@@ -58,7 +58,7 @@ class SampleDetectorIntegrator:
         dwell_time_s: float,
         pixel_source_kind: str = "analog_integrating",
     ) -> float:
-        """Retourne la valeur scalaire d'un pixel pour un canal donné."""
+        """Return the scalar value of one pixel for a given channel."""
         if pixel_source_kind == "analog_integrating":
             return float(
                 self._acquire_analog_integrated(
@@ -72,7 +72,7 @@ class SampleDetectorIntegrator:
         raise ValueError(f"Unsupported pixel_source_kind: {pixel_source_kind}")
 
     def _pixel_to_stream_index(self, x_index: int, y_index: int) -> int:
-        """Convertit un pixel image (x, y) en index dans le flux raster 1D."""
+        """Convert an image pixel (x, y) into an index in the 1D raster stream."""
         dm = self.detector_manager
         if dm is None:
             raise RuntimeError("No detector_manager attached")

@@ -342,7 +342,7 @@ class _SpectroMappingWorker(QObject):
 
                 if info.get("is_repeat_start", False) and repeat_delay_s > 0:
                     self.sigStatusMessage.emit(
-                        f"Time lapse: attente {int(repeat_delay_s)} s avant répétition {t + 1}/{n_repeats}..."
+                        f"Time lapse: waiting {int(repeat_delay_s)} s before repetition {t + 1}/{n_repeats}..."
                     )
                     t_end = time.perf_counter() + repeat_delay_s
                     while self._running and time.perf_counter() < t_end:
@@ -441,7 +441,7 @@ class _SpectroMappingWorker(QObject):
             origin = (self.dataset or {}).get("origin_um")
             if origin:
                 try:
-                    self.sigStatusMessage.emit("Retour à la position initiale...")
+                    self.sigStatusMessage.emit("Returning to the initial position...")
                     self._running = True
                     ox = float(origin["x"])
                     oy = float(origin["y"])
@@ -482,14 +482,14 @@ class _SpectroMappingWorker(QObject):
 
 class SpectroManager(QObject):
     """
-    Manager spectro mock V2.
+    Mock spectro manager, V2.
 
-    Rôles :
-    - snap / live Brillouin
-    - snap / live Raman
-    - mapping serpentin XYZ piloté depuis SpectroPanelWidget
-    - production d'un dataset reconstruction-friendly
-    - API compatible avec ce que MainWindow appelle déjà
+    Roles:
+    - Brillouin snap / live
+    - Raman snap / live
+    - XYZ serpentine mapping driven from SpectroPanelWidget
+    - production of a reconstruction-friendly dataset
+    - API compatible with what MainWindow already calls
     """
 
     sigImageUpdate = Signal(object)                     # np.ndarray 2D

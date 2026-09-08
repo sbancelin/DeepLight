@@ -30,7 +30,7 @@ class AxisState:
 
 
 class PositionerManager(QObject):
-    """API commune des gestionnaires de positionneurs."""
+    """Common API of the positioner managers."""
     absPositionChanged = Signal(str, float)   # axis, abs
     relPositionChanged = Signal(str, float)   # axis, rel
     movingChanged = Signal(str, bool)         # axis, moving
@@ -54,12 +54,13 @@ class PositionerManager(QObject):
         self._polar_prescan: Optional[dict] = None
 
     def _handle_polarization_scan(self, target_rel: float, reason: str):
-        """Un point de scan 'Polarization' = un AZIMUT (°).
+        """
+        One 'Polarization' scan point = one AZIMUTH (°).
 
-        On lit la table de calibration pour obtenir les positions des DEUX lames
-        (λ/2 sur l'axe 'p', λ/4 sur l'axe 'p4') qui produisent cette
-        polarisation, et on les déplace. L'état des lames avant le scan est
-        mémorisé pour être restauré au 'return_to_base'.
+        The calibration table gives the positions of BOTH waveplates
+        (λ/2 on axis 'p', λ/4 on axis 'p4') that produce this polarisation,
+        and both are moved. The state of the waveplates before the scan is
+        remembered so it can be restored on 'return_to_base'.
         """
         from .Polarization_Table import get_polarization_table
 
@@ -100,7 +101,7 @@ class PositionerManager(QObject):
         return
     
     def stop_all(self):
-        """Arrête le mouvement de tous les axes."""
+        """Stop the motion of every axis."""
         for axis in self._axes:
             self.stop(axis)
     
@@ -118,11 +119,12 @@ class PositionerManager(QObject):
         return float(self._state[axis].zero_offset)
 
     def set_zero_offset(self, axis: str, offset: float):
-        """Fixe directement le zero_offset (repère relatif) d'un axe.
+        """
+        Set an axis's zero_offset (its relative frame) directly.
 
-        Utilisé pour l'offset de montage des lames d'onde : le 0° relatif du
-        positioner correspond à cet angle physique. Contrairement à set_zero
-        (qui capture la position courante), la valeur est imposée telle quelle.
+        Used for the mounting offset of the waveplates: the positioner's
+        relative 0° corresponds to this physical angle. Unlike set_zero, which
+        captures the current position, the value is imposed as given.
         """
         self._require_axis(axis)
         self._state[axis].zero_offset = float(offset)
@@ -196,7 +198,7 @@ class PositionerManager(QObject):
         return True
     
     def set_limits(self, axis: str, min_pos: float, max_pos: float, max_speed: float, tolerance: float):
-        """Met à jour les limites pour un axe donné."""
+        """Update the limits of a given axis."""
         st = self._state[axis]
         st.min_pos = min_pos
         st.max_pos = max_pos
@@ -231,9 +233,9 @@ class PositionerManager(QObject):
 
 class MockPositionerManager(PositionerManager):
     """
-    Simulation simple :
-    - move_relative => définit un target_abs et avance vers la cible
-    - stop => stop immédiat
+    Simple simulation:
+    - move_relative => sets a target_abs and advances towards it
+    - stop => immediate stop
     """
     def __init__(self, axes: list[str], parent=None, tick_ms: int = 30):
         super().__init__(axes, parent=parent)
@@ -247,8 +249,8 @@ class MockPositionerManager(PositionerManager):
     @Slot(str, float, float)
     def move_to_rel(self, axis: str, rel_target: float, speed: float):
         """
-        Va à une position RELATIVE demandée (par l'utilisateur).
-        Convertit en absolu via le repère logique de l'axe.
+        Go to a RELATIVE position requested by the user.
+        Converted to absolute through the axis's logical frame.
         """
         self._require_axis(axis)
         speed_um_s = max(0.0, float(speed)) * 1000.0   # mm/s -> µm/s
@@ -265,8 +267,8 @@ class MockPositionerManager(PositionerManager):
         reason: str
     ):
         """
-        Commande issue du ScanManager.
-        Le scan parle avec des noms UI/hardware, le manager avec x/y/z/p.
+        Command coming from the ScanManager.
+        The scan speaks in UI/hardware names, the manager in x/y/z/p.
         """
         # Axe de scan Polarization : azimut -> table -> déplace λ/2 ET λ/4.
         if axis_name == "Polarization":
@@ -368,12 +370,12 @@ class MockPositionerManager(PositionerManager):
 
 class HardwarePositionerManager(PositionerManager):
     """
-    Implémentation de transition "hardware-like".
+    Transitional "hardware-like" implementation.
 
-    - même API que le mock
-    - pas de vrai hardware
-    - exécute les mouvements immédiatement
-    - loggue tout
+    - same API as the mock
+    - no real hardware
+    - carries out the moves immediately
+    - logs everything
     """
 
     def __init__(self, axes: list[str], parent=None):

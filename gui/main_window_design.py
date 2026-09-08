@@ -125,7 +125,7 @@ SHUTTER_BUTTON_STYLE = """
 """
 
 def ask_levels_min_max(parent=None, title="LUT Levels", lo0=0.0, hi0=255.0):
-    """Ouvre un petit dialogue pour saisir les niveaux min/max de LUT."""
+    """Open a small dialog to enter the min/max LUT levels."""
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
 
@@ -684,7 +684,7 @@ class MainWindowLayout:
         self.pushButton_shutter.setText("")
 
     def get_scan_tab_references(self):
-        """Retourne les références aux ImageView et au QSplitter."""
+        """Return the references to the ImageView widgets and to the QSplitter."""
         return self.im_widgets, self.splitter
 
     def update_scan_layout(self, active_channels):

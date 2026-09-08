@@ -1,17 +1,17 @@
 """
-Table de calibration de la polarisation.
+Polarisation calibration table.
 
-Pour un azimut de polarisation donné (en °), donne les positions (relatives, en °)
-des deux lames d'onde nécessaires pour obtenir cette polarisation :
-    azimut -> (position λ/2, position λ/4)
+For a given polarisation azimuth (in °), gives the positions (relative, in °)
+of the two waveplates needed to obtain that polarisation:
+    azimuth -> (λ/2 position, λ/4 position)
 
-- Les valeurs par défaut ci-dessous sont issues de la calibration du setup.
-- La table est ÉDITABLE sans toucher au code : un fichier CSV
-  `polarization_table.csv` (colonnes: azimuth_deg, lambda2_deg, lambda4_deg)
-  placé à côté de ce module est chargé au démarrage s'il existe ; sinon il est
-  écrit avec les valeurs par défaut pour servir de base d'édition.
-- Toute valeur d'azimut absente (ex. 140° dans la calibration d'origine) est
-  obtenue par interpolation linéaire entre les points connus.
+- The default values below come from the calibration of the setup.
+- The table is EDITABLE without touching the code: a CSV file
+  `polarization_table.csv` (columns: azimuth_deg, lambda2_deg, lambda4_deg)
+  placed next to this module is loaded at startup if it exists; otherwise it
+  is written with the default values to serve as a basis for editing.
+- Any missing azimuth value (e.g. 140° in the original calibration) is
+  obtained by linear interpolation between the known points.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ _CSV_PATH = os.path.join(os.path.dirname(__file__), "polarization_table.csv")
 
 
 class PolarizationTable:
-    """Table azimut -> (λ/2, λ/4) avec interpolation linéaire."""
+    """Azimuth -> (λ/2, λ/4) table with linear interpolation."""
 
     def __init__(self, points: dict[float, tuple[float, float]] | None = None):
         pts = dict(points if points is not None else _DEFAULT_TABLE)
@@ -81,7 +81,7 @@ class PolarizationTable:
         return ys[-1]
 
     def lookup(self, azimuth_deg: float) -> tuple[float, float]:
-        """Retourne (position λ/2, position λ/4) pour un azimut donné (interpolé)."""
+        """Return (λ/2 position, λ/4 position) for a given azimuth (interpolated)."""
         a = float(azimuth_deg)
         return self._interp(a, self._az, self._l2), self._interp(a, self._az, self._l4)
 

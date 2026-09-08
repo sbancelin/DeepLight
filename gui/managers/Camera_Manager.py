@@ -16,8 +16,8 @@ class CameraParameters:
 
 class CameraBackendBase:
     """
-    Contrat minimal commun aux caméras DeepLight.
-    Le backend ne dépend pas de Qt.
+    Minimal contract common to the DeepLight cameras.
+    The backend does not depend on Qt.
     """
 
     def __init__(self):
@@ -58,7 +58,7 @@ class CameraBackendBase:
 
     def get_frame(self) -> np.ndarray:
         """
-        Doit renvoyer rapidement une image 2D numpy.
-        En live, sera appelé périodiquement par le controller.
+        Must return a 2D numpy image quickly.
+        In live mode it is called periodically by the controller.
         """
         return self.snap()

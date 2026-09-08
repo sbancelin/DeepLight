@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt
 
 
 class PanelDock(QDockWidget):
-    """Dock vertical contenant plusieurs panels dans une zone scrollable."""
+    """Vertical dock holding several panels in a scrollable area."""
     def __init__(self, title="", parent=None):
         super().__init__(title, parent)
 
@@ -48,7 +48,7 @@ class PanelDock(QDockWidget):
             panel.toggled.connect(self._refresh_scroll_area)
 
     def set_bottom_widget(self, widget):
-        """Ajoute un widget fixe sous la zone scrollable (non scrollable)."""
+        """Add a fixed widget below the scrollable area (not scrollable)."""
         self._root_layout.addWidget(widget)
 
     def _refresh_scroll_area(self):

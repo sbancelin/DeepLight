@@ -2,7 +2,7 @@ from PySide6.QtCore import QObject
 
 
 class SettingsManager(QObject):
-    """Stockage partagé des réglages et positions de l'application."""
+    """Shared storage for the application's settings and positions."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.axis_settings = {}

@@ -221,7 +221,7 @@ def setup_laser_settings_dialog(dialog):
 
 
 class LaserWidget(QWidget):
-    """Widget pour le contrôle des lasers."""
+    """Widget for controlling the lasers."""
     laser_power_changed = Signal(str, float)
     laser_power_toggled = Signal(str, bool)
 
@@ -285,7 +285,7 @@ class LaserWidget(QWidget):
                 self.settings_manager.update_laser_settings(laser_name, **defaults)
     
     def _add_laser_control(self, laser_name):
-        """Ajoute un onglet de contrôle pour un laser spécifique."""
+        """Add a control tab for one specific laser."""
         tab = QWidget()
         tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tab.setStyleSheet("""
@@ -706,7 +706,7 @@ class LaserWidget(QWidget):
         dialog.exec()
     
     def _update_power_button_style(self, button, checked):
-        """Met à jour le style du bouton ON/OFF."""
+        """Update the style of the ON/OFF button."""
         if checked:
             button.setText("ON")
             button.setStyleSheet(POWER_BUTTON_ON_STYLE)

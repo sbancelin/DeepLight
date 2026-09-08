@@ -155,9 +155,9 @@ def ask_levels_min_max(parent=None, title="Levels", lo0=0.0, hi0=255.0):
 
 class SpectroWidget(QWidget):
     """
-    Widget spectro avec deux sections visibles en même temps :
-    - Brillouin : bouton activable + bandeau compact + image caméra
-    - Raman     : bouton activable + bandeau compact + graphe du spectre
+    Spectro widget with two sections visible at the same time:
+    - Brillouin: toggle button + compact banner + camera image
+    - Raman    : toggle button + compact banner + spectrum plot
     """
     sigBrillouinRoiChanged = Signal(dict)
     sigBrillouinReconnectRequested = Signal()
