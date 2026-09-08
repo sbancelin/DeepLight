@@ -506,64 +506,77 @@ class SaveManager:
             self._write_json(sidecar, payload)
 
     # ---------- Spectro dataset ----------
+    #: Format version, matching HDF5_BLS_Version in the HDF5_BLS package.
+    HDF5_BLS_VERSION = "1.0"
+
     def _write_hdf5_bls(self, path: str, dataset: dict, metadata: dict, comment: str) -> str:
-        """Write the Brillouin dataset as a single HDF5 file, BLS-style.
+        """Write the Brillouin dataset as a single HDF5-BLS 1.0 file.
 
-        LAYOUT TO BE VALIDATED AGAINST THE SPEC VERSION IN USE. The file is a
-        valid HDF5 and carries everything needed to interpret it, but the group
-        and attribute names below are this project's reading of HDF5-BLS, not a
-        transcription of the published schema, and no reference file was
-        available to check them against. Everything format-specific lives in
-        this one method, so aligning it later means editing here and nowhere
-        else.
+        The layout follows the HDF5_BLS reference package (v1.0.1), read from
+        its own source rather than guessed: a root "Brillouin" group carrying
+        the format version, measure groups below it, and datasets whose meaning
+        is given by a "Brillouin_type" attribute drawn from a fixed vocabulary.
 
-            /                      root attributes: creation, comment, version
-            /Data/Raw_data         (T, Z, Y, X, H, W) camera frames, float32
-            /Data/Abscissa         spectral axis when one is known
-            /Data/Positions        (N, 3) stage positions (x, y, z), µm
-            /Attributes/...        acquisition, spectrometer and sample metadata
+            /Brillouin                     Brillouin_type="Root", HDF5_BLS_version
+            /Brillouin/Measure             Brillouin_type="Measure" + metadata attrs
+            /Brillouin/Measure/Raw data    Brillouin_type="Raw_data"
+            /Brillouin/Measure/Frequency   Brillouin_type="Abscissa_5_5" + Unit
+            /Brillouin/Measure/Positions   Brillouin_type="Other"
+
+        The file is written with h5py directly rather than through the package:
+        HDF5_BLS 1.0.1 cannot be imported on this project's Python because its
+        wrapper uses f-strings with nested same-type quotes, which is 3.12+
+        syntax, while the acquisition environment runs 3.10. Writing the same
+        structure ourselves keeps the format without pinning the whole project
+        to a newer interpreter.
         """
         with h5py.File(path, "w") as h5:
-            h5.attrs["FILEPROP.Name"] = os.path.basename(path)
-            h5.attrs["FILEPROP.Created"] = self._now_iso()
-            h5.attrs["FILEPROP.Comment"] = str(comment or "")
-            h5.attrs["FILEPROP.Producer"] = "DeepLight"
-            h5.attrs["BLS.Format"] = "HDF5-BLS"
-            h5.attrs["BLS.Format_version"] = "0.1-deeplight"
+            root = h5.create_group("Brillouin")
+            root.attrs["Brillouin_type"] = "Root"
+            root.attrs["HDF5_BLS_version"] = self.HDF5_BLS_VERSION
 
-            data = h5.create_group("Data")
+            measure = root.create_group("Measure")
+            measure.attrs["Brillouin_type"] = "Measure"
 
             if "brillouin_images" in dataset:
                 arr = np.asarray(dataset["brillouin_images"], dtype=np.float32)
                 if arr.ndim == 5:                    # (Z, Y, X, H, W) -> prepend T
                     arr = arr[np.newaxis]
-                raw = data.create_dataset(
-                    "Raw_data", data=arr, compression="gzip", compression_opts=4
+                raw = measure.create_dataset(
+                    "Raw data", data=arr, compression="gzip", compression_opts=4
                 )
+                raw.attrs["Brillouin_type"] = "Raw_data"
                 raw.attrs["Dimensions"] = "T, Z, Y, X, camera_y, camera_x"
-                raw.attrs["Units"] = "counts"
 
-            wavelengths = np.asarray(
-                dataset.get("raman_wavelengths", []), dtype=np.float32
-            )
-            if wavelengths.size:
-                abscissa = data.create_dataset("Abscissa", data=wavelengths)
-                abscissa.attrs["Units"] = "nm"
+                wavelengths = np.asarray(
+                    dataset.get("raman_wavelengths", []), dtype=np.float32
+                )
+                if wavelengths.size == arr.shape[-1]:
+                    # Abscissa_<dim_start>_<dim_end>: the spectral axis is the
+                    # last dimension of the raw data, hence 5 to 5.
+                    axis = measure.create_dataset("Frequency", data=wavelengths)
+                    axis.attrs["Brillouin_type"] = "Abscissa_5_5"
+                    axis.attrs["Unit"] = "nm"
 
             positions = self._positions_array(dataset)
             if positions.size:
-                pos = data.create_dataset("Positions", data=positions)
+                pos = measure.create_dataset("Positions", data=positions)
+                pos.attrs["Brillouin_type"] = "Other"
                 pos.attrs["Dimensions"] = "point, (x, y, z)"
-                pos.attrs["Units"] = "um"
+                pos.attrs["Unit"] = "um"
 
-            attrs = h5.create_group("Attributes")
+            # The reference implementation stores every attribute as text.
+            measure.attrs["Name"] = os.path.basename(path)
+            measure.attrs["Created"] = self._now_iso()
+            measure.attrs["Comment"] = str(comment or "")
+            measure.attrs["Producer"] = "DeepLight"
+            measure.attrs["MEASURE.Grid_shape"] = str(metadata.get("grid_shape", []))
+            measure.attrs["MEASURE.Axis_order"] = str(metadata.get("axis_order", []))
+            measure.attrs["MEASURE.Serpentine"] = str(bool(metadata.get("serpentine", False)))
+
             for section in ("acquisition_parameters", "brillouin_parameters",
                             "raman_parameters", "save_parameters", "modalities"):
-                self._write_h5_attrs(attrs, section, metadata.get(section, {}))
-
-            attrs.attrs["MEASURE.Grid_shape"] = str(metadata.get("grid_shape", []))
-            attrs.attrs["MEASURE.Axis_order"] = str(metadata.get("axis_order", []))
-            attrs.attrs["MEASURE.Serpentine"] = bool(metadata.get("serpentine", False))
+                self._write_h5_attrs(measure, section, metadata.get(section, {}))
 
         return path
 
@@ -571,14 +584,13 @@ class SaveManager:
     def _write_h5_attrs(group, section: str, values: dict):
         """Flatten one metadata block into HDF5 attributes.
 
-        HDF5 attributes take scalars and strings, not nested dicts, so anything
-        that is not a plain number or string is stored as its JSON text rather
-        than dropped.
+        Stored as text, as the reference implementation does, so anything
+        nested keeps its JSON form rather than being dropped.
         """
         for key, value in dict(values or {}).items():
             name = f"{section}.{key}"
             if isinstance(value, (int, float, bool, str)):
-                group.attrs[name] = value
+                group.attrs[name] = str(value)
             else:
                 group.attrs[name] = json.dumps(value, default=str)
 
