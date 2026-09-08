@@ -17,6 +17,7 @@ from .managers.Stitching_Manager import StitchingManager
 from .managers.Spectro_Manager import SpectroManager
 from .managers.Laser_Manager import LaserManager
 from .widgets.Log_Widget import logger
+from .widgets.Depth_Compensation_Widget import DEPTH_AXIS
 
 
 class MainWindow(QMainWindow):
@@ -36,6 +37,9 @@ class MainWindow(QMainWindow):
         self.args = args
         self.backend_name = getattr(args, "backend", "mock")
         self.microscope_backend = microscope_backend
+
+        #: Première position Z du run : sert de surface pour la rampe de puissance.
+        self._depth_surface_rel_um = None
 
         self.ui = MainWindowLayout()
         self.ui.build(self)      # crée les widgets et les attache à la fenêtre
@@ -194,8 +198,27 @@ class MainWindow(QMainWindow):
             lambda _params: self.refresh_stitching_preview_grid()
         )
 
+        # La compensation en profondeur doit suivre l'activation de Z, or
+        # view_update_requested n'est émis que par le bouton "Update view" :
+        # sans ces connexions, choisir Z-Vcoil ne débloquait pas Activate.
+        for combo in self.ui.scan_widget.scan_dim_combos:
+            combo.currentTextChanged.connect(
+                lambda _=None: self.refresh_depth_compensation()
+            )
+        for edit in (*self.ui.scan_widget.size_edits, *self.ui.scan_widget.pixel_edits):
+            edit.textChanged.connect(lambda _=None: self.refresh_depth_compensation())
+
+        self.ui.depth_comp_widget.set_laser_widget(self.ui.laser_widget)
+        self.ui.depth_comp_widget.powerRampRequested.connect(
+            self.laser_command_manager.enqueue_power
+        )
+        self.acquisition_manager.stepper_move_requested.connect(
+            self.on_depth_power_step
+        )
+
         QTimer.singleShot(0, self.refresh_stitching_preview_grid)
         QTimer.singleShot(50, self.refresh_stitching_preview_grid)
+        QTimer.singleShot(0, self.refresh_depth_compensation)
 
         # Polarisation circulaire droite (CD) par défaut à l'initialisation :
         # positionne λ/2 et λ/4 selon les settings (no-op si lames absentes).
@@ -914,6 +937,46 @@ class MainWindow(QMainWindow):
         self._last_mosaic = mosaic
         w_um, h_um = self._stitching_geom_um
         self.ui.stitch_widget.set_image(mosaic, width_um=w_um, height_um=h_um)
+
+    def refresh_depth_compensation(self):
+        """Let the depth panel follow the scan axes as they are edited."""
+        try:
+            scan_params = self.ui.scan_widget.get_scan_parameters()
+        except Exception as e:
+            logger.debug(f"[MainWindow] depth compensation refresh skipped: {e}")
+            return
+        self.ui.depth_comp_widget.update_from_scan_parameters(scan_params)
+
+    def on_depth_power_step(self, axis_name, target_rel, velocity, t_ms, reason):
+        """Step the laser power together with every Z step of the stack.
+
+        The depth reference is the first Z position of the run rather than a
+        computed one: Z-Vcoil is scanned downwards, and around/from modes put
+        the start in different places, so measuring from what actually happened
+        is the only version that holds in every case.
+        """
+        if str(axis_name) != DEPTH_AXIS:
+            return
+
+        widget = self.ui.depth_comp_widget
+        if not widget.get_compensation().enabled:
+            return
+
+        if self._depth_surface_rel_um is None:
+            self._depth_surface_rel_um = float(target_rel)
+
+        depth_um = abs(float(target_rel) - self._depth_surface_rel_um)
+        percent = widget.power_percent_at(depth_um)
+
+        laser = widget.laser_name()
+        self.ui.laser_widget.set_laser_power_value(laser, percent)
+        # set_laser_power_value blocks its signals, so the command has to be
+        # sent explicitly; enqueue_power is threaded and will not stall the scan.
+        widget.powerRampRequested.emit(laser, float(percent))
+
+        logger.debug(
+            f"[DepthComp] {depth_um:.1f} µm -> {percent:.2f} % on {laser}"
+        )
 
     def refresh_stitching_preview_grid(self):
         try:
@@ -1699,6 +1762,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def on_acquisition_started(self):
         """Handle the start of an acquisition/preview run."""
+        # La surface est la première position Z rencontrée : on l'oublie entre
+        # deux runs, sinon la rampe repartirait de la profondeur précédente.
+        self._depth_surface_rel_um = None
+
         try:
             self.ui.visu_step_widget.set_running(True)
         except Exception as e:
@@ -1728,6 +1795,18 @@ class MainWindow(QMainWindow):
     @Slot()
     def on_acquisition_stopped(self):
         """Handle the end of the acquisition."""
+        # Ramener le laser à sa puissance de surface : le laisser à la valeur
+        # du plan le plus profond exposerait l'échantillon suivant en surface.
+        if self._depth_surface_rel_um is not None:
+            widget = self.ui.depth_comp_widget
+            if widget.get_compensation().enabled:
+                base = widget.base_power_percent()
+                laser = widget.laser_name()
+                self.ui.laser_widget.set_laser_power_value(laser, base)
+                widget.powerRampRequested.emit(laser, float(base))
+                logger.info(f"[DepthComp] {laser} back to {base:.3g} % after the stack.")
+        self._depth_surface_rel_um = None
+
         # En stitching, la fin d'une acquisition tuile ne clôt PAS la barre
         # globale (elle représente la mosaïque complète, gérée par le run).
         if not self.stitching_manager.is_running():
