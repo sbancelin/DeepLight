@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Qt
 
 from ...config import default_dated_folder
+from ..resources import icon_path
 from PySide6.QtGui import QIcon, QDoubleValidator, QIntValidator
 
 import os
@@ -358,7 +359,7 @@ class SpectroPanelWidget(QWidget):
         self.folder_line_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         save_layout.addWidget(self.folder_line_edit, 0, 1)
         self.folder_button = QPushButton()
-        self.folder_button.setIcon(QIcon("gui/Icons/folder.svg"))
+        self.folder_button.setIcon(QIcon(icon_path("folder.svg")))
         self.folder_button.setStyleSheet(BUTTON_STYLE)
         self.folder_button.setFixedWidth(28)
         self.folder_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -409,14 +410,14 @@ class SpectroPanelWidget(QWidget):
         acq_layout.setColumnStretch(1, 1)
 
         self.button_acquire = QPushButton("Acquire")
-        self.button_acquire.setIcon(QIcon("gui/Icons/REC.svg"))
+        self.button_acquire.setIcon(QIcon(icon_path("REC.svg")))
         self.button_acquire.setStyleSheet(BUTTON_STYLE)
         self.button_acquire.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.button_acquire.clicked.connect(self._on_acquire_clicked)
         acq_layout.addWidget(self.button_acquire, 0, 0)
 
         self.button_stop = QPushButton("Stop")
-        self.button_stop.setIcon(QIcon("gui/Icons/stop.svg"))
+        self.button_stop.setIcon(QIcon(icon_path("stop.svg")))
         self.button_stop.setStyleSheet(BUTTON_STYLE)
         self.button_stop.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.button_stop.clicked.connect(self.sigStopClicked.emit)

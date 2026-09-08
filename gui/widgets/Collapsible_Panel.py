@@ -2,6 +2,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, Q
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, Signal, QPoint
 from PySide6.QtGui import QIcon
 
+from ..resources import icon_path
+
 
 class ResizeHandle(QWidget):
     dragDelta = Signal(int)  # delta vertical
@@ -183,7 +185,7 @@ class CollapsiblePanel(QWidget):
         self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         self.settings_button = QPushButton("", header)
-        self.settings_button.setIcon(QIcon("gui/Icons/settings.svg"))
+        self.settings_button.setIcon(QIcon(icon_path("settings.svg")))
         self.settings_button.setFixedSize(22, 22)
         self.settings_button.setStyleSheet("""
             QPushButton {

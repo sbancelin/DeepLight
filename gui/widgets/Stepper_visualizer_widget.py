@@ -7,6 +7,9 @@ from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
 
+from ..resources import icon_path
+
+
 class StepperVisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -119,7 +122,7 @@ class StepperVisualizerWidget(QWidget):
         selector_layout.addStretch(1)
 
         self.monitor_btn = QPushButton()
-        self.monitor_btn.setIcon(QIcon("gui/Icons/monitor.svg"))
+        self.monitor_btn.setIcon(QIcon(icon_path("monitor.svg")))
         self.monitor_btn.setCheckable(True)
         self.monitor_btn.setChecked(False)
         self.monitor_btn.setFixedHeight(22)

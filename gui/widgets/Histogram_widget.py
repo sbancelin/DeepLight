@@ -5,6 +5,7 @@ from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
 from ._pg_common import DoubleClickAxis, DoubleClickViewBox
+from ..resources import icon_path
 
 
 class HistogramWidget(QWidget):
@@ -79,7 +80,7 @@ class HistogramWidget(QWidget):
         top_layout.setSpacing(6)
 
         self.toggle_btn = QPushButton()
-        self.toggle_btn.setIcon(QIcon("gui/Icons/ROI.svg"))
+        self.toggle_btn.setIcon(QIcon(icon_path("ROI.svg")))
         self.toggle_btn.setCheckable(True)
         self.toggle_btn.setFixedHeight(22)
         self.toggle_btn.setMinimumWidth(0)

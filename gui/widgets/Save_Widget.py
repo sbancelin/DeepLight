@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QGridLayout, Q
 from PySide6.QtCore import Qt, Signal
 
 from ...config import default_dated_folder
+from ..resources import icon_path
 from PySide6.QtGui import QIcon
 
 import os
@@ -93,7 +94,7 @@ class SaveWidget(QWidget):
 
         # Bouton pour choisir le dossier (avec icône)
         self.folder_button = QPushButton()
-        self.folder_button.setIcon(QIcon("gui/Icons/folder.svg"))
+        self.folder_button.setIcon(QIcon(icon_path("folder.svg")))
         self.folder_button.setStyleSheet(BUTTON_STYLE)
         self.folder_button.clicked.connect(self.choose_folder)
         self.folder_button.setFixedWidth(28)

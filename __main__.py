@@ -3,7 +3,6 @@ if __name__ == "__main__":
     import os
     import ctypes
     import argparse
-    from pathlib import Path
     from .gui.managers.Microscopes import create_microscope_backend
 
     from PySide6.QtWidgets import QApplication
@@ -19,8 +18,9 @@ if __name__ == "__main__":
 
     args, qt_args = parser.parse_known_args()
 
-    path = Path(__file__).parent.absolute()
-    os.chdir(path)
+    # No os.chdir() here on purpose: bundled resources are resolved relative to
+    # the package (see gui/resources.py), so the working directory is the
+    # user's own and relative paths they type keep meaning what they expect.
 
     if sys.platform == "win32":
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(

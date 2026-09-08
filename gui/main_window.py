@@ -7,6 +7,7 @@ import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder='row-major')
 
 from .main_window_design import MainWindowLayout
+from .resources import icon_path
 from .managers.Acquisition_Manager import AcquisitionManager
 from .managers.Hardware_Manager import HardwareManager
 from .managers.Save_Manager import SaveManager
@@ -78,7 +79,7 @@ class MainWindow(QMainWindow):
         
         # Définir le titre de la fenêtre
         self.setWindowTitle(f"DeepLight [{self.backend_name.upper()}]")
-        self.setWindowIcon(QIcon("./gui/Icons/Microscope_icon_green.ico"))
+        self.setWindowIcon(QIcon(icon_path("Microscope_icon_green.ico")))
 
         self.user_shutter_override = None  # None=no override, True/False=user forced state
         self.hardware = HardwareManager(backend_name=self.backend_name, settings_manager=self.settings_manager, parent=self)
@@ -1608,7 +1609,7 @@ class MainWindow(QMainWindow):
         btn.blockSignals(False)
 
         if open_:
-            btn.setIcon(QIcon("./gui/Icons/laser_icon_open.svg"))
+            btn.setIcon(QIcon(icon_path("laser_icon_open.svg")))
         else:
             btn.setIcon(QIcon(None))
 

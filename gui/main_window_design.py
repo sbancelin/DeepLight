@@ -16,6 +16,7 @@ from PySide6.QtCore import (QSize, Qt)
 from PySide6.QtGui import (QIcon, QTransform, QShortcut, QKeySequence)
 from PySide6.QtWidgets import (QApplication, QLineEdit, QCheckBox, QDockWidget, QGridLayout, QGroupBox, QSplitter, QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy, QSpacerItem, QTabWidget, QWidget, QMessageBox)
+from .resources import icon_path
 from .widgets.Scan_Widget import ScanWidget
 from .widgets.Laser_Widget import LaserWidget
 from .widgets.Detector_Widget import DetectorWidget
@@ -205,7 +206,7 @@ class MainWindowLayout:
         self.pushButton_previewSingle.setObjectName(u"pushButton_previewSingle")
         self.pushButton_previewSingle.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
        
-        icon1 = QIcon("gui/Icons/play.svg")
+        icon1 = QIcon(icon_path("play.svg"))
         self.pushButton_previewSingle.setIcon(icon1)
         self.pushButton_previewSingle.setIconSize(QSize(32, 32))
         self.pushButton_previewSingle.setFlat(True)
@@ -221,7 +222,7 @@ class MainWindowLayout:
         sizePolicy2.setHeightForWidth(self.pushButton_stop.sizePolicy().hasHeightForWidth())
         self.pushButton_stop.setSizePolicy(sizePolicy2)
         self.pushButton_stop.setStyleSheet(TRANSPARENT_ICON_BUTTON_STYLE)
-        icon2 = QIcon("gui/Icons/stop.svg")
+        icon2 = QIcon(icon_path("stop.svg"))
         self.pushButton_stop.setIcon(icon2)
         self.pushButton_stop.setIconSize(QSize(32, 32))
         self.pushButton_stop.setFlat(True)
@@ -231,7 +232,7 @@ class MainWindowLayout:
         self.pushButton_previewcontinuous = QPushButton(self.groupBox_11)
         self.pushButton_previewcontinuous.setObjectName(u"pushButton_previewcontinuous")
         self.pushButton_previewcontinuous.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
-        icon3 = QIcon("gui/Icons/repeat.svg")
+        icon3 = QIcon(icon_path("repeat.svg"))
         self.pushButton_previewcontinuous.setIcon(icon3)
         self.pushButton_previewcontinuous.setIconSize(QSize(32, 32))
         self.pushButton_previewcontinuous.setFlat(True)
@@ -243,7 +244,7 @@ class MainWindowLayout:
         self.pushButton_acquisitionStart.setObjectName(u"pushButton_acquisitionStart")
         self.pushButton_acquisitionStart.setStyleSheet(TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE)
 
-        icon4 = QIcon("gui/Icons/REC.svg")
+        icon4 = QIcon(icon_path("REC.svg"))
         self.pushButton_acquisitionStart.setIcon(icon4)
         self.pushButton_acquisitionStart.setIconSize(QSize(32, 32))
         self.pushButton_acquisitionStart.setFlat(True)

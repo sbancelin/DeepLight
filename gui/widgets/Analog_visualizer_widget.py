@@ -4,6 +4,9 @@ from PySide6.QtGui import QIcon
 import pyqtgraph as pg
 import numpy as np
 
+from ..resources import icon_path
+
+
 class AnalogOutVisualizerWidget(QWidget):
     def reset_buffer(self):
         """Réinitialise le buffer de monitoring (nouvelle acquisition)."""
@@ -133,7 +136,7 @@ class AnalogOutVisualizerWidget(QWidget):
 
         # Bouton Monitor pour Galvo X
         self.monitor_x_btn = QPushButton()
-        self.monitor_x_btn.setIcon(QIcon("gui/Icons/monitor.svg"))
+        self.monitor_x_btn.setIcon(QIcon(icon_path("monitor.svg")))
         self.monitor_x_btn.setCheckable(True)
         self.monitor_x_btn.setChecked(False)
         self.monitor_x_btn.setFixedHeight(22)
@@ -200,7 +203,7 @@ class AnalogOutVisualizerWidget(QWidget):
         Galvo_Y_layout.addSpacing(6)
 
         self.monitor_y_btn = QPushButton()
-        self.monitor_y_btn.setIcon(QIcon("gui/Icons/monitor.svg"))
+        self.monitor_y_btn.setIcon(QIcon(icon_path("monitor.svg")))
         self.monitor_y_btn.setCheckable(True)
         self.monitor_y_btn.setChecked(False)
         self.monitor_y_btn.setFixedHeight(22)
