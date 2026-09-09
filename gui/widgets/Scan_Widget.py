@@ -3,7 +3,9 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGroupBox, QPushButton,
 from PySide6.QtCore import Signal, Qt
 from ..managers.Scan_Types import (
     SCAN_AXIS_DEFAULTS, STEPPER_AXIS_DEFAULTS, stack_move_time_s,
+    bidirectional_shift_px, bidirectional_lag_us,
 )
+from .Log_Widget import logger
 
 DAQ_SAMPLE_RATE_HZ = 500_000.0
 DAQ_SAMPLE_PERIOD_S = 1.0 / DAQ_SAMPLE_RATE_HZ
@@ -231,6 +233,7 @@ def setup_scan_settings_dialog(dialog):
         cur_overscan = float(axis_cfg.get("overscan_fraction", defaults.get("overscan_fraction", 0.0)))
         cur_frame_flyback_s = float(axis_cfg.get("frame_flyback_time_s", defaults.get("frame_flyback_time_s", 0.0)))
         cur_vel = float(axis_cfg.get("vel_max", defaults.get("vel_max", 1.0)))
+        cur_bidir_lag_us = float(axis_cfg.get("bidir_lag_us", defaults.get("bidir_lag_us", 0.0)))
 
         conversion_layout = QHBoxLayout()
         conversion_label = QLabel("Conversion Factor (µm/V):")
@@ -275,6 +278,20 @@ def setup_scan_settings_dialog(dialog):
             dyn_layout_2.addWidget(QLabel("Frame flyback (ms):"))
             dyn_layout_2.addWidget(flyback_edit)
 
+        if axis_name in ("X-Galvo", "Y-Galvo"):
+            lag_edit = QLineEdit(str(cur_bidir_lag_us))
+            lag_edit.setObjectName(f"bidir_lag_edit_{axis_name.replace('-', '_')}")
+            lag_edit.setToolTip(
+                "Round-trip galvo lag, in µs, used to place the bidirectional\n"
+                "back shift automatically: shift_px = lag / dwell.\n"
+                "Calibrate once by typing a shift that lines the lines up at a\n"
+                "known dwell; the lag that explains it is stored here and the\n"
+                "shift then follows the dwell on its own.\n"
+                "0 leaves the shift under manual control."
+            )
+            dyn_layout_2.addWidget(QLabel("Bidir. lag (µs):"))
+            dyn_layout_2.addWidget(lag_edit)
+
         dialog.add_layout(dyn_layout_2)
 
     def _read_float(le: QLineEdit, default: float) -> float:
@@ -288,6 +305,14 @@ def setup_scan_settings_dialog(dialog):
             return int(float(le.text().replace(",", ".")))
         except Exception:
             return int(default)
+
+    def _read_bidir_lag(key: str, old_settings: dict) -> float:
+        """Calibrated galvo lag for this axis, keeping the old one if unreadable."""
+        previous = float(old_settings.get("bidir_lag_us", 0.0))
+        edit = dialog.findChild(QLineEdit, f"bidir_lag_edit_{key}")
+        if edit is None:
+            return previous
+        return max(0.0, _read_float(edit, previous))
 
     def on_dialog_accepted():
         if scan_widget is None or scan_widget.axis_settings_manager is None:
@@ -353,6 +378,7 @@ def setup_scan_settings_dialog(dialog):
                     overscan_fraction=overscan_fraction,
                     frame_flyback_time_s=0.0,
                     vel_max=vel,
+                    bidir_lag_us=_read_bidir_lag(key, old),
                 )
 
             elif axis_name == "Y-Galvo":
@@ -389,10 +415,12 @@ def setup_scan_settings_dialog(dialog):
                     overscan_fraction=0.0,
                     frame_flyback_time_s=frame_flyback_time_s,
                     vel_max=vel,
+                    bidir_lag_us=_read_bidir_lag(key, old),
                 )
 
         scan_widget.axis_settings = scan_widget.axis_settings_manager.get_all_axis_settings()
         scan_widget._update_scan_duration()
+        scan_widget.refresh_bidirectional_shift()
         scan_widget._on_param_changed()
 
     dialog.accepted.connect(on_dialog_accepted)
@@ -838,6 +866,9 @@ class ScanWidget(QWidget):
 
         self.dwell_edit.textChanged.connect(self._update_daq_samples_per_pixel_display)
         self.dwell_edit.textChanged.connect(self._update_scan_duration)
+        # Le décalage bidirectionnel vaut lag/dwell : il suit le dwell tout seul
+        # une fois le galvo calibré.
+        self.dwell_edit.textChanged.connect(lambda _=None: self.refresh_bidirectional_shift())
         self.samples_per_pixel_edit.textChanged.connect(self._update_scan_duration)
         self.rep_edit.textChanged.connect(self._update_scan_duration)
         self.delay_edit.textChanged.connect(self._update_scan_duration)
@@ -935,12 +966,50 @@ class ScanWidget(QWidget):
 
         self.axis_settings = self.axis_settings_manager.get_all_axis_settings()
     
+    def _fast_axis_name(self) -> str:
+        """Axis sweeping the line: the lag is a property of that galvo."""
+        for combo in self.scan_dim_combos:
+            axis = combo.currentText()
+            if axis != "None":
+                return axis
+        return ""
+
+    def _fast_axis_bidir_lag_us(self) -> float:
+        axis = self._fast_axis_name()
+        if not axis:
+            return 0.0
+        settings = {}
+        if self.axis_settings_manager is not None:
+            settings = self.axis_settings_manager.get_axis_settings(axis) or {}
+        defaults = SCAN_AXIS_DEFAULTS.get(axis, {})
+        return float(settings.get("bidir_lag_us", defaults.get("bidir_lag_us", 0.0)))
+
+    def refresh_bidirectional_shift(self):
+        """Place the back shift from the calibrated lag and the current dwell.
+
+        Does nothing while the lag is 0: an uncalibrated axis leaves the shift
+        under manual control, which is also how the lag gets calibrated in the
+        first place.
+        """
+        lag_us = self._fast_axis_bidir_lag_us()
+        if lag_us <= 0.0:
+            self._update_bidir_delay_label()
+            return
+
+        dwell_us = self._read_float_edit(self.dwell_edit, 0.0)
+        shift = bidirectional_shift_px(lag_us, dwell_us)
+
+        self.bidirectional_shift_edit.blockSignals(True)
+        self.bidirectional_shift_edit.setText(str(shift))
+        self.bidirectional_shift_edit.setProperty("last_valid_text", str(shift))
+        self.bidirectional_shift_edit.blockSignals(False)
+
+        self._update_bidir_delay_label()
+
     def _update_bidir_delay_label(self):
-        delay = getattr(self, "_bidir_calibrated_delay_samples", 0.0)
-        if delay > 0:
-            from ..managers.Scan_manager import DAQ_SAMPLE_RATE_HZ
-            delay_us = delay / DAQ_SAMPLE_RATE_HZ * 1e6
-            self.bidir_delay_label.setText(f"τ≈{delay_us:.1f} µs")
+        lag_us = self._fast_axis_bidir_lag_us()
+        if lag_us > 0.0:
+            self.bidir_delay_label.setText(f"τ≈{lag_us:.1f} µs")
         else:
             self.bidir_delay_label.setText("—")
 
@@ -964,11 +1033,20 @@ class ScanWidget(QWidget):
         self.bidirectional_shift_edit.setText(str(value))
         self.bidirectional_shift_edit.setProperty("last_valid_text", str(value))
 
-        # Stocker le délai physique calibré (τ en samples = shift_px × spp)
-        spp = self._compute_daq_samples_per_pixel_from_dwell()
-        self._bidir_calibrated_delay_samples = float(abs(value) * spp)
-        self._update_bidir_delay_label()
+        # Saisir un décalage à la main, c'est calibrer : on en déduit le retard
+        # du galvo, et à partir de là le décalage se recalcule tout seul quand
+        # le dwell change, au lieu d'être à réajuster à chaque scan.
+        dwell_us = self._read_float_edit(self.dwell_edit, 0.0)
+        axis = self._fast_axis_name()
+        if axis and dwell_us > 0 and self.axis_settings_manager is not None:
+            lag_us = bidirectional_lag_us(value, dwell_us)
+            self.axis_settings_manager.update_axis_settings(axis, bidir_lag_us=lag_us)
+            logger.info(
+                f"[Scan] bidirectional lag calibrated on {axis}: "
+                f"{lag_us:.1f} µs ({value} px at {dwell_us:.3g} µs dwell)"
+            )
 
+        self._update_bidir_delay_label()
         self._on_param_changed()
 
     def _count_active_scan_dimensions_except(self, excluded_combo: QComboBox) -> int:

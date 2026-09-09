@@ -192,6 +192,40 @@ def stack_move_time_s(distance: float, velocity_per_s: float,
     return distance / velocity + float(margin_s)
 
 
+def bidirectional_shift_px(lag_us: float, dwell_us: float) -> int:
+    """Pixel shift to apply on reverse lines, from the calibrated galvo lag.
+
+    A galvo follows its command with a fixed delay. On a forward line the image
+    lands late by that delay, on a reverse line it lands late the other way, so
+    the even-to-odd offset is the round-trip lag. In pixels:
+
+        shift = lag / dwell
+
+    The scan size and the pixel size cancel out, which is the useful part: they
+    set the scan speed *and* the µm-per-pixel conversion, in opposite
+    directions. Only the dwell time is left, so one calibration holds for every
+    ROI and every sampling, and only has to be redone if the dwell changes --
+    which is exactly what makes it automatable.
+
+    `lag_us` is the round-trip (even-to-odd) lag, twice the galvo's one-way
+    delay. It is stored that way because it is what directly divides by the
+    dwell.
+    """
+    dwell_us = float(dwell_us)
+    if dwell_us <= 0.0:
+        return 0
+    return int(round(float(lag_us) / dwell_us))
+
+
+def bidirectional_lag_us(shift_px: float, dwell_us: float) -> float:
+    """Inverse of bidirectional_shift_px(): calibrate the lag from one shift.
+
+    Set the shift by hand once, at a known dwell, and the lag that explains it
+    follows. From then on the shift is computed rather than adjusted.
+    """
+    return abs(float(shift_px)) * max(0.0, float(dwell_us))
+
+
 SCAN_AXIS_DEFAULTS = {
     "X-Galvo": {
         # Physically scans in the stage Y direction (fast mirror, up-down).
@@ -202,6 +236,9 @@ SCAN_AXIS_DEFAULTS = {
         "overscan_fraction": 0.10,
         "frame_flyback_time_s": 0.0,
         "vel_max": 1000.0,
+        # Round-trip galvo lag, in µs. 0 = not calibrated yet, so the
+        # bidirectional shift stays whatever the user sets by hand.
+        "bidir_lag_us": 0.0,
     },
     "Y-Galvo": {
         # Physically scans in the stage X direction (slow mirror, left-right).
