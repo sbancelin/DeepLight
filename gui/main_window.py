@@ -634,6 +634,7 @@ class MainWindow(QMainWindow):
             if not filename:
                 filename = "SPECTRO"
 
+            self._push_save_context()
             path = self.save_manager.save_spectro_dataset(
                 folder=folder,
                 filename=filename,
@@ -1114,6 +1115,8 @@ class MainWindow(QMainWindow):
         except Exception:
             mosaic_params = {}
 
+        self._push_save_context()
+
         try:
             path = self.save_manager.save_mosaic(
                 folder=folder,
@@ -1227,7 +1230,28 @@ class MainWindow(QMainWindow):
         ] or ["default"]
 
         return params
-    
+
+    def _push_save_context(self):
+        """Hand the save manager the optics and lasers of the moment.
+
+        Read just before saving rather than kept in sync continuously: the
+        panels are the reference, and what matters is their state when the
+        acquisition was written, not every intermediate edit.
+        """
+        try:
+            optics = self.ui.nyquist_widget.get_optics()
+        except Exception as e:
+            logger.warning(f"[Save] optics unavailable for provenance: {e}")
+            optics = {}
+
+        try:
+            lasers = self.ui.laser_widget.active_lasers()
+        except Exception as e:
+            logger.warning(f"[Save] laser state unavailable for provenance: {e}")
+            lasers = {}
+
+        self.save_manager.set_context(optics=optics, lasers=lasers)
+
     def _channel_unit_label(self, channel: str) -> str:
         """
         Return the unit displayed for a channel.
@@ -1496,6 +1520,7 @@ class MainWindow(QMainWindow):
 
         scan_params = self.ui.scan_widget.get_scan_parameters()
         scan_params = self._attach_detector_specs(scan_params)
+        self._push_save_context()
 
         try:
             path = self.save_manager.save_current_view(
@@ -2145,6 +2170,8 @@ class MainWindow(QMainWindow):
         folder = self.ui.save_widget.folder_line_edit.text().strip()
         filename = self.ui.save_widget.filename_line_edit.text().strip()
         comment = self.ui.save_widget.comment_text_edit.toPlainText().strip()
+
+        self._push_save_context()
 
         ok = self.save_manager.start_rec_session(
             fmt=rec_fmt,

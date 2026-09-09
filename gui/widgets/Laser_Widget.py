@@ -652,6 +652,42 @@ class LaserWidget(QWidget):
         freq_mhz = self._snap_alcor_rep_rate_mhz(float(spin.value()))
         return float(freq_mhz) * 1000.0
     
+    def active_lasers(self) -> dict:
+        """The lasers actually delivering light, for the saved provenance.
+
+        A laser at zero percent is not exciting anything, so it is left out:
+        what remains identifies the excitation, the wavelength being a property
+        of whichever laser is running rather than a separate setting.
+        """
+        active = {}
+        for name, controls in self.laser_controls.items():
+            spin = controls.get("spin")
+            if spin is None:
+                continue
+
+            power = float(spin.value())
+            button = controls.get("button")
+            # Only some lasers have an ON/OFF button; where there is one, it
+            # gates the beam and a laser left OFF emits nothing.
+            if button is not None and not button.isChecked():
+                continue
+            if power <= 0.0:
+                continue
+
+            entry = {"power_percent": round(power, 3)}
+
+            gdd_spin = controls.get("gdd_spin")
+            if gdd_spin is not None:
+                entry["gdd_fs2"] = float(gdd_spin.value())
+
+            rep_rate_spin = controls.get("rep_rate_spin")
+            if rep_rate_spin is not None:
+                entry["rep_rate_mhz"] = self._snap_alcor_rep_rate_mhz(float(rep_rate_spin.value()))
+
+            active[name] = entry
+
+        return active
+
     def set_laser_enabled(self, laser_name: str, enabled: bool):
         controls = self.laser_controls.get(laser_name)
         if not controls:

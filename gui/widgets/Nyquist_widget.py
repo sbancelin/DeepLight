@@ -408,6 +408,31 @@ class NyquistWidget(QWidget):
         # Mise à jour initiale des valeurs
         self.update_values()
 
+    def get_optics(self) -> dict:
+        """Objective and the optical parameters it implies, for the saved data.
+
+        These are the numbers one needs to re-derive a resolution from a file
+        months later; they live in this panel, so it is this panel that reports
+        them rather than the save manager guessing.
+        """
+        order = 1
+        if self.order_2p_radio.isChecked():
+            order = 2
+        elif self.order_3p_radio.isChecked():
+            order = 3
+
+        return {
+            "objective": self.objective_combo.currentText(),
+            "numerical_aperture": self._safe_float(self.na_edit),
+            "refractive_index": self._safe_float(self.ref_index_edit),
+            "wavelength_nm": self._safe_float(self.wavelength_edit),
+            "process_order": order,
+            "xy_resolution_nm": self._safe_float(self.xy_res_edit),
+            "z_resolution_nm": self._safe_float(self.z_res_edit),
+            "nyquist_sampling_xy": self._safe_float(self.sampling_xy_edit),
+            "nyquist_sampling_z": self._safe_float(self.sampling_z_edit),
+        }
+
     def _set_editable(self, le: QLineEdit, editable: bool):
         le.setReadOnly(not editable)
         if editable:

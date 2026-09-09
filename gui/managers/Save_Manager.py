@@ -11,6 +11,7 @@ import tifffile
 import zarr
 
 from ..widgets.Log_Widget import logger
+from .Provenance import acquisition_provenance, physical_pixel_size_um
 
 NGFF_AXES_TCZYX = [
     {"name": "t", "type": "time"},
@@ -135,6 +136,74 @@ class SaveManager:
             "channels": [{"label": str(c)} for c in channels],
         }
 
+    def set_context(self, optics: dict | None = None, lasers: dict | None = None):
+        """Optics and running lasers to record with the next saves.
+
+        Pushed in by MainWindow, which owns the panels, so this manager keeps
+        knowing nothing about widgets.
+        """
+        self._optics = dict(optics or {})
+        self._lasers = dict(lasers or {})
+
+    def _provenance(self, scan_params: dict, comment: str) -> dict:
+        return acquisition_provenance(
+            scan_params=scan_params or {},
+            optics=getattr(self, "_optics", {}),
+            lasers=getattr(self, "_lasers", {}),
+            comment=comment,
+        )
+
+    def _ome_physical_size(self, scan_params: dict) -> dict:
+        """OME PhysicalSize fields, omitting any axis whose spacing is unknown.
+
+        Stating a wrong size would be worse than stating none: a viewer trusts
+        it and scale bars silently lie.
+        """
+        x, y, z = physical_pixel_size_um(scan_params)
+        meta = {}
+        if x:
+            meta["PhysicalSizeX"] = float(x)
+            meta["PhysicalSizeXUnit"] = "µm"
+        if y:
+            meta["PhysicalSizeY"] = float(y)
+            meta["PhysicalSizeYUnit"] = "µm"
+        if z:
+            meta["PhysicalSizeZ"] = float(z)
+            meta["PhysicalSizeZUnit"] = "µm"
+        return meta
+
+    def _ngff_scale_tczyx(self, scan_params: dict) -> list[dict]:
+        """NGFF coordinateTransformations for a TCZYX dataset.
+
+        Required by the spec for a multiscales entry, and the only place a
+        Zarr reader looks for the voxel size. Unknown axes get 1.0, which is
+        what NGFF means by "no scaling stated".
+        """
+        x, y, z = physical_pixel_size_um(scan_params)
+        return [{
+            "type": "scale",
+            "scale": [1.0, 1.0, float(z or 1.0), float(y or 1.0), float(x or 1.0)],
+        }]
+
+    def _write_sidecar(self, path: str, comment: str, scan_params: dict,
+                       channels=None, extra: dict | None = None) -> str:
+        """Text record beside a TIFF: readable first, exhaustive second.
+
+        The provenance block comes first and answers the questions one actually
+        asks of an old file; the raw scan parameters stay underneath it so
+        nothing is lost, rather than being the whole document as before.
+        """
+        sidecar = os.path.splitext(path)[0] + ".json"
+        payload = {
+            "provenance": self._provenance(scan_params, comment),
+            "channels": [str(c) for c in (channels or [])],
+            "scan_params": scan_params or {},
+        }
+        if extra:
+            payload.update(extra)
+        self._write_json(sidecar, payload)
+        return sidecar
+
     def _now_iso(self) -> str:
         return datetime.now().isoformat(timespec="seconds")
     
@@ -207,6 +276,10 @@ class SaveManager:
             "axes": "CYX",
             "Channel": [{"Name": str(ch)} for ch in channels],
         }
+        # Sans PhysicalSize, Fiji et Napari ouvrent l'image en pixels et les
+        # micromètres sont perdus : l'échelle doit être dans l'OME, pas
+        # seulement dans le sidecar.
+        ome_metadata.update(self._ome_physical_size(scan_params))
 
         with self._lock:
             tifffile.imwrite(
@@ -216,15 +289,7 @@ class SaveManager:
                 metadata=ome_metadata,     # tifffile génère l’OME-XML
             )
 
-            # sidecar JSON pour scan_params + commentaire (robuste)
-            sidecar = os.path.splitext(path)[0] + ".json"
-            payload = {
-                "created": self._now_iso(),
-                "comment": comment or "",
-                "channels": [str(c) for c in channels],
-                "scan_params": scan_params,
-            }
-            self._write_json(sidecar, payload)
+            self._write_sidecar(path, comment, scan_params, channels=channels)
 
         return path
 
@@ -262,13 +327,21 @@ class SaveManager:
 
         root.attrs["multiscales"] = [{
             "version": "0.4",
-            "datasets": [{"path": "0"}],
+            "datasets": [{
+                "path": "0",
+                # Requis par NGFF, et seul endroit où un lecteur Zarr trouve la
+                # taille du voxel.
+                "coordinateTransformations": self._ngff_scale_tczyx(scan_params),
+            }],
             "axes": NGFF_AXES_TCZYX,
         }]
         root.attrs["omero"] = self._make_omero_metadata(os.path.basename(zarr_path), channels)
 
         root.attrs["comment"] = comment or ""
         root.attrs["created"] = self._now_iso()
+        root.attrs["provenance"] = json.loads(
+            json.dumps(self._provenance(scan_params, comment), default=str)
+        )
         root.attrs["scan_params"] = json.loads(json.dumps(scan_params or {}, default=str))
 
         return zarr_path
@@ -306,11 +379,14 @@ class SaveManager:
             # BigTIFF unconditionally: a mosaic is exactly the thing that walks
             # past the 4 GB the classic format can address, and finding that out
             # is a failed write at the end of a long run.
+            mosaic_metadata = {"axes": axes}
+            mosaic_metadata.update(self._ome_physical_size(scan_params))
+
             with tifffile.TiffWriter(path, bigtiff=True, ome=True) as tif:
                 tif.write(
                     arr,
                     photometric="minisblack",
-                    metadata={"axes": axes},
+                    metadata=mosaic_metadata,
                     subifds=len(levels),
                     tile=(256, 256),
                 )
@@ -324,16 +400,14 @@ class SaveManager:
                         tile=(256, 256),
                     )
 
-            sidecar = os.path.splitext(path)[0] + ".json"
-            payload = {
-                "created": self._now_iso(),
-                "comment": comment or "",
-                "axes": axes,
-                "shape": list(arr.shape),
-                "mosaic_params": mosaic_params or {},
-                "scan_params": scan_params or {},
-            }
-            self._write_json(sidecar, payload)
+            self._write_sidecar(
+                path, comment, scan_params,
+                extra={
+                    "axes": axes,
+                    "shape": list(arr.shape),
+                    "mosaic_params": mosaic_params or {},
+                },
+            )
 
         return path
 
@@ -423,7 +497,11 @@ class SaveManager:
                 # ---- NGFF minimal metadata ----
                 root.attrs["multiscales"] = [{
                     "version": "0.4",
-                    "datasets": [{"path": "0"}],
+                    "datasets": [{
+                        "path": "0",
+                        "coordinateTransformations":
+                            self._ngff_scale_tczyx(self._rec_scan_params),
+                    }],
                     "axes": NGFF_AXES_TCZYX,
                 }]
                 root.attrs["omero"] = self._make_omero_metadata(os.path.basename(path), self._rec_channels)
@@ -431,6 +509,9 @@ class SaveManager:
                 root.attrs["comment"] = self._rec_comment
                 root.attrs["created"] = self._now_iso()
                 root.attrs["channels"] = self._rec_channels
+                root.attrs["provenance"] = json.loads(json.dumps(
+                    self._provenance(self._rec_scan_params, self._rec_comment), default=str
+                ))
                 root.attrs["scan_params"] = self._rec_scan_params
 
                 self._rec_root = root
@@ -522,6 +603,7 @@ class SaveManager:
                 "axes": "TCZYX",
                 "Channel": [{"Name": str(ch)} for ch in channels],
             }
+            ome_metadata.update(self._ome_physical_size(scan_params))
 
             tifffile.imwrite(
                 path,
@@ -530,16 +612,11 @@ class SaveManager:
                 metadata=ome_metadata,
             )
 
-            # sidecar json (robuste, simple)
-            sidecar = os.path.splitext(path)[0] + ".json"
-            payload = {
-                "created": self._now_iso(),
-                "comment": comment or "",
-                "channels": channels,
-                "scan_params": scan_params,
-                "axes_numpy": "TCZYX",
-            }
-            self._write_json(sidecar, payload)
+            self._write_sidecar(
+                path, comment, scan_params,
+                channels=channels,
+                extra={"axes_numpy": "TCZYX"},
+            )
 
     # ---------- Spectro dataset ----------
     #: Format version, matching HDF5_BLS_Version in the HDF5_BLS package.
@@ -613,6 +690,10 @@ class SaveManager:
             for section in ("acquisition_parameters", "brillouin_parameters",
                             "raman_parameters", "save_parameters", "modalities"):
                 self._write_h5_attrs(measure, section, metadata.get(section, {}))
+
+            # Same provenance as the other formats, flattened into the attribute
+            # naming HDF5-BLS uses, so a .h5 is as traceable as a .tif sidecar.
+            self._write_h5_attrs(measure, "PROVENANCE", self._provenance({}, comment))
 
         return path
 
@@ -696,6 +777,9 @@ class SaveManager:
         metadata_block = dict(dataset.get("metadata", {}) or {})
 
         metadata = {
+            # The spectro grid has its own geometry below, so the provenance
+            # here is the part that does not depend on it: build, optics, lasers.
+            "provenance": self._provenance({}, comment),
             "created": self._now_iso(),
             "comment": comment or "",
             "format_version": str(dataset.get("version", "spectro_mock")),
