@@ -105,9 +105,14 @@ class PositionerManager(QObject):
         for axis in self._axes:
             self.stop(axis)
     
+    @property
+    def axes(self) -> list[str]:
+        """The axes this positioner drives, in the order it was built with."""
+        return list(self._axes)
+
     def axis_from_scan_name(self, axis_name: str) -> str | None:
         return self.SCAN_AXIS_MAP.get(axis_name)
-    
+
     def has_axis(self, axis: str) -> bool:
         return axis in self._state
 
