@@ -109,6 +109,26 @@ class SaveManager:
             return "HDF5-BLS"
         return (fmt or "").strip().upper()
 
+    #: A mosaic below this stops being worth a pyramid; the overhead of the
+    #: extra levels outweighs what a viewer saves by not decoding it whole.
+    PYRAMID_MIN_SIDE_PX = 2048
+
+    @staticmethod
+    def _pyramid_levels(height: int, width: int, arr=None):
+        """Successive half-resolution copies, largest first.
+
+        Returns an empty list for an image small enough that a viewer opens it
+        whole anyway, so a modest mosaic is not padded with useless levels.
+        """
+        if arr is None:
+            return []
+        levels = []
+        current = arr
+        while (min(current.shape[-2], current.shape[-1]) > SaveManager.PYRAMID_MIN_SIDE_PX):
+            current = current[..., ::2, ::2]
+            levels.append(current)
+        return levels
+
     def _make_omero_metadata(self, name: str, channels: list[str]) -> dict:
         return {
             "name": str(name),
@@ -280,13 +300,29 @@ class SaveManager:
 
         path = make_unique_path(folder, filename, ext=".ome.tif", default_stem="MOSAIC")
 
+        levels = self._pyramid_levels(arr.shape[-2], arr.shape[-1], arr)
+
         with self._lock:
-            tifffile.imwrite(
-                path,
-                arr,
-                photometric="minisblack",
-                metadata={"axes": axes},
-            )
+            # BigTIFF unconditionally: a mosaic is exactly the thing that walks
+            # past the 4 GB the classic format can address, and finding that out
+            # is a failed write at the end of a long run.
+            with tifffile.TiffWriter(path, bigtiff=True, ome=True) as tif:
+                tif.write(
+                    arr,
+                    photometric="minisblack",
+                    metadata={"axes": axes},
+                    subifds=len(levels),
+                    tile=(256, 256),
+                )
+                # Halved copies, so a viewer can pan a large mosaic without
+                # decoding it whole.
+                for level in levels:
+                    tif.write(
+                        level,
+                        photometric="minisblack",
+                        subfiletype=1,
+                        tile=(256, 256),
+                    )
 
             sidecar = os.path.splitext(path)[0] + ".json"
             payload = {
