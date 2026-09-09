@@ -5,7 +5,10 @@ import math
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
-from .Scan_Types import ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan, DetectorChannelSpec, infer_image_axes
+from .Scan_Types import (
+    ScanParams, ExecutionPlan, FrameSlice, StepEvent, FrameReconstructionPlan,
+    DetectorChannelSpec, infer_image_axes, stack_move_time_s,
+)
 from ..widgets.Log_Widget import logger
 
 DAQ_SAMPLE_RATE_HZ = 500_000.0
@@ -404,6 +407,33 @@ class ScanManager(QObject):
 
         cursor = 0
 
+        # Temps réservé aux déplacements d'axe stack. Sans lui, le StepEvent et
+        # la frame suivante tombent sur le même sample : l'image démarre pendant
+        # que la lame ou le Z bougent encore, ce qui distord le début de frame.
+        # C'est le premier déplacement (position courante -> premier plan) qui se
+        # voit le plus, étant le plus long.
+        pending_settle_samples = 0
+
+        def reserve_settle(distance: float, velocity: float):
+            """Hold the galvos still while a stack axis travels."""
+            nonlocal pending_settle_samples
+            seconds = stack_move_time_s(distance, velocity)
+            samples = int(round(seconds * sample_rate_hz))
+            pending_settle_samples = max(pending_settle_samples, samples)
+
+        def flush_settle():
+            """Emit the reserved hold, and advance the cursor past it."""
+            nonlocal pending_settle_samples, cursor
+            if pending_settle_samples <= 0:
+                return
+            x_hold, y_hold = self._make_hold_segment(
+                pending_settle_samples, float(x_frame[-1]), float(y_frame[-1])
+            )
+            ao_x_parts.append(x_hold)
+            ao_y_parts.append(y_hold)
+            cursor += pending_settle_samples
+            pending_settle_samples = 0
+
         # Step initial : positionner axis3/axis4 avant la 1ère frame
         if axis3_name is not None and axis3_positions and axis3_positions[0] is not None:
             init3 = float(axis3_positions[0])
@@ -421,6 +451,7 @@ class ScanManager(QObject):
                         reason="axis3_init",
                     )
                 )
+                reserve_settle(init3 - cur3, sp.velocity_max.get(axis3_name, 0.0))
 
         if axis4_name is not None and axis4_positions and axis4_positions[0] is not None:
             init4 = float(axis4_positions[0])
@@ -435,6 +466,7 @@ class ScanManager(QObject):
                         reason="axis4_init",
                     )
                 )
+                reserve_settle(init4 - cur4, sp.velocity_max.get(axis4_name, 0.0))
 
         for rep_i in range(reps):
             # Repositionnement explicite au début de chaque répétition
@@ -449,6 +481,11 @@ class ScanManager(QObject):
                             reason="axis3_init_rep",
                         )
                     )
+                    # Retour du dernier plan au premier : c'est la course complète.
+                    reserve_settle(
+                        float(axis3_positions[-1]) - float(axis3_positions[0]),
+                        sp.velocity_max.get(axis3_name, 0.0),
+                    )
 
                 if axis4_name is not None and axis4_positions and axis4_positions[0] is not None:
                     step_events.append(
@@ -460,9 +497,16 @@ class ScanManager(QObject):
                             reason="axis4_init_rep",
                         )
                     )
+                    reserve_settle(
+                        float(axis4_positions[-1]) - float(axis4_positions[0]),
+                        sp.velocity_max.get(axis4_name, 0.0),
+                    )
             for i4, pos4 in enumerate(axis4_positions):
 
                 for i3, pos3 in enumerate(axis3_positions):
+
+                    # Laisser au pas précédent le temps d'arriver avant d'imager.
+                    flush_settle()
 
                     ao_x_parts.append(x_frame)
                     ao_y_parts.append(y_frame)
@@ -505,6 +549,10 @@ class ScanManager(QObject):
                                     reason=next_axis3_reason,
                                 )
                             )
+                            reserve_settle(
+                                float(next_axis3_target) - float(pos3),
+                                sp.velocity_max.get(axis3_name, 0.0),
+                            )
 
                     # mouvement axis4 quand le cycle axis3 est fini
                     if axis4_name is not None and i3 == len(axis3_positions) - 1:
@@ -517,6 +565,10 @@ class ScanManager(QObject):
                                     velocity=sp.velocity_max.get(axis4_name, 0.0),
                                     reason="axis4_step",
                                 )
+                            )
+                            reserve_settle(
+                                float(axis4_positions[i4 + 1]) - float(pos4),
+                                sp.velocity_max.get(axis4_name, 0.0),
                             )
                         
             # pause entre répétitions

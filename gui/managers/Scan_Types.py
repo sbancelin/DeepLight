@@ -163,6 +163,35 @@ class ExecutionPlan:
 # ---------------------------------------------------------
 # Machine axis default configuration
 # ---------------------------------------------------------
+#: Fixed margin added to every reserved stack move, in seconds.
+#: Covers command latency and the tail of the mechanical settling, which the
+#: distance/velocity model does not describe. Deliberately small: the point is
+#: to reserve the move, not to wait on a round number.
+STACK_SETTLE_MARGIN_S = 0.005
+
+
+def stack_move_time_s(distance: float, velocity_per_s: float,
+                      margin_s: float = STACK_SETTLE_MARGIN_S) -> float:
+    """Time to reserve for one stack-axis move, in seconds.
+
+    Open loop on purpose: the duration is computed from the distance and the
+    axis velocity rather than measured by polling the device. Asking every
+    controller where it is at every step costs a serial round trip per plane,
+    which is far more than the move itself for a short step.
+
+    The single source of truth for both the execution plan, which reserves this
+    time, and the duration estimate, which counts it. If they disagreed, the
+    displayed time would not be the time actually taken.
+    """
+    distance = abs(float(distance))
+    if distance <= 0.0:
+        return 0.0
+    velocity = float(velocity_per_s)
+    if velocity <= 0.0:
+        return float(margin_s)
+    return distance / velocity + float(margin_s)
+
+
 SCAN_AXIS_DEFAULTS = {
     "X-Galvo": {
         # Physically scans in the stage Y direction (fast mirror, up-down).

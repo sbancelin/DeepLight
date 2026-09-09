@@ -1,7 +1,9 @@
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QGroupBox, QPushButton, QGridLayout, QLabel,
                               QLineEdit, QComboBox, QCheckBox, QWidget, QMessageBox, QSizePolicy)
 from PySide6.QtCore import Signal, Qt
-from ..managers.Scan_Types import SCAN_AXIS_DEFAULTS, STEPPER_AXIS_DEFAULTS
+from ..managers.Scan_Types import (
+    SCAN_AXIS_DEFAULTS, STEPPER_AXIS_DEFAULTS, stack_move_time_s,
+)
 
 DAQ_SAMPLE_RATE_HZ = 500_000.0
 DAQ_SAMPLE_PERIOD_S = 1.0 / DAQ_SAMPLE_RATE_HZ
@@ -1413,6 +1415,43 @@ class ScanWidget(QWidget):
         except Exception:
             return 0.0
 
+    def _stack_moves_duration_s(self, active_rows) -> float:
+        """Time spent moving the stack axes (rows 3 and 4) during one acquisition.
+
+        Counts the same reservation the execution plan makes, through the shared
+        stack_move_time_s(), so the displayed duration matches the one the run
+        actually takes. Rows 0 and 1 are the image axes and never step.
+        """
+        total = 0.0
+
+        for depth, row in enumerate(active_rows[2:]):
+            axis = self.scan_dim_combos[row].currentText()
+            if axis == "None":
+                continue
+
+            pixels = max(1, self._read_int_edit(self.pixel_edits[row], 1))
+            step_um = abs(self._read_float_edit(self.step_edits[row], 0.0))
+
+            settings = {}
+            if self.axis_settings_manager is not None:
+                settings = self.axis_settings_manager.get_axis_settings(axis) or {}
+            defaults = SCAN_AXIS_DEFAULTS.get(axis, STEPPER_AXIS_DEFAULTS.get(axis, {}))
+            velocity = float(settings.get("vel_max", defaults.get("vel_max", 0.0)))
+
+            # (pixels - 1) steps between planes, then the return to the first
+            # plane once the axis above it advances.
+            per_step = stack_move_time_s(step_um, velocity)
+            moves = max(0, pixels - 1)
+
+            # An outer axis replays this whole sweep once per one of its planes.
+            outer = 1
+            for outer_row in active_rows[2 + depth + 1:]:
+                outer = outer * max(1, self._read_int_edit(self.pixel_edits[outer_row], 1))
+
+            total += per_step * moves * outer
+
+        return total
+
     def _update_scan_duration(self):
         """Update the scan duration."""
         try:
@@ -1493,6 +1532,12 @@ class ScanWidget(QWidget):
                     extra_factor *= max(1, px)
 
                 base_duration = time_per_pixel_s * pix_fast * pix_slow * extra_factor
+
+            # Déplacements des axes stack (Z/P) entre les plans. Le plan
+            # d'exécution réserve ce temps ; il doit donc être compté ici, sinon
+            # la durée affichée est plus courte que celle réellement prise --
+            # et le stitching multiplie l'écart par le nombre de tuiles.
+            base_duration += self._stack_moves_duration_s(active_rows)
 
             if self.rep_checkbox.isChecked():
                 repetitions = self._read_int_edit(self.rep_edit, 1)
