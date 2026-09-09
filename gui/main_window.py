@@ -2,6 +2,8 @@ from PySide6.QtWidgets import QMainWindow, QFileDialog
 from PySide6.QtGui import QIcon, QGuiApplication
 from PySide6.QtCore import Slot, QTimer, Qt
 
+import os
+
 import numpy as np
 import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder='row-major')
@@ -10,8 +12,10 @@ from .main_window_design import MainWindowLayout
 from .resources import icon_path
 from .managers.Acquisition_Manager import AcquisitionManager
 from .managers.Hardware_Manager import HardwareManager
+from .managers.Provenance import physical_pixel_size_um
 from .managers.Save_Manager import SaveManager
 from .managers.Scan_manager import ScanManager
+from .managers.Snapshot import render_snapshot
 from .managers.Settings_Manager import SettingsManager
 from .managers.Stitching_Manager import StitchingManager
 from .managers.Spectro_Manager import SpectroManager
@@ -160,6 +164,8 @@ class MainWindow(QMainWindow):
         self.acquisition_manager.stepper_move_requested.connect(self.positioner_manager.move_from_scan)
         
         self.ui.save_widget.sigSaveClicked.connect(self.on_save_clicked)
+        self.ui.save_widget.sigSnapshotPng.connect(self.save_snapshot_png)
+        self.ui.save_widget.sigSnapshotClipboard.connect(self.copy_snapshot_to_clipboard)
         self.acquisition_manager.acquisition_frame.connect(self.on_rec_frame)
         self.acquisition_manager.samples_progress.connect(self.on_samples_progress)
         self.acquisition_manager.sample_status_updated.connect(self.on_sample_status_updated)
@@ -1535,6 +1541,128 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"[Save] ERROR: {e}")
     
+    # ---- Snapshot : l'image telle qu'affichée, prête à coller ----
+
+    def _snapshot_um_per_pixel(self, im_widget) -> float | None:
+        """Sampling interval of the displayed image, in µm per pixel.
+
+        Taken from the scan parameters, the same source the saved metadata
+        uses, so a burnt-in scale bar and an OME PhysicalSize can never
+        disagree. The display transform is the fallback for the cases where the
+        parameters say nothing.
+        """
+        try:
+            x, _, _ = physical_pixel_size_um(self.ui.scan_widget.get_scan_parameters())
+            if x:
+                return float(x)
+        except Exception as e:
+            logger.debug(f"[Snapshot] pixel size unavailable from the scan: {e}")
+
+        try:
+            scale = abs(float(im_widget.getImageItem().transform().m11()))
+            return scale or None
+        except Exception:
+            return None
+
+    def _render_snapshot(self, im_widget):
+        """(QImage, µm per pixel, bar length) for one image widget, or None.
+
+        The pixmap pyqtgraph already holds is what is on screen -- colour map
+        and contrast applied -- at one output pixel per acquired pixel, so the
+        figure does not depend on how large the window happened to be.
+        """
+        try:
+            source = im_widget.getImageItem().getPixmap().toImage()
+        except Exception as e:
+            logger.error(f"[Snapshot] could not read the displayed image: {e}")
+            return None
+
+        if source.isNull() or source.width() == 0:
+            return None
+
+        um_per_pixel = self._snapshot_um_per_pixel(im_widget)
+        image, bar_um = render_snapshot(source, um_per_pixel)
+        return image, um_per_pixel, bar_um
+
+    def _snapshot_targets(self):
+        """Which images a snapshot acts on: the hovered one, else every channel."""
+        return self.ui._levels_targets()
+
+    @Slot()
+    def copy_snapshot_to_clipboard(self):
+        """Put the displayed image, scale bar included, on the clipboard."""
+        targets = self._snapshot_targets()
+        if not targets:
+            return
+
+        channel, im_widget = targets[0]
+        result = self._render_snapshot(im_widget)
+        if result is None:
+            self.statusBar().showMessage("Nothing to snapshot.", 3000)
+            return
+
+        image, _, bar_um = result
+        QGuiApplication.clipboard().setImage(image)
+
+        scale = f", scale bar {bar_um:g} µm" if bar_um else " (no scale bar: unknown pixel size)"
+        self.statusBar().showMessage(f"{channel} copied to the clipboard{scale}", 4000)
+        logger.info(f"[Snapshot] {channel} copied to the clipboard{scale}")
+
+    @Slot()
+    def save_snapshot_png(self):
+        """Write one PNG per displayed image into the save folder."""
+        targets = self._snapshot_targets()
+        if not targets:
+            return
+
+        folder = self.ui.save_widget.folder_line_edit.text().strip()
+        if not folder:
+            self.statusBar().showMessage("Set a save folder first.", 4000)
+            return
+
+        filename = self.ui.save_widget.filename_line_edit.text().strip()
+        comment = self.ui.save_widget.comment_text_edit.toPlainText().strip()
+
+        try:
+            scan_params = self._attach_detector_specs(
+                self.ui.scan_widget.get_scan_parameters()
+            )
+        except Exception:
+            scan_params = {}
+
+        self._push_save_context()
+
+        written = []
+        for channel, im_widget in targets:
+            result = self._render_snapshot(im_widget)
+            if result is None:
+                continue
+            image, _, bar_um = result
+            try:
+                path = self.save_manager.save_snapshot_png(
+                    folder=folder,
+                    filename=filename,
+                    image=image,
+                    comment=comment,
+                    scan_params=scan_params,
+                    channel=channel,
+                    scalebar_um=bar_um,
+                )
+            except Exception as e:
+                logger.error(f"[Snapshot] could not write the PNG for {channel}: {e}")
+                continue
+            written.append(path)
+            logger.info(f"[Snapshot] {channel} written to {path}")
+
+        if written:
+            self.statusBar().showMessage(
+                f"Snapshot saved: {os.path.basename(written[0])}"
+                + (f" (+{len(written) - 1} more)" if len(written) > 1 else ""),
+                4000,
+            )
+        else:
+            self.statusBar().showMessage("Snapshot failed.", 4000)
+
     def _get_display_axes_from_scan_params(self, scan_parameters: dict):
         """
         Return the two axes actually displayed in the image.
@@ -1767,6 +1895,8 @@ class MainWindow(QMainWindow):
         ui.pushButton_stop.clicked.connect(self.stopButtonClicked)
         ui.pushButton_shutter.toggled.connect(self.shutterButtonClicked)
         ui.shortcut_zoom_roi_apply.activated.connect(self.apply_zoom_roi)
+        ui.shortcut_snapshot_png.activated.connect(self.save_snapshot_png)
+        ui.shortcut_snapshot_clipboard.activated.connect(self.copy_snapshot_to_clipboard)
 
     @Slot(bool)
     def shutterButtonClicked(self, checked: bool):

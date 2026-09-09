@@ -524,6 +524,15 @@ class MainWindowLayout:
             lambda: self.pull_levels_to_image_extreme("max")
         )
 
+        # ---- Snapshot : Ctrl+P écrit un PNG, Ctrl+Maj+C copie ----
+        # Branchés dans MainWindow._connect_actions() : le rendu a besoin des
+        # paramètres de scan pour la barre d'échelle, que ce module ignore.
+        self.shortcut_snapshot_png = QShortcut(QKeySequence("Ctrl+P"), window)
+        self.shortcut_snapshot_png.setContext(Qt.ApplicationShortcut)
+
+        self.shortcut_snapshot_clipboard = QShortcut(QKeySequence("Ctrl+Shift+C"), window)
+        self.shortcut_snapshot_clipboard.setContext(Qt.ApplicationShortcut)
+
         # ---- ROI de zoom : Ctrl+R dessine, Ctrl+Entrée applique ----
         # L'application est branchée dans MainWindow._connect_actions() : elle
         # a besoin des paramètres de scan, que ce module ne connaît pas.

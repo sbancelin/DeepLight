@@ -52,6 +52,11 @@ class SaveWidget(QWidget):
 
     sigSaveClicked = Signal(str, str, str, str)  # Signal émis lors de la sauvegarde (dossier, nom, format, comment)
 
+    #: Snapshot of what is displayed, scale bar burnt in: to a PNG beside the
+    #: data, or straight to the clipboard for a notebook or a slide.
+    sigSnapshotPng = Signal()
+    sigSnapshotClipboard = Signal()
+
     def __init__(self, parent=None):
 
         super().__init__(parent)
@@ -176,6 +181,33 @@ class SaveWidget(QWidget):
         """)
         self.estimated_size_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         grid_layout.addWidget(self.estimated_size_label, 5, 2)
+
+        # --- Ligne 6 : Snapshot ---
+        # L'image telle qu'elle est affichée, barre d'échelle incluse : le PNG
+        # va à côté des données, le presse-papier directement dans un carnet.
+        snapshot_label = QLabel("Snapshot")
+        snapshot_label.setStyleSheet("color: white; font-weight: bold;")
+        grid_layout.addWidget(snapshot_label, 6, 0)
+
+        self.snapshot_clipboard_button = QPushButton("Clipboard")
+        self.snapshot_clipboard_button.setToolTip(
+            "Copy the displayed image with its scale bar (Ctrl+Shift+C)"
+        )
+        self.snapshot_clipboard_button.setStyleSheet(BUTTON_STYLE)
+        self.snapshot_clipboard_button.setMinimumWidth(0)
+        self.snapshot_clipboard_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.snapshot_clipboard_button.clicked.connect(lambda: self.sigSnapshotClipboard.emit())
+        grid_layout.addWidget(self.snapshot_clipboard_button, 6, 1)
+
+        self.snapshot_png_button = QPushButton("PNG")
+        self.snapshot_png_button.setToolTip(
+            "Write the displayed image with its scale bar as PNG (Ctrl+P)"
+        )
+        self.snapshot_png_button.setStyleSheet(BUTTON_STYLE)
+        self.snapshot_png_button.setMinimumWidth(0)
+        self.snapshot_png_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.snapshot_png_button.clicked.connect(lambda: self.sigSnapshotPng.emit())
+        grid_layout.addWidget(self.snapshot_png_button, 6, 2)
 
         # Ajout du layout grid au layout principal
         content_layout.addLayout(grid_layout)

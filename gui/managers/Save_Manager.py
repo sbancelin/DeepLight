@@ -346,6 +346,48 @@ class SaveManager:
 
         return zarr_path
 
+    def save_snapshot_png(
+        self,
+        folder: str,
+        filename: str,
+        image,
+        comment: str = "",
+        scan_params: dict | None = None,
+        channel: str | None = None,
+        scalebar_um: float | None = None,
+    ) -> str:
+        """Write a displayed image as PNG, with the record it cannot hold.
+
+        A PNG is a picture, not data: no pixel size, no acquisition parameters.
+        The same JSON sidecar as the TIFF saves goes next to it, so a figure
+        pasted into a notebook can still be traced back to its acquisition.
+        """
+        stem = (filename or "").strip()
+        if channel and stem:
+            stem = f"{stem}_{channel}"
+        elif channel:
+            stem = str(channel)
+
+        path = make_unique_path(folder, stem, ext=".png", default_stem="SNAP")
+
+        with self._lock:
+            if not image.save(path, "PNG"):
+                raise IOError(f"could not write {path}")
+
+            extra = {"snapshot": {
+                "width_px": int(image.width()),
+                "height_px": int(image.height()),
+                "channel": str(channel) if channel else None,
+                "scalebar_um": scalebar_um,
+            }}
+            self._write_sidecar(
+                path, comment, scan_params or {},
+                channels=[channel] if channel else None,
+                extra=extra,
+            )
+
+        return path
+
     def save_mosaic(
         self,
         folder: str,
