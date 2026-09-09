@@ -275,6 +275,26 @@ def infer_image_axes(fast_axis: str, slow_axis: str) -> tuple[str, str]:
 
     return image_x_axis, image_y_axis
 
+
+def image_rows_by_axis(scan_params: dict):
+    """(scan row drawing the image's x, row drawing its y), or (None, None).
+
+    Not simply the first two rows of the scan: X-Galvo sweeps the sample's *y*
+    direction, so the frame a backend builds is transposed with respect to the
+    order the axes are listed in. This is the single place that answers "which
+    axis is horizontal on screen", for the display, the saved pixel size and
+    the REC buffer alike -- a square field is the only case where taking the
+    rows in order happens to give the same answer.
+    """
+    rows = [r for r in (scan_params or {}).get("rows", []) if r.get("axis") != "None"]
+    if len(rows) < 2:
+        return (rows[0] if rows else None), None
+
+    by_name = {str(r.get("axis")): r for r in rows}
+    image_x_axis, image_y_axis = infer_image_axes(str(rows[0].get("axis")),
+                                                  str(rows[1].get("axis")))
+    return by_name.get(image_x_axis, rows[0]), by_name.get(image_y_axis, rows[1])
+
 STEPPER_AXIS_DEFAULTS = {
     "X-Stage": {
         "min_um": -25000.0,

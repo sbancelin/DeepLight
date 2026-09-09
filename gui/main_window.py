@@ -15,6 +15,7 @@ from .managers.Hardware_Manager import HardwareManager
 from .managers.Provenance import physical_pixel_size_um
 from .managers.Save_Manager import SaveManager
 from .managers.Scan_manager import ScanManager
+from .managers.Scan_Types import image_rows_by_axis
 from .managers.Snapshot import render_snapshot
 from .managers.Settings_Manager import SettingsManager
 from .managers.Stitching_Manager import StitchingManager
@@ -1666,16 +1667,14 @@ class MainWindow(QMainWindow):
     def _get_display_axes_from_scan_params(self, scan_parameters: dict):
         """
         Return the two axes actually displayed in the image.
+
+        Which is not the order they are listed in: X-Galvo sweeps the sample's
+        y direction, so on a field whose two axes differ the image comes out
+        transposed with respect to the scan rows. Answered in one place, so the
+        µm axes drawn under the image, the placeholder frame and a zoom ROI
+        read back all agree with the file that gets written.
         """
-        rows = [row for row in scan_parameters.get("rows", []) if row.get("axis") != "None"]
-
-        if len(rows) >= 2:
-            return rows[0], rows[1]
-
-        if len(rows) == 1:
-            return rows[0], None
-
-        return None, None
+        return image_rows_by_axis(scan_parameters)
     
     def _extract_view_geometry(self, scan_parameters: dict):
         row_x, row_y = self._get_display_axes_from_scan_params(scan_parameters)
@@ -1695,6 +1694,13 @@ class MainWindow(QMainWindow):
         return pix_x, pix_y, width_um, height_um
 
     def _apply_physical_scale(self, im_widget, image, scan_parameters: dict):
+        """Put the image on its µm axes.
+
+        The width belongs to whichever axis draws the columns, which is why it
+        is read through the helper rather than from the first scan row: pairing
+        one axis's extent with the other's pixel count scaled a non-square field
+        wrong in both directions, and nothing on screen said so.
+        """
         row_x, row_y = self._get_display_axes_from_scan_params(scan_parameters)
 
         if row_x is not None:

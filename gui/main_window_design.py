@@ -17,6 +17,7 @@ from PySide6.QtGui import (QIcon, QTransform, QShortcut, QKeySequence)
 from PySide6.QtWidgets import (QApplication, QLineEdit, QCheckBox, QDockWidget, QGridLayout, QGroupBox, QSplitter, QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox,
                                 QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy, QSpacerItem, QTabWidget, QWidget, QMessageBox)
 from .resources import icon_path
+from .managers.Scan_Types import image_rows_by_axis
 from .widgets.Scan_Widget import ScanWidget
 from .widgets.Laser_Widget import LaserWidget
 from .widgets.Detector_Widget import DetectorWidget
@@ -398,14 +399,17 @@ class MainWindowLayout:
         self.channel_controls = {}    # channel -> {"autoscale": QCheckBox, "grid": QCheckBox}
         self.channel_hist_luts = {}   # channel -> HistogramLUTItem
 
-        # Récupérer les valeurs par défaut de #Pix X et #Pix Y
+        # Image d'attente : les mêmes axes que ceux du premier scan, dans le
+        # sens où il sera affiché. Prendre les lignes de scan dans l'ordre
+        # donnerait une image transposée sur un champ non carré, et elle
+        # changerait de forme à la première frame reçue.
         scan_parameters = self.scan_widget.get_scan_parameters()
-        default_pix_x = scan_parameters["pixel_values"][0]
-        default_pix_y = scan_parameters["pixel_values"][1]
+        row_x, row_y = image_rows_by_axis(scan_parameters)
 
-        rows = scan_parameters["rows"]
-        default_width_um = float(rows[0]["size_um"]) if len(rows) > 0 else 1.0
-        default_height_um = float(rows[1]["size_um"]) if len(rows) > 1 else 1.0
+        default_pix_x = int(row_x["pixels"]) if row_x else 1
+        default_pix_y = int(row_y["pixels"]) if row_y else 1
+        default_width_um = float(row_x["size_um"]) if row_x else 1.0
+        default_height_um = float(row_y["size_um"]) if row_y else 1.0
 
         # Créer une ImageView par défaut avec une image de taille (default_pix_y, default_pix_x)
         self.currentImage = np.zeros((default_pix_y, default_pix_x))

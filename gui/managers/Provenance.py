@@ -19,7 +19,7 @@ import os
 import platform
 from datetime import datetime
 
-from .Scan_Types import infer_image_axes
+from .Scan_Types import image_rows_by_axis
 
 #: Bumped by hand, and not much: the git revision below is what actually
 #: identifies a build in this project.
@@ -102,25 +102,6 @@ def _sampling_interval_um(row: dict | None) -> float | None:
         return size / (pixels - 1)
     step = float(row.get("step_um", 0.0) or 0.0)
     return step if step > 0.0 else None
-
-
-def image_rows_by_axis(scan_params: dict):
-    """(row driving the image's x, row driving its y), or (None, None).
-
-    Not simply the first two scan rows: X-Galvo sweeps the sample's *y*
-    direction, so the frame the backend builds is transposed with respect to
-    the order the axes are listed in. infer_image_axes is what the execution
-    plan uses to decide, and using anything else here would label a non-square
-    image with the wrong spacing.
-    """
-    rows = _active_rows(scan_params)
-    if len(rows) < 2:
-        return (rows[0] if rows else None), None
-
-    by_name = {str(r.get("axis")): r for r in rows}
-    image_x_axis, image_y_axis = infer_image_axes(str(rows[0].get("axis")),
-                                                  str(rows[1].get("axis")))
-    return by_name.get(image_x_axis, rows[0]), by_name.get(image_y_axis, rows[1])
 
 
 def physical_pixel_size_um(scan_params: dict):
