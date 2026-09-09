@@ -12,6 +12,7 @@ import zarr
 
 from ..widgets.Log_Widget import logger
 from .Provenance import acquisition_provenance, physical_pixel_size_um
+from .Scan_Types import infer_image_axes
 
 NGFF_AXES_TCZYX = [
     {"name": "t", "type": "time"},
@@ -203,6 +204,33 @@ class SaveManager:
             payload.update(extra)
         self._write_json(sidecar, payload)
         return sidecar
+
+    def _rec_frame_shape(self, scan_parameters: dict) -> tuple[int, int]:
+        """(rows, columns) of one frame, as the backend actually builds it.
+
+        Not pixel_values[1], pixel_values[0]: the fast galvo does not sweep the
+        image's x axis. X-Galvo scans the sample's y direction, so a frame comes
+        out transposed with respect to the order the scan rows are listed in,
+        and a REC buffer shaped from that order refuses every frame written into
+        it. Only a square field hid it. Derived here the same way the execution
+        plan derives it, so the buffer and the frames cannot disagree.
+        """
+        pixel_values = list(scan_parameters.get("pixel_values", []) or [])
+        axis_order = list(scan_parameters.get("axis_order", []) or [])
+        active = [a for a in axis_order if a != "None"]
+
+        if len(active) >= 2:
+            rows = {name: i for i, name in enumerate(axis_order) if name != "None"}
+            image_x_axis, image_y_axis = infer_image_axes(active[0], active[1])
+            try:
+                return (max(1, int(pixel_values[rows[image_y_axis]])),
+                        max(1, int(pixel_values[rows[image_x_axis]])))
+            except (KeyError, IndexError, TypeError, ValueError) as e:
+                logger.warning(f"[REC] could not infer the frame shape ({e}); using the row order")
+
+        dim_x = int(pixel_values[0]) if len(pixel_values) > 0 else 1
+        dim_y = int(pixel_values[1]) if len(pixel_values) > 1 else 1
+        return max(1, dim_y), max(1, dim_x)
 
     def _now_iso(self) -> str:
         return datetime.now().isoformat(timespec="seconds")
@@ -487,10 +515,7 @@ class SaveManager:
         reps = int(scan_parameters.get("repetitions", 1))
         pix = list(scan_parameters.get("pixel_values", [256, 256, 1, 1]))
 
-        dim_x = int(pix[0])
-        dim_y = int(pix[1])
-        Y = dim_y   # car affichage = .T
-        X = dim_x
+        Y, X = self._rec_frame_shape(scan_parameters)
 
         active_axes = list(scan_parameters.get("active_axes") or [])
         self._rec_n2 = int(pix[2]) if len(active_axes) >= 3 else 1
@@ -616,6 +641,9 @@ class SaveManager:
         """
         - OME-TIFF: writes the file at the end (TCZYX stack)
         - OME-Zarr: nothing to do, the state is just reset
+
+        Returns the path written, or None when no session was running: a script
+        driving an acquisition has no status bar to read it from.
         """
         with self._lock:
             mode = self._rec_mode
@@ -659,6 +687,8 @@ class SaveManager:
                 channels=channels,
                 extra={"axes_numpy": "TCZYX"},
             )
+
+        return path
 
     # ---------- Spectro dataset ----------
     #: Format version, matching HDF5_BLS_Version in the HDF5_BLS package.
