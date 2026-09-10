@@ -160,6 +160,12 @@ class CameraWidget(QWidget):
     sigSaveRequested = Signal()
     sigRoiParamsChanged = Signal()   # émis quand l'utilisateur déplace/redimensionne la ROI
 
+    #: Acquisition d'une référence : "dark" (lumière bloquée) ou "flat"
+    #: (champ vide uniformément éclairé).
+    sigReferenceRequested = Signal(str)
+    sigCorrectionCleared = Signal()
+    sigCorrectionToggled = Signal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("CameraWidget")
@@ -300,6 +306,41 @@ class CameraWidget(QWidget):
 
         row_2.addStretch(1)
 
+        # ---- Correction champ : dark et flat ----
+        # Le dark porte l'offset de lecture et le courant d'obscurité, le flat
+        # le vignettage et le gain pixel à pixel : ni l'un ni l'autre ne vient
+        # de l'échantillon.
+        row_2.addWidget(QLabel("Correction"))
+
+        self.button_dark = QPushButton("Dark")
+        self.button_dark.setToolTip("Average frames with the light blocked, as a dark reference")
+        self.button_dark.setStyleSheet(_BUTTON_STYLE)
+        self.button_dark.setFixedWidth(52)
+        row_2.addWidget(self.button_dark)
+
+        self.button_flat = QPushButton("Flat")
+        self.button_flat.setToolTip("Average frames of an empty, evenly lit field")
+        self.button_flat.setStyleSheet(_BUTTON_STYLE)
+        self.button_flat.setFixedWidth(52)
+        row_2.addWidget(self.button_flat)
+
+        self.check_correction = QCheckBox("Apply")
+        self.check_correction.setChecked(True)
+        self.check_correction.setEnabled(False)      # rien à appliquer encore
+        self.check_correction.setStyleSheet("color: #ddd;")
+        row_2.addWidget(self.check_correction)
+
+        self.button_clear_correction = QPushButton("Clear")
+        self.button_clear_correction.setStyleSheet(_BUTTON_STYLE)
+        self.button_clear_correction.setFixedWidth(52)
+        self.button_clear_correction.setEnabled(False)
+        row_2.addWidget(self.button_clear_correction)
+
+        self.label_correction = QLabel("none")
+        self.label_correction.setStyleSheet(_STATUS_VALUE_STYLE)
+        self.label_correction.setMinimumWidth(90)
+        row_2.addWidget(self.label_correction)
+
         # Format fixed to Mono8 — kept as hidden attribute for API compatibility
         self.combo_pixel_format = QComboBox()
         self.combo_pixel_format.addItems(["Mono8"])
@@ -408,6 +449,10 @@ class CameraWidget(QWidget):
         self.button_reset_levels.clicked.connect(self._on_reset_levels_clicked)
         self.cb_auto_exposure.toggled.connect(self._on_auto_exposure_toggled)
         self.button_reset.clicked.connect(self.reset_controls)
+        self.button_dark.clicked.connect(lambda: self.sigReferenceRequested.emit("dark"))
+        self.button_flat.clicked.connect(lambda: self.sigReferenceRequested.emit("flat"))
+        self.button_clear_correction.clicked.connect(lambda: self.sigCorrectionCleared.emit())
+        self.check_correction.toggled.connect(self.sigCorrectionToggled)
         self.cb_roi_enabled.toggled.connect(self._on_roi_enabled_toggled)
         self.spin_roi_x.valueChanged.connect(self._on_roi_spin_changed)
         self.spin_roi_y.valueChanged.connect(self._on_roi_spin_changed)
@@ -427,6 +472,16 @@ class CameraWidget(QWidget):
     # ==========================================================
     # Public API
     # ==========================================================
+
+    def set_correction_state(self, description: str, has_correction: bool, enabled: bool = True):
+        """Say what reference is loaded, and let it be switched off or dropped."""
+        self.label_correction.setText(description or "none")
+        self.check_correction.setEnabled(has_correction)
+        self.button_clear_correction.setEnabled(has_correction)
+
+        self.check_correction.blockSignals(True)
+        self.check_correction.setChecked(bool(enabled) and has_correction)
+        self.check_correction.blockSignals(False)
 
     def set_camera_full_shape(self, h: int, w: int):
         h, w = int(h), int(w)

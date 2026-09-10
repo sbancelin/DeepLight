@@ -147,6 +147,7 @@ def acquisition_provenance(
     optics: dict | None = None,
     lasers: dict | None = None,
     comment: str = "",
+    corrections: dict | None = None,
 ) -> dict:
     """The record that travels with the data.
 
@@ -190,6 +191,9 @@ def acquisition_provenance(
         "lasers": dict(lasers or {}),
         "polarization_angles_deg": polarization_angles_deg(scan_params),
         "detectors": list((scan_params or {}).get("detector_channels", []) or []),
+        # Which dark/flat reference was subtracted, if any: without it a
+        # corrected image and a raw one are indistinguishable after the fact.
+        "corrections": dict(corrections or {}),
         # Detector gain is not set by the software and cannot be read back, so
         # it belongs here, written by whoever ran the experiment.
         "comment": str(comment or ""),

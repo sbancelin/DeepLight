@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QMainWindow, QFileDialog
+from PySide6.QtWidgets import QMainWindow, QFileDialog, QMessageBox
 from PySide6.QtGui import QIcon, QGuiApplication
 from PySide6.QtCore import Slot, QTimer, Qt
 
@@ -14,6 +14,7 @@ from ..config import last_session_preset_path, preset_folder
 from .main_window_design import MainWindowLayout
 from .resources import icon_path
 from .managers.Acquisition_Manager import AcquisitionManager
+from .managers.Field_Correction import FieldCorrection
 from .managers.Hardware_Manager import HardwareManager
 from .managers.Provenance import physical_pixel_size_um
 from .managers.Save_Manager import SaveManager
@@ -310,6 +311,7 @@ class MainWindow(QMainWindow):
         sw.button_brillouin_stop.clicked.connect(self._on_spectro_stop_clicked)
         sw.sigBrillouinReconnectRequested.connect(self._on_brillouin_reconnect_clicked)
         sw.sigBrillouinSaveRequested.connect(self._on_brillouin_save_clicked)
+        sw.button_brillouin_dark.clicked.connect(self._on_brillouin_dark_clicked)
         sw.spin_brillouin_exposure_ms.valueChanged.connect(self._on_brillouin_acq_params_changed)
         sw.combo_brillouin_binning.currentIndexChanged.connect(self._on_brillouin_acq_params_changed)
         sw.spin_brillouin_exposure_ms.valueChanged.connect(sp.set_brillouin_exposure_ms)
@@ -451,6 +453,65 @@ class MainWindow(QMainWindow):
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self._on_spectro_status_changed("Spectro stopped")
+
+    #: Brillouin exposures are long, so fewer frames than for the camera; the
+    #: read noise still falls by nearly three.
+    BRILLOUIN_DARK_FRAMES = 8
+
+    @Slot()
+    def _on_brillouin_dark_clicked(self):
+        """Measure the EMCCD's dark and subtract it from every Brillouin image.
+
+        Already loaded? Then this is a request to drop it -- one button for a
+        state that is either on or off, rather than two that are usually wrong.
+        """
+        sw = self.ui.spectro_widget
+
+        if self.hardware.get_brillouin_correction() is not None:
+            self.hardware.set_brillouin_correction(None)
+            sw.label_brillouin_dark.setText("no dark")
+            logger.info("[Brillouin] dark correction cleared")
+            return
+
+        params = sw.get_brillouin_parameters() if hasattr(sw, "get_brillouin_parameters") else {}
+        exposure_ms = float(sw.spin_brillouin_exposure_ms.value())
+
+        if QMessageBox.question(
+            self, "Acquire a Brillouin dark",
+            f"The shutter will be closed and {self.BRILLOUIN_DARK_FRAMES} images "
+            f"averaged at {exposure_ms:.0f} ms.\n\n"
+            "A dark is only valid for this exposure and binning.",
+            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel,
+        ) != QMessageBox.Ok:
+            return
+
+        sw.label_brillouin_dark.setText("measuring…")
+        try:
+            dark = self.hardware.acquire_brillouin_dark(
+                params, count=self.BRILLOUIN_DARK_FRAMES
+            )
+        except Exception as e:
+            logger.error(f"[Brillouin] dark acquisition failed: {e}")
+            sw.label_brillouin_dark.setText("failed")
+            return
+
+        if dark is None:
+            # Backend mock : pas de caméra à mesurer, et le dire vaut mieux
+            # que laisser croire qu'une correction est en place.
+            logger.warning("[Brillouin] no camera to measure a dark from")
+            sw.label_brillouin_dark.setText("no camera")
+            return
+
+        self.hardware.set_brillouin_correction(FieldCorrection(dark=dark, metadata={
+            "instrument": "brillouin",
+            "frames_averaged": self.BRILLOUIN_DARK_FRAMES,
+            "exposure_ms": exposure_ms,
+        }))
+        sw.label_brillouin_dark.setText(f"dark {exposure_ms:.0f} ms")
+        logger.info(
+            f"[Brillouin] dark: {self.BRILLOUIN_DARK_FRAMES} images at {exposure_ms:.0f} ms, "
+            f"shape {dark.shape}, mean {float(np.mean(dark)):.1f}"
+        )
 
     @Slot()
     def _on_brillouin_snap_clicked(self):
@@ -700,6 +761,9 @@ class MainWindow(QMainWindow):
         cw.sigReconnectRequested.connect(self._on_camera_reconnect_clicked)
         cw.sigSaveRequested.connect(self._on_camera_save_clicked)
         cw.sigRoiParamsChanged.connect(self._push_camera_parameters)
+        cw.sigReferenceRequested.connect(self._on_camera_reference_requested)
+        cw.sigCorrectionCleared.connect(self._on_camera_correction_cleared)
+        cw.sigCorrectionToggled.connect(self._on_camera_correction_toggled)
 
         # paramètres — pushés au controller à chaque changement
         cw.spin_exposure_ms.valueChanged.connect(self._push_camera_parameters)
@@ -710,6 +774,120 @@ class MainWindow(QMainWindow):
         cw.spin_roi_y.valueChanged.connect(self._push_camera_parameters)
         cw.spin_roi_width.valueChanged.connect(self._push_camera_parameters)
         cw.spin_roi_height.valueChanged.connect(self._push_camera_parameters)
+
+    #: Frames averaged into a reference. Enough for the read noise to fall well
+    #: below what is being measured, without making the operator wait.
+    REFERENCE_FRAMES = 16
+
+    @Slot(str)
+    def _on_camera_reference_requested(self, kind: str):
+        """Acquire a dark or a flat for the camera and install it.
+
+        The camera has no shutter of its own, so blocking the light is the
+        operator's move and the dialog says so: a "dark" taken in the light
+        would be subtracted from every frame afterwards with nothing looking
+        wrong.
+        """
+        kind = "flat" if str(kind) == "flat" else "dark"
+        instruction = (
+            "Block all light reaching the camera, then continue."
+            if kind == "dark" else
+            "Put an empty, evenly lit field in front of the camera, then continue."
+        )
+
+        if QMessageBox.question(
+            self, f"Acquire a {kind} reference",
+            f"{instruction}\n\n{self.REFERENCE_FRAMES} frames will be averaged.",
+            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel,
+        ) != QMessageBox.Ok:
+            return
+
+        try:
+            frame = self.camera_controller.acquire_reference(
+                self.ui.camera_widget.get_parameters(), count=self.REFERENCE_FRAMES
+            )
+        except Exception as e:
+            logger.error(f"[Camera] {kind} reference failed: {e}")
+            self.ui.camera_widget.set_status(f"{kind.capitalize()} failed: {e}")
+            return
+
+        if frame is None:
+            self.ui.camera_widget.set_status(f"{kind.capitalize()} failed: no frame")
+            return
+
+        current = self.camera_controller.correction
+        dark = frame if kind == "dark" else (current.dark if current else None)
+        flat = frame if kind == "flat" else (current.flat if current else None)
+
+        params = self.ui.camera_widget.get_parameters()
+        try:
+            correction = FieldCorrection(dark=dark, flat=flat, metadata={
+                "instrument": "camera",
+                "frames_averaged": self.REFERENCE_FRAMES,
+                "exposure_ms": float(params.get("exposure_ms", 0.0) or 0.0),
+                "binning": str(params.get("binning", "1x1")),
+            })
+        except ValueError as e:
+            # Un dark et un flat de tailles différentes : on garde le nouveau seul.
+            logger.warning(f"[Camera] {e}; keeping only the new {kind}")
+            correction = FieldCorrection(
+                dark=frame if kind == "dark" else None,
+                flat=frame if kind == "flat" else None,
+                metadata={"instrument": "camera", "frames_averaged": self.REFERENCE_FRAMES},
+            )
+
+        self.camera_controller.set_correction(correction, enabled=True)
+        self._refresh_camera_correction_label()
+        logger.info(
+            f"[Camera] {kind} reference: {self.REFERENCE_FRAMES} frames, "
+            f"shape {frame.shape}, mean {float(np.mean(frame)):.1f}"
+        )
+
+    @Slot()
+    def _on_camera_correction_cleared(self):
+        self.camera_controller.clear_correction()
+        self._refresh_camera_correction_label()
+        logger.info("[Camera] field correction cleared")
+
+    @Slot(bool)
+    def _on_camera_correction_toggled(self, enabled: bool):
+        self.camera_controller.correction_enabled = bool(enabled)
+        self._refresh_camera_correction_label()
+
+    def _refresh_camera_correction_label(self):
+        correction = self.camera_controller.correction
+        if correction is None or correction.is_empty:
+            self.ui.camera_widget.set_correction_state("none", False)
+            return
+
+        parts = []
+        if correction.dark is not None:
+            parts.append("dark")
+        if correction.flat is not None:
+            parts.append("flat")
+
+        self.ui.camera_widget.set_correction_state(
+            " + ".join(parts), True, self.camera_controller.correction_enabled
+        )
+
+    def _correction_context(self) -> dict:
+        """What was subtracted, for the provenance of the next save."""
+        context = {}
+        try:
+            correction = self.camera_controller.correction
+            if correction is not None and not correction.is_empty and self.camera_controller.correction_enabled:
+                context["camera"] = correction.describe()
+        except Exception as e:
+            logger.debug(f"[Save] camera correction state unavailable: {e}")
+
+        try:
+            brillouin = self.hardware.get_brillouin_correction()
+            if brillouin is not None and not brillouin.is_empty:
+                context["brillouin"] = brillouin.describe()
+        except Exception as e:
+            logger.debug(f"[Save] Brillouin correction state unavailable: {e}")
+
+        return context
 
     @Slot()
     def _push_camera_parameters(self, *_args):
@@ -1437,7 +1615,9 @@ class MainWindow(QMainWindow):
             logger.warning(f"[Save] laser state unavailable for provenance: {e}")
             lasers = {}
 
-        self.save_manager.set_context(optics=optics, lasers=lasers)
+        self.save_manager.set_context(
+            optics=optics, lasers=lasers, corrections=self._correction_context()
+        )
 
     def _channel_unit_label(self, channel: str) -> str:
         """

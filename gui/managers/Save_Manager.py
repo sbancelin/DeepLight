@@ -138,14 +138,16 @@ class SaveManager:
             "channels": [{"label": str(c)} for c in channels],
         }
 
-    def set_context(self, optics: dict | None = None, lasers: dict | None = None):
-        """Optics and running lasers to record with the next saves.
+    def set_context(self, optics: dict | None = None, lasers: dict | None = None,
+                    corrections: dict | None = None):
+        """Optics, running lasers and dark/flat state for the next saves.
 
         Pushed in by MainWindow, which owns the panels, so this manager keeps
         knowing nothing about widgets.
         """
         self._optics = dict(optics or {})
         self._lasers = dict(lasers or {})
+        self._corrections = dict(corrections or {})
 
     def _provenance(self, scan_params: dict, comment: str) -> dict:
         return acquisition_provenance(
@@ -153,6 +155,7 @@ class SaveManager:
             optics=getattr(self, "_optics", {}),
             lasers=getattr(self, "_lasers", {}),
             comment=comment,
+            corrections=getattr(self, "_corrections", {}),
         )
 
     def _ome_physical_size(self, scan_params: dict) -> dict:

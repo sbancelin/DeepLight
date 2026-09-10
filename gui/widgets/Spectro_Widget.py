@@ -250,6 +250,22 @@ class SpectroWidget(QWidget):
         self.button_brillouin_reconnect.setStyleSheet(_BUTTON_STYLE)
         row_1.addWidget(self.button_brillouin_reconnect)
 
+        # Le courant d'obscurité de l'EMCCD croît avec le temps de pose, et une
+        # pose Brillouin est longue : le dark compte plus ici qu'ailleurs. Le
+        # shutter se ferme tout seul pendant la mesure.
+        self.button_brillouin_dark = QPushButton("Dark")
+        self.button_brillouin_dark.setToolTip(
+            "Average images with the shutter closed, subtracted from every Brillouin image"
+        )
+        self.button_brillouin_dark.setStyleSheet(_BUTTON_STYLE)
+        self.button_brillouin_dark.setFixedWidth(52)
+        row_1.addWidget(self.button_brillouin_dark)
+
+        self.label_brillouin_dark = QLabel("no dark")
+        self.label_brillouin_dark.setStyleSheet(_STATUS_VALUE_STYLE)
+        self.label_brillouin_dark.setMinimumWidth(64)
+        row_1.addWidget(self.label_brillouin_dark)
+
         self.label_brillouin_status = QLabel("Idle")
         self.label_brillouin_status.setStyleSheet(_STATUS_VALUE_STYLE)
         self.label_brillouin_status.setMinimumWidth(60)

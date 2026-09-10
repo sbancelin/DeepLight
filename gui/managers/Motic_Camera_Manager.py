@@ -10,6 +10,7 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from .Camera_Manager import CameraBackendBase, CameraParameters
+from .Field_Correction import average_frames
 from ..widgets.Log_Widget import logger
 
 
@@ -242,10 +243,49 @@ class CameraController(QObject):
         self.backend = backend
         self._current_params: dict = {}
 
+        #: Dark/flat reference, applied to the raw frame when enabled.
+        self.correction = None
+        self.correction_enabled = True
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_live_timer)
 
         self._display_period_ms = 200   # 5 Hz
+
+    # ---- dark / flat --------------------------------------------------
+
+    def set_correction(self, correction, enabled: bool = True):
+        self.correction = correction
+        self.correction_enabled = bool(enabled)
+
+    def clear_correction(self):
+        self.correction = None
+
+    def _corrected(self, img):
+        """Take out the detector's offset and gain, when a reference applies."""
+        if self.correction is None or not self.correction_enabled:
+            return img
+        if not self.correction.matches(img):
+            self.status_changed.emit("Correction ignored: frame shape changed")
+            return img
+        return self.correction.apply(img)
+
+    def acquire_reference(self, widget_params: dict, count: int = 16):
+        """Average `count` raw frames, for use as a dark or a flat.
+
+        Raw on purpose: no ROI, no binning. One reference then serves every
+        crop instead of being retaken for each.
+        """
+        count = max(1, int(count))
+        self.connect_camera()
+        self.apply_parameters(widget_params)
+
+        frames = []
+        for i in range(count):
+            frames.append(np.asarray(self.backend.snap(), dtype=np.float32))
+            self.status_changed.emit(f"Reference frame {i + 1}/{count}")
+
+        return average_frames(frames)
 
     def _params_from_widget_dict(self, d: dict) -> CameraParameters:
         return CameraParameters(
@@ -320,7 +360,7 @@ class CameraController(QObject):
         try:
             self.connect_camera()
             self.apply_parameters(widget_params)
-            img = self.backend.snap()
+            img = self._corrected(self.backend.snap())
             img = self._apply_roi(img, widget_params)
             img = self._apply_binning(img, widget_params)
             self.frame_ready.emit(img)
@@ -357,7 +397,7 @@ class CameraController(QObject):
     @Slot()
     def _on_live_timer(self):
         try:
-            img = self.backend.get_frame()
+            img = self._corrected(self.backend.get_frame())
             img = self._apply_roi(img, self._current_params)
             img = self._apply_binning(img, self._current_params)
             self.frame_ready.emit(img)
