@@ -65,6 +65,11 @@ CHECKBOX_STYLE = """
         }
         """
 
+# Voyant d'écrêtage : discret tant que rien ne sature, franc dès que ça compte.
+SATURATION_OK_STYLE = "color: #777; font-size: 11px;"
+SATURATION_WARN_STYLE = "color: #f0a500; font-weight: bold; font-size: 11px;"
+SATURATION_ALARM_STYLE = "color: #e05555; font-weight: bold; font-size: 11px;"
+
 TRANSPARENT_ICON_BUTTON_CHECKABLE_STYLE = """
         QPushButton {
         border: none;
@@ -187,6 +192,7 @@ class MainWindowLayout:
 
         #####↓ Initialisation   #####
         self.im_status_labels = {}
+        self.im_saturation_labels = {}
         self._zoom_roi = None
         self._zoom_roi_view = None
 
@@ -392,6 +398,7 @@ class MainWindowLayout:
         # Initialiser les ImageView pour chaque canal
         self.im_widgets = {}
         self.im_status_labels.clear()
+        self.im_saturation_labels.clear()
         self.im_widget_plot_items = {}
         self.channel_autoscale = {}   # channel -> bool
         self.channel_lock = {}        # channel -> bool
@@ -933,6 +940,7 @@ class MainWindowLayout:
         # Garder la même référence (important pour MainWindow)
         self.im_widgets.clear()
         self.im_status_labels.clear()
+        self.im_saturation_labels.clear()
         self.channel_hist_luts.clear()
         scan_parameters = self.scan_widget.get_scan_parameters()
         rows = scan_parameters["rows"]
@@ -1045,12 +1053,19 @@ class MainWindowLayout:
             btn_reset_levels = QPushButton("Reset Levels")
             btn_reset_levels.setFixedHeight(22)
 
+            # Voyant d'écrêtage : un PMT saturé rend une image simplement bien
+            # contrastée, rien à l'écran ne le dit aujourd'hui.
+            saturation = QLabel("")
+            saturation.setStyleSheet(SATURATION_OK_STYLE)
+            saturation.setToolTip("Share of pixels sitting on the input range limit")
+
             footer = QWidget()
             h = QHBoxLayout(footer)
             h.setContentsMargins(0, 0, 0, 0)
             h.setSpacing(8)
 
             h.addWidget(status, stretch=1)
+            h.addWidget(saturation)
             h.addWidget(cb_autoscale)
             h.addWidget(cb_lock)
             h.addWidget(cb_grid)
@@ -1059,6 +1074,7 @@ class MainWindowLayout:
 
             v.addWidget(footer)
             self.im_status_labels[channel] = status
+            self.im_saturation_labels[channel] = saturation
 
             # ---------- Fonctions LUT / niveaux ----------
             def _set_levels(_=False, _im=im, ch=channel):

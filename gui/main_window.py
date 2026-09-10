@@ -10,11 +10,15 @@ import numpy as np
 import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder='row-major')
 
-from ..config import last_session_preset_path, preset_folder
-from .main_window_design import MainWindowLayout
+from ..config import CONFIG, last_session_preset_path, preset_folder
+from .main_window_design import (
+    MainWindowLayout,
+    SATURATION_ALARM_STYLE, SATURATION_OK_STYLE, SATURATION_WARN_STYLE,
+)
 from .resources import icon_path
 from .managers.Acquisition_Manager import AcquisitionManager
 from .managers.Field_Correction import FieldCorrection
+from .managers.Frame_Builder import analog_pixel_ceiling, saturated_fraction
 from .managers.Hardware_Manager import HardwareManager
 from .managers.Provenance import physical_pixel_size_um
 from .managers.Save_Manager import SaveManager
@@ -1415,6 +1419,27 @@ class MainWindow(QMainWindow):
         params["initial_relative_positions"] = initial
         return params
     
+    def _scan_limits_ok(self, scan_parameters: dict) -> bool:
+        """Re-check the scan against the stage's real limits before starting.
+
+        The scan panel already refuses an out-of-range field as it is typed,
+        but it judges against the position the stage held *then*. A scan is
+        defined relative to where the sample is, so driving to another region
+        afterwards carries the whole window with it and nothing looks again.
+        This asks the controllers themselves, with freshly read positions, and
+        covers the sweep extremes and the return to base as well.
+        """
+        try:
+            self.hardware.validate_scan_positions(self.positioner_manager, scan_parameters)
+            return True
+        except Exception as e:
+            logger.error(f"[Scan] refused: {e}")
+            QMessageBox.warning(
+                self, "Scan outside the stage range",
+                f"{e}\n\nThe stage has probably moved since these values were set.",
+            )
+            return False
+
     def _attach_detector_specs(self, scan_parameters: dict) -> dict:
         """
         Attach to the scan dict:
@@ -1618,6 +1643,40 @@ class MainWindow(QMainWindow):
         self.save_manager.set_context(
             optics=optics, lasers=lasers, corrections=self._correction_context()
         )
+
+    #: Beyond this share of clipped pixels the indicator turns amber, and red
+    #: ten times higher. A handful of hot pixels is normal; a percent of the
+    #: frame on the rail is data one should not be measuring from.
+    SATURATION_WARN = 1e-3
+    SATURATION_ALARM = 1e-2
+
+    def _update_saturation_indicator(self, channel: str, image, scan_parameters: dict):
+        """Say how much of the frame is sitting on the input range limit.
+
+        Only for analog channels: a counter has no fixed ceiling, so there is
+        nothing honest to compare a digital channel against.
+        """
+        label = self.ui.im_saturation_labels.get(channel)
+        if label is None:
+            return
+
+        if self._channel_unit_label(channel) != "V·µs":
+            label.setText("")
+            return
+
+        dwell_us = float(scan_parameters.get("dwell_time", 0.0) or 0.0) * 1e6
+        ceiling = analog_pixel_ceiling(float(CONFIG.ni.get("ai_max_v", 10.0)), dwell_us)
+        fraction = saturated_fraction(image, ceiling)
+
+        if fraction >= self.SATURATION_ALARM:
+            style = SATURATION_ALARM_STYLE
+        elif fraction >= self.SATURATION_WARN:
+            style = SATURATION_WARN_STYLE
+        else:
+            style = SATURATION_OK_STYLE
+
+        label.setStyleSheet(style)
+        label.setText("sat 0%" if fraction == 0.0 else f"sat {fraction * 100:.2g}%")
 
     def _channel_unit_label(self, channel: str) -> str:
         """
@@ -2418,6 +2477,7 @@ class MainWindow(QMainWindow):
 
         scan_parameters = self.ui.scan_widget.get_scan_parameters()
         self._apply_physical_scale(im_widget, shown, scan_parameters)
+        self._update_saturation_indicator(channel, shown, scan_parameters)
 
         if autoscale:
             self.ui.autoscale_channel_levels(channel)
@@ -2519,6 +2579,8 @@ class MainWindow(QMainWindow):
         scan_parameters = self.ui.scan_widget.get_scan_parameters()
         scan_parameters = self._attach_detector_specs(scan_parameters)
         scan_parameters = self._attach_initial_relative_positions(scan_parameters)
+        if not self._scan_limits_ok(scan_parameters):
+            return
         self.acquisition_manager.set_scan_parameters(scan_parameters)
         self.start_scan_outputs(scan_parameters, mode="preview_single")
         self._mouse_move_proxies.clear()
@@ -2533,6 +2595,13 @@ class MainWindow(QMainWindow):
             scan_parameters = self.ui.scan_widget.get_scan_parameters()
             scan_parameters = self._attach_detector_specs(scan_parameters)
             scan_parameters = self._attach_initial_relative_positions(scan_parameters)
+            if not self._scan_limits_ok(scan_parameters):
+                # Le bouton est bistable : le relâcher, sinon il reste enfoncé
+                # sur une acquisition qui n'a jamais démarré.
+                self.ui.pushButton_previewcontinuous.blockSignals(True)
+                self.ui.pushButton_previewcontinuous.setChecked(False)
+                self.ui.pushButton_previewcontinuous.blockSignals(False)
+                return
             self.acquisition_manager.set_scan_parameters(scan_parameters)
             self.start_scan_outputs(scan_parameters, mode="preview_continuous")
             self._mouse_move_proxies.clear()
@@ -2660,6 +2729,9 @@ class MainWindow(QMainWindow):
 
         self._capture_stepper_return_targets()
         scan_parameters = self._attach_initial_relative_positions(scan_parameters)
+
+        if not self._scan_limits_ok(scan_parameters):
+            return
 
         # Récupère dossier + filename + comment du SaveWidget
         rec_fmt = self.ui.save_widget.get_rec_format()

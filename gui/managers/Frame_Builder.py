@@ -1,6 +1,43 @@
 import numpy as np
 from .Scan_Types import FrameReconstructionPlan
 
+#: A sample within this fraction of the input range is treated as having hit
+#: the rail. Not exactly at it: the last count of an ADC is already clipped in
+#: practice, and averaging pulls a saturated pixel just under full scale.
+SATURATION_TOLERANCE = 0.01
+
+
+def analog_pixel_ceiling(ai_max_v: float, dwell_us: float | None) -> float:
+    """Value an analog pixel reaches when every sample sits on the rail.
+
+    A pixel here is not a voltage: it is mean(V) times the dwell, in V·µs (see
+    _reduce below). So full scale moves with the dwell time, and comparing a
+    displayed pixel against the card's 10 V directly would never flag anything.
+    """
+    if dwell_us is None or float(dwell_us) <= 0.0:
+        return float(ai_max_v)
+    return float(ai_max_v) * float(dwell_us)
+
+
+def saturated_fraction(image, ceiling: float,
+                       tolerance: float = SATURATION_TOLERANCE) -> float:
+    """Fraction of pixels sitting on either rail, between 0 and 1.
+
+    Both rails: a PMT signal runs into the positive one, but an inverted or
+    badly offset channel clips at the bottom just as silently.
+    """
+    array = np.asarray(image)
+    if array.size == 0 or not np.isfinite(ceiling) or ceiling == 0.0:
+        return 0.0
+
+    limit = abs(float(ceiling)) * (1.0 - float(tolerance))
+    finite = np.isfinite(array)
+    if not finite.any():
+        return 0.0
+
+    clipped = np.abs(array, dtype=np.float64, where=finite, out=np.zeros(array.shape)) >= limit
+    return float(np.count_nonzero(clipped & finite) / np.count_nonzero(finite))
+
 
 class FrameBuilder:
     """
