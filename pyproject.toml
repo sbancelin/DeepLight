@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deeplight"
+description = "Control software for a multiphoton microscope: laser and sample scanning, polarisation-resolved SHG, Brillouin and Raman spectroscopy."
+requires-python = ">=3.10"
+authors = [{ name = "Stéphane Bancelin" }]
+keywords = ["microscopy", "multiphoton", "SHG", "Brillouin", "Raman", "acquisition"]
+dynamic = ["version"]
+
+classifiers = [
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+
+# Mirrors requirements.txt. That file stays: it is what an acquisition PC
+# installs from without touching the package, and what a lock file is
+# generated against.
+dependencies = [
+    "PySide6>=6.10.2,<7",
+    "pyqtgraph>=0.13.3",
+    "numpy>=1.24",
+    "psutil>=5.9",
+    "h5py>=3.10",
+    "tifffile>=2023.7.10",
+    "zarr>=2.16,<3",
+    "pyserial>=3.5",
+    "opencv-python>=4.8",
+    "tomli>=2.0 ; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+# Vendor drivers for a real acquisition PC: pip install -e ".[hardware]"
+# Every import behind these is guarded, so DeepLight runs with --backend mock
+# when none of them is present.
+hardware = ["nidaqmx", "pythonnet", "pipython"]
+
+[project.scripts]
+deeplight = "DeepLight.__main__:main"
+
+# --- Layout -----------------------------------------------------------------
+# This repository's root *is* the DeepLight package: .git, __init__.py and gui/
+# are siblings. The usual layout puts the package in a sub-folder, but moving
+# it would change every path for no functional gain, so the mapping is stated
+# explicitly instead. Consequence: packages cannot be auto-discovered, and a new
+# sub-package has to be added to the list below.
+[tool.setuptools]
+package-dir = { "DeepLight" = "." }
+packages = [
+    "DeepLight",
+    "DeepLight.examples",
+    "DeepLight.gui",
+    "DeepLight.gui.managers",
+    "DeepLight.gui.managers.Microscopes",
+    "DeepLight.gui.widgets",
+]
+
+[tool.setuptools.dynamic]
+# One source of truth: this is the version written into every saved file's
+# provenance, so it must not be able to disagree with the package metadata.
+version = { attr = "DeepLight.gui.managers.Provenance.__version__" }
+
+[tool.setuptools.package-data]
+"DeepLight" = ["gui/Icons/*.svg", "gui/Icons/*.ico", "gui/managers/*.csv"]
