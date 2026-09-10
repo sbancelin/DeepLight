@@ -245,6 +245,20 @@ whole. The modules that need only numerics — `Scan_Types`, `Frame_Builder`,
 `Field_Correction`, `recipe` — import without pulling in Qt.
 
 
+## Tests
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+```
+
+The suite runs against the simulated microscope, so it needs no hardware and
+takes a couple of seconds. It covers the scan geometry, the recipe an
+acquisition is described by, the hardware contracts each device family has to
+satisfy, the configuration file, and a full acquisition written to disk and read
+back — the pixels, the physical scale and the provenance.
+
+
 ## Contributing
 
 Bug reports and patches are welcome through the repository's issue tracker.

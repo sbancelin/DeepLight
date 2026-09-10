@@ -40,9 +40,16 @@ dependencies = [
 # Every import behind these is guarded, so DeepLight runs with --backend mock
 # when none of them is present.
 hardware = ["nidaqmx", "pythonnet", "pipython"]
+# Running the test suite: pip install -e ".[dev]" && pytest
+dev = ["pytest>=7"]
 
 [project.scripts]
 deeplight = "DeepLight.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Qt runs without a screen here; conftest.py sets QT_QPA_PLATFORM before any
+# test module is imported, which is early enough and needs no plugin.
 
 # --- Layout -----------------------------------------------------------------
 # This repository's root *is* the DeepLight package: .git, __init__.py and gui/
