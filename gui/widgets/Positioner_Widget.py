@@ -4,6 +4,7 @@ from PySide6.QtGui import QIcon
 from functools import partial
 
 from ..managers.Scan_Types import STEPPER_AXIS_DEFAULTS
+from ..managers.Waveplate_Rotator import COMPENSATOR_SETTING_KEYS
 from .Log_Widget import logger
 
 # Vitesse interne fixe des lames Elliptec ELL14 (P(λ/2)/P(λ/4)) : 430°/s.
@@ -138,37 +139,41 @@ def setup_positioner_settings_dialog(dialog):
             tol_layout.addWidget(tol_edit)
             dialog.add_layout(tol_layout)
 
-        # Lames d'onde P(λ/2)/P(λ/4) : offset de montage + presets circulaires.
-        if axis_key in ("p", "p4"):
+        # P(λ/2) : un seul nombre. C'est elle qui porte l'azimut, le scan y va
+        # à azimut/2, et rien d'autre n'a besoin d'être réglé.
+        if axis_key == "p":
             cur_offset = float(axis_cfg.get("offset_deg", defaults.get("offset_deg", 0.0)))
             off_layout = QHBoxLayout()
             off_edit = QLineEdit(str(cur_offset))
             off_edit.setObjectName(f"offset_edit_{axis_key}")
             off_edit.setToolTip(
-                "Mounting offset: the positioner's relative 0° corresponds\n"
-                "to this physical angle of the waveplate."
+                "Plate angle at which the polarisation comes out horizontal.\n"
+                "It becomes the axis's zero, so a scan to azimuth θ drives the\n"
+                "plate to θ/2 from here."
             )
-            off_layout.addWidget(QLabel(f"Offset ({pos_unit}):"))
+            off_layout.addWidget(QLabel(f"Horizontal at ({pos_unit}):"))
             off_layout.addWidget(off_edit)
             dialog.add_layout(off_layout)
 
-            cur_cd = float(axis_cfg.get("cd_deg", defaults.get("cd_deg", 0.0)))
-            cd_layout = QHBoxLayout()
-            cd_edit = QLineEdit(str(cur_cd))
-            cd_edit.setObjectName(f"cd_edit_{axis_key}")
-            cd_edit.setToolTip("Relative position of this waveplate for right circular polarisation (CD).")
-            cd_layout.addWidget(QLabel(f"CD — right circ. ({pos_unit}):"))
-            cd_layout.addWidget(cd_edit)
-            dialog.add_layout(cd_layout)
-
-            cur_cg = float(axis_cfg.get("cg_deg", defaults.get("cg_deg", 0.0)))
-            cg_layout = QHBoxLayout()
-            cg_edit = QLineEdit(str(cur_cg))
-            cg_edit.setObjectName(f"cg_edit_{axis_key}")
-            cg_edit.setToolTip("Relative position of this waveplate for left circular polarisation (CG).")
-            cg_layout.addWidget(QLabel(f"CG — left circ. ({pos_unit}):"))
-            cg_layout.addWidget(cg_edit)
-            dialog.add_layout(cg_layout)
+        # P(λ/4) : compensateur. Trois positions mesurées, jamais scannées.
+        if axis_key == "p4":
+            for key, label, tip in (
+                ("linear_deg", "Linear",
+                 "Position compensating the upstream optics, leaving the light\n"
+                 "linear at the sample. A polarisation scan parks the plate here."),
+                ("cd_deg", "CD — right circ.",
+                 "Position producing right circular polarisation."),
+                ("cg_deg", "CG — left circ.",
+                 "Position producing left circular polarisation."),
+            ):
+                value = float(axis_cfg.get(key, defaults.get(key, 0.0)))
+                row = QHBoxLayout()
+                edit = QLineEdit(str(value))
+                edit.setObjectName(f"{key}_edit_{axis_key}")
+                edit.setToolTip(tip)
+                row.addWidget(QLabel(f"{label} ({pos_unit}):"))
+                row.addWidget(edit)
+                dialog.add_layout(row)
 
         # UMS scaling factor (X et Y seulement)
         if has_ums:
@@ -246,34 +251,47 @@ def setup_positioner_settings_dialog(dialog):
                         axis_key, min_position, max_position, velocity_limit, tolerance
                     )
 
-            # Lames d'onde : offset de montage + presets circulaires.
-            if axis_key in ("p", "p4"):
-                def _read(name, fallback):
-                    w = dialog.findChild(QLineEdit, name)
-                    if w is None:
-                        return fallback
-                    try:
-                        return float(w.text().replace(",", "."))
-                    except ValueError:
-                        return fallback
+            def _read(name, fallback):
+                w = dialog.findChild(QLineEdit, name)
+                if w is None:
+                    return fallback
+                try:
+                    return float(w.text().replace(",", "."))
+                except ValueError:
+                    return fallback
 
+            # P(λ/2) : l'angle de l'horizontale devient le zéro de l'axe, donc
+            # une consigne relative est déjà un demi-azimut.
+            if axis_key == "p":
                 offset_deg = _read(f"offset_edit_{axis_key}", 0.0)
-                cd_deg = _read(f"cd_edit_{axis_key}", 0.0)
-                cg_deg = _read(f"cg_edit_{axis_key}", 0.0)
 
                 if positioner_widget.axis_settings_manager is not None:
                     positioner_widget.axis_settings_manager.update_axis_settings(
-                        shared_axis_name,
-                        offset_deg=offset_deg,
-                        cd_deg=cd_deg,
-                        cg_deg=cg_deg,
+                        shared_axis_name, offset_deg=offset_deg,
                     )
 
                 if positioner_widget.manager is not None:
                     try:
                         positioner_widget.manager.set_zero_offset(axis_key, offset_deg)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[PositionerWidget] zero offset for {axis_key}: {e}")
+
+            # P(λ/4) : les trois positions du compensateur.
+            if axis_key == "p4":
+                measured = {
+                    state: _read(f"{key}_edit_{axis_key}", 0.0)
+                    for state, key in COMPENSATOR_SETTING_KEYS.items()
+                }
+
+                if positioner_widget.axis_settings_manager is not None:
+                    positioner_widget.axis_settings_manager.update_axis_settings(
+                        shared_axis_name,
+                        **{key: measured[state]
+                           for state, key in COMPENSATOR_SETTING_KEYS.items()},
+                    )
+
+                if positioner_widget.manager is not None:
+                    positioner_widget.manager.set_compensator_positions(**measured)
 
             # UMS scaling factor : sauvegarde + push manager
             if has_ums:
@@ -633,8 +651,9 @@ class PositionerWidget(QWidget):
                 }
             """)
 
-        # Polarisation circulaire : presets CD (droite) / CG (gauche) qui
-        # positionnent les DEUX lames (λ/2 + λ/4) selon les valeurs des settings.
+        # Compensateur (λ/4) : trois positions mesurées. Seule la λ/4 bouge —
+        # l'azimut appartient à la λ/2 et n'a pas à changer quand on passe de
+        # linéaire à circulaire.
         _CIRC_BTN_STYLE = """
             QPushButton {
                 background-color: #333;
@@ -646,17 +665,23 @@ class PositionerWidget(QWidget):
             }
             QPushButton:hover { background-color: #444; }
         """
+        self.button_linear = QPushButton("Lin")
+        self.button_linear.setToolTip("Compensator to its linear position (λ/4 only).")
+        self.button_linear.setStyleSheet(_CIRC_BTN_STYLE)
+        self.button_linear.clicked.connect(lambda: self.apply_compensator("linear"))
+
         self.button_circular_right = QPushButton("CD")
-        self.button_circular_right.setToolTip("Right circular polarisation (CD): positions λ/2 and λ/4.")
+        self.button_circular_right.setToolTip("Right circular polarisation (λ/4 only).")
         self.button_circular_right.setStyleSheet(_CIRC_BTN_STYLE)
-        self.button_circular_right.clicked.connect(lambda: self.apply_circular("CD"))
+        self.button_circular_right.clicked.connect(lambda: self.apply_compensator("CD"))
 
         self.button_circular_left = QPushButton("CG")
-        self.button_circular_left.setToolTip("Left circular polarisation (CG): positions λ/2 and λ/4.")
+        self.button_circular_left.setToolTip("Left circular polarisation (λ/4 only).")
         self.button_circular_left.setStyleSheet(_CIRC_BTN_STYLE)
-        self.button_circular_left.clicked.connect(lambda: self.apply_circular("CG"))
+        self.button_circular_left.clicked.connect(lambda: self.apply_compensator("CG"))
 
         bottom_row.addWidget(self.stop_all_button)
+        bottom_row.addWidget(self.button_linear)
         bottom_row.addWidget(self.button_circular_right)
         bottom_row.addWidget(self.button_circular_left)
         bottom_row.addWidget(self.keyboard_shortcuts_lock_checkbox)
@@ -680,37 +705,37 @@ class PositionerWidget(QWidget):
     # Correspondance axe positioner -> nom partagé (settings) des lames d'onde.
     _WAVEPLATE_SHARED_NAMES = {"p": "Polarization", "p4": "Polarization-L4"}
 
-    def apply_circular(self, kind: str):
+    def apply_compensator(self, state: str):
+        """Park the quarter-wave plate on one of its three measured positions.
+
+        Only the λ/4 moves. The azimuth belongs to the half-wave plate and has
+        no reason to change because the ellipticity does.
         """
-        Position λ/2 (p) and λ/4 (p4) for right (CD) or left (CG) circular
-        polarisation, using the values from the positioner settings.
-        """
-        if self.manager is None:
+        if self.manager is None or not self.manager.has_axis("p4"):
             return
 
-        key = "cd_deg" if str(kind).upper() == "CD" else "cg_deg"
+        key = COMPENSATOR_SETTING_KEYS.get(str(state))
+        if key is None:
+            logger.warning(f"[PositionerWidget] unknown compensator state {state!r}")
+            return
 
-        for axis_key, shared_name in self._WAVEPLATE_SHARED_NAMES.items():
-            if not self.manager.has_axis(axis_key):
-                continue
+        shared_name = self._WAVEPLATE_SHARED_NAMES["p4"]
+        target_rel = float(STEPPER_AXIS_DEFAULTS.get(shared_name, {}).get(key, 0.0))
+        if self.axis_settings_manager is not None:
+            settings = self.axis_settings_manager.get_axis_settings(shared_name) or {}
+            target_rel = float(settings.get(key, target_rel))
 
-            default = STEPPER_AXIS_DEFAULTS.get(shared_name, {}).get(key, 0.0)
-            target_rel = default
-            if self.axis_settings_manager is not None:
-                s = self.axis_settings_manager.get_axis_settings(shared_name) or {}
-                target_rel = float(s.get(key, default))
+        if not self.manager.is_rel_target_allowed("p4", target_rel):
+            logger.warning(
+                f"[PositionerWidget] compensator {state} target {target_rel}° "
+                f"out of range — ignored."
+            )
+            return
 
-            if not self.manager.is_rel_target_allowed(axis_key, target_rel):
-                logger.warning(
-                    f"[PositionerWidget] {kind} target {target_rel}° out of range "
-                    f"for {axis_key} — ignored."
-                )
-                continue
-
-            try:
-                self.manager.move_to_rel(axis_key, target_rel, ELL14_FIXED_SPEED_DEG_S)
-            except Exception as e:
-                logger.error(f"[PositionerWidget] apply_circular({kind}) {axis_key} failed: {e}")
+        try:
+            self.manager.move_to_rel("p4", target_rel, ELL14_FIXED_SPEED_DEG_S)
+        except Exception as e:
+            logger.error(f"[PositionerWidget] apply_compensator({state}) failed: {e}")
     
     def set_limits(self, axis, min_limit, max_limit, velocity_limit):
         """Set the limits of a given axis."""
@@ -765,14 +790,27 @@ class PositionerWidget(QWidget):
                 if ui is not None:
                     ui["speed"].setText(str(int(ELL14_FIXED_SPEED_DEG_S)))
 
-                # Offset de montage : le 0° relatif du positioner correspond à
-                # cet angle physique de la lame.
-                if self.manager is not None:
+                if self.manager is None:
+                    continue
+
+                if axis_key == "p":
+                    # L'angle donnant l'horizontale devient le zéro de l'axe :
+                    # une consigne relative est alors un demi-azimut.
                     try:
-                        offset_deg = float(s.get("offset_deg", 0.0))
-                        self.manager.set_zero_offset(axis_key, offset_deg)
-                    except Exception:
-                        pass
+                        self.manager.set_zero_offset("p", float(s.get("offset_deg", 0.0)))
+                    except Exception as e:
+                        logger.debug(f"[PositionerWidget] zero offset for p: {e}")
+                else:
+                    # Les trois positions du compensateur, poussées au manager
+                    # pour qu'un scan puisse le garer en linéaire tout seul.
+                    try:
+                        self.manager.set_compensator_positions(**{
+                            state: float(s[key])
+                            for state, key in COMPENSATOR_SETTING_KEYS.items()
+                            if key in s
+                        })
+                    except Exception as e:
+                        logger.debug(f"[PositionerWidget] compensator positions: {e}")
 
             tol = float(s.get("tolerance", 0.1))
 

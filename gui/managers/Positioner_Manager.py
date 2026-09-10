@@ -7,6 +7,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 from ..widgets.Log_Widget import logger
+from .Waveplate_Rotator import COMPENSATOR_STATES, half_wave_angle_for_azimuth
 
 
 @dataclass
@@ -49,49 +50,106 @@ class PositionerManager(QObject):
         super().__init__(parent)
         self._axes = axes
         self._state: Dict[str, AxisState] = {a: AxisState() for a in axes}
-        # Positions relatives des lames avant un scan de polarisation, pour les
+        # Position relative de la λ/2 avant un scan de polarisation, pour la
         # restaurer au retour à la base (cf. _handle_polarization_scan).
         self._polar_prescan: Optional[dict] = None
+        # Positions mesurées du compensateur (λ/4), par état. Vide tant que le
+        # panneau positionneur ne les a pas poussées.
+        self._compensator_positions: Dict[str, float] = {}
 
     def _handle_polarization_scan(self, target_rel: float, reason: str):
         """
         One 'Polarization' scan point = one AZIMUTH (°).
 
-        The calibration table gives the positions of BOTH waveplates
-        (λ/2 on axis 'p', λ/4 on axis 'p4') that produce this polarisation,
-        and both are moved. The state of the waveplates before the scan is
-        remembered so it can be restored on 'return_to_base'.
-        """
-        from .Polarization_Table import get_polarization_table
+        Only the half-wave plate turns, by half the azimuth: a half-wave plate
+        rotates linear polarisation by twice its own angle. The quarter-wave
+        plate is a compensator, parked once on its 'linear' position at the
+        start of the run and left there -- it corrects the ellipticity the
+        optics upstream introduce, which does not depend on the azimuth.
 
+        The plate's position before the scan is remembered so it can be
+        restored on 'return_to_base'.
+        """
         r = str(reason or "")
 
-        # Retour à la base : restaurer les positions pré-scan des deux lames.
+        # Retour à la base : restaurer la position pré-scan de la λ/2.
         if r.endswith("return_to_base"):
             pre = self._polar_prescan
             self._polar_prescan = None
-            if pre is not None:
-                for ax in ("p", "p4"):
-                    if ax in self._state and pre.get(ax) is not None:
-                        self.move_to_rel(ax, float(pre[ax]), self._POLAR_SPEED_DEG_S)
+            if pre is not None and pre.get("p") is not None and "p" in self._state:
+                self.move_to_rel("p", float(pre["p"]), self._POLAR_SPEED_DEG_S)
             return
 
-        # Première commande du run : mémoriser l'état courant des lames.
+        # Première commande du run : mémoriser l'état, et poser le compensateur
+        # sur sa position linéaire. Une série P-SHG n'a de sens qu'en linéaire.
         if self._polar_prescan is None:
-            self._polar_prescan = {}
-            for ax in ("p", "p4"):
-                try:
-                    self._polar_prescan[ax] = (
-                        float(self.get_rel_pos(ax)) if ax in self._state else None
-                    )
-                except Exception:
-                    self._polar_prescan[ax] = None
+            try:
+                self._polar_prescan = {
+                    "p": float(self.get_rel_pos("p")) if "p" in self._state else None
+                }
+            except Exception:
+                self._polar_prescan = {"p": None}
+            self.move_compensator("linear")
 
-        l2_deg, l4_deg = get_polarization_table().lookup(float(target_rel))
         if "p" in self._state:
-            self.move_to_rel("p", float(l2_deg), self._POLAR_SPEED_DEG_S)
-        if "p4" in self._state:
-            self.move_to_rel("p4", float(l4_deg), self._POLAR_SPEED_DEG_S)
+            # Le zéro de la lame (angle donnant l'horizontale) est porté par le
+            # zero_offset de l'axe, donc le relatif est déjà l'azimut/2.
+            self.move_to_rel(
+                "p",
+                half_wave_angle_for_azimuth(float(target_rel)),
+                self._POLAR_SPEED_DEG_S,
+            )
+
+    # ---- compensateur (λ/4) --------------------------------------------
+
+    def set_compensator_positions(self, **positions):
+        """Measured positions of the quarter-wave plate, by state name.
+
+        Pushed in by the positioner panel, the way the axis limits already are.
+        A state that was never measured stays absent rather than defaulting to
+        zero, so move_compensator() can decline instead of driving the plate
+        somewhere arbitrary.
+        """
+        for state, value in positions.items():
+            if state in COMPENSATOR_STATES and value is not None:
+                self._compensator_positions[state] = float(value)
+
+    def compensator_state(self) -> Optional[str]:
+        """Which of the three positions the plate is currently sitting on."""
+        if "p4" not in self._state:
+            return None
+        try:
+            here = float(self.get_rel_pos("p4"))
+        except Exception:
+            return None
+
+        tolerance = max(float(self.get_tolerance("p4")), 1e-6)
+        for state, value in self._compensator_positions.items():
+            if abs(here - value) <= tolerance:
+                return state
+        return None
+
+    def move_compensator(self, state: str) -> bool:
+        """Park the quarter-wave plate on one of its three positions.
+
+        Returns False when that position was never measured -- refusing is the
+        right answer, since a compensator at an unknown angle silently changes
+        the polarisation reaching the sample.
+        """
+        state = str(state)
+        if "p4" not in self._state:
+            return False
+
+        target = self._compensator_positions.get(state)
+        if target is None:
+            logger.warning(
+                f"[Positioner] compensator position {state!r} is not configured; "
+                f"the quarter-wave plate was left where it is."
+            )
+            return False
+
+        self.move_to_rel("p4", float(target), self._POLAR_SPEED_DEG_S)
+        return True
 
     def set_ums_scaling_factor(self, factor: float):
         """

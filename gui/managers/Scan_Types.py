@@ -318,27 +318,26 @@ STEPPER_AXIS_DEFAULTS = {
         "vel_max": 200.0,
         "tolerance": 0.1,
     },
+    # P(λ/2) : lame demi-onde. C'est elle qui porte l'azimut, et un seul nombre
+    # la décrit : l'angle auquel la polarisation sort horizontale. Le scan y va
+    # à azimut/2, une demi-onde tournant la polarisation de deux fois son angle.
     "Polarization": {
         "min_um": -360.0,   # rotation autorisée dans les deux sens
         "max_um": 360.0,
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
-        # Offset de montage : le 0° du positioner (relatif) correspond à cet
-        # angle physique de la lame. -> devient le zero_offset de l'axe.
+        # Angle de la lame donnant l'horizontale -> zero_offset de l'axe.
         "offset_deg": 28.97,
-        # Positions (relatives) des lames pour les polarisations circulaires.
-        "cd_deg": 9.8,   # circulaire droite (CD)
-        "cg_deg": 53.3,    # circulaire gauche (CG)
     },
-    # P(λ/4) : lame quart d'onde (ELL14 adresse 2). Axe positioner uniquement,
-    # jamais proposé comme axe de scan.
+    # P(λ/4) : compensateur. Il ne scanne pas ; il se gare sur l'une de trois
+    # positions mesurées, qui corrigent l'ellipticité introduite en amont.
     "Polarization-L4": {
         "min_um": -360.0,   # rotation autorisée dans les deux sens
         "max_um": 360.0,
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
-        "offset_deg": 26.49,
+        "linear_deg": 0.0,   # linéaire — à mesurer sur le banc
         "cd_deg": 53.48,     # circulaire droite (CD)
-        "cg_deg": 56.16,    # circulaire gauche (CG)
+        "cg_deg": 56.16,     # circulaire gauche (CG)
     },
 }

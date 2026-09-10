@@ -139,8 +139,8 @@ class SaveManager:
         }
 
     def set_context(self, optics: dict | None = None, lasers: dict | None = None,
-                    corrections: dict | None = None):
-        """Optics, running lasers and dark/flat state for the next saves.
+                    corrections: dict | None = None, polarization: dict | None = None):
+        """Optics, running lasers, dark/flat state and the polarisation chain.
 
         Pushed in by MainWindow, which owns the panels, so this manager keeps
         knowing nothing about widgets.
@@ -148,6 +148,7 @@ class SaveManager:
         self._optics = dict(optics or {})
         self._lasers = dict(lasers or {})
         self._corrections = dict(corrections or {})
+        self._polarization = dict(polarization or {})
 
     def _provenance(self, scan_params: dict, comment: str) -> dict:
         return acquisition_provenance(
@@ -156,6 +157,7 @@ class SaveManager:
             lasers=getattr(self, "_lasers", {}),
             comment=comment,
             corrections=getattr(self, "_corrections", {}),
+            polarization=getattr(self, "_polarization", {}),
         )
 
     def _ome_physical_size(self, scan_params: dict) -> dict:

@@ -74,4 +74,4 @@ packages = [
 version = { attr = "DeepLight.gui.managers.Provenance.__version__" }
 
 [tool.setuptools.package-data]
-"DeepLight" = ["gui/Icons/*.svg", "gui/Icons/*.ico", "gui/managers/*.csv"]
+"DeepLight" = ["gui/Icons/*.svg", "gui/Icons/*.ico"]

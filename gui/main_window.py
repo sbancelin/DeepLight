@@ -241,9 +241,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(50, self.refresh_stitching_preview_grid)
         QTimer.singleShot(0, self.refresh_depth_compensation)
 
-        # Polarisation circulaire droite (CD) par défaut à l'initialisation :
-        # positionne λ/2 et λ/4 selon les settings (no-op si lames absentes).
-        QTimer.singleShot(200, lambda: self.ui.positioner_widget.apply_circular("CD"))
+        # Compensateur en linéaire au démarrage : c'est l'état dans lequel une
+        # série P-SHG a du sens, et un état connu vaut mieux que celui où la
+        # session précédente a laissé la lame. No-op si la λ/4 est absente.
+        QTimer.singleShot(200, lambda: self.ui.positioner_widget.apply_compensator("linear"))
 
         self._visualizer_flush_timer = QTimer(self)
         self._visualizer_flush_timer.setInterval(250)
@@ -1644,8 +1645,35 @@ class MainWindow(QMainWindow):
             lasers = {}
 
         self.save_manager.set_context(
-            optics=optics, lasers=lasers, corrections=self._correction_context()
+            optics=optics, lasers=lasers,
+            corrections=self._correction_context(),
+            polarization=self._polarization_context(),
         )
+
+    def _polarization_context(self) -> dict:
+        """How the polarisation chain is set, for the next save.
+
+        The azimuths a scan visits are meaningless without the plate angle they
+        are counted from, and a series taken through a compensator left on a
+        circular position is not linear at the sample -- neither shows up in
+        the images.
+        """
+        context = {}
+        try:
+            settings = self.settings_manager.get_axis_settings("Polarization") or {}
+            if "offset_deg" in settings:
+                context["half_wave_horizontal_deg"] = float(settings["offset_deg"])
+        except Exception as e:
+            logger.debug(f"[Save] half-wave zero unavailable: {e}")
+
+        try:
+            state = self.positioner_manager.compensator_state()
+            context["compensator"] = state if state else "unknown"
+            context["compensator_deg"] = float(self.positioner_manager.get_rel_pos("p4"))
+        except Exception as e:
+            logger.debug(f"[Save] compensator state unavailable: {e}")
+
+        return context
 
     #: Beyond this share of clipped pixels the indicator turns amber, and red
     #: ten times higher. A handful of hot pixels is normal; a percent of the
