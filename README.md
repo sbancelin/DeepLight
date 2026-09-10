@@ -251,6 +251,16 @@ whole. The modules that need only numerics — `Scan_Types`, `Frame_Builder`,
 `Field_Correction`, `recipe` — import without pulling in Qt.
 
 
+## Documentation
+
+- [docs/user-guide.md](docs/user-guide.md) — the panels, the workflows and the
+  keyboard shortcuts.
+- [docs/adding-hardware.md](docs/adding-hardware.md) — putting a different
+  instrument behind DeepLight.
+- `config.py` — every setting that differs between installations, with its
+  default and what it is for.
+
+
 ## Tests
 
 ```bash
