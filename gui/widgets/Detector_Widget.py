@@ -133,6 +133,27 @@ class DetectorWidget(QWidget):
 
         return specs
     
+    def enabled_detectors(self) -> list:
+        """Names of the channels currently switched on, in panel order."""
+        return [
+            name for name, button in self.toggle_buttons.items()
+            if button is not None and button.isChecked()
+        ]
+
+    def apply_preset(self, names) -> list:
+        """Switch on exactly these channels; returns the names not recognised."""
+        wanted = set(str(n) for n in (names or []))
+        unknown = sorted(wanted - set(self.toggle_buttons))
+
+        for name, button in self.toggle_buttons.items():
+            if button is None or button.isChecked() == (name in wanted):
+                continue
+            # Through the button, so the detectors list and the signal that
+            # refreshes FRC and the size estimate stay in step.
+            button.click()
+
+        return unknown
+
     def on_detector_toggled(self, detector_name):
         """Update the list of active detectors, then emit the matching signal."""
         is_checked = self.toggle_buttons[detector_name].isChecked()

@@ -1197,6 +1197,98 @@ class ScanWidget(QWidget):
         self.laser_mode_button.blockSignals(False)
         self.sample_mode_button.blockSignals(False)
     
+    def get_preset(self) -> dict:
+        """The scan as a recipe: the fields a script would need, and no more.
+
+        Field names are Recipe's, so a preset saved here loads straight into
+        the scripting API. Calibration -- conversion factors, backlash, the
+        galvo lag -- stays out on purpose: it describes this microscope, not
+        this experiment, and importing someone else's would be silently wrong.
+        """
+        axes = []
+        for i, combo in enumerate(self.scan_dim_combos):
+            axis = combo.currentText()
+            if axis == "None":
+                continue
+            axes.append({
+                "name": axis,
+                "pixels": self._read_int_edit(self.pixel_edits[i], 1),
+                "size_um": self._read_float_edit(self.size_edits[i], 0.0),
+                "offset_um": self._read_float_edit(self.offset_edits[i], 0.0),
+                "mode": self._get_row_scan_mode(i, axis),
+            })
+
+        return {
+            "axes": axes,
+            "scan_kind": self.scan_kind,
+            "dwell_us": self._read_float_edit(self.dwell_edit, 10.0),
+            "bidirectional": bool(self.bidirectional_button.isChecked()),
+            "bidirectional_shift_px": self._read_int_edit(self.bidirectional_shift_edit, 0),
+            "repetitions": self._read_int_edit(self.rep_edit, 1) if self.rep_checkbox.isChecked() else 1,
+            "delay_between_rep_s": self._read_float_edit(self.delay_edit, 0.0) if self.rep_checkbox.isChecked() else 0.0,
+            "laser_off_between_rep": bool(self.rep_checkbox.isChecked() and self.laser_checkbox.isChecked()),
+        }
+
+    def apply_preset(self, preset: dict) -> list:
+        """Restore a scan from a preset; returns what could not be applied.
+
+        Nothing is forced: an axis this mode does not offer, or a row already
+        taken, is reported rather than silently dropped -- a preset that half
+        applied without saying so would be worse than one that refused.
+        """
+        preset = dict(preset or {})
+        skipped = []
+
+        # Le mode d'abord : il décide quels axes sont proposés. apply_defaults
+        # reste False, sinon il réécrirait les lignes qu'on s'apprête à poser.
+        kind = str(preset.get("scan_kind", self.scan_kind))
+        if kind in ("laser", "sample"):
+            self._set_scan_kind(kind, apply_defaults=False)
+
+        axes = list(preset.get("axes", []) or [])
+        wanted = [str(a.get("name", "None")) for a in axes]
+        wanted += ["None"] * (len(self.scan_dim_combos) - len(wanted))
+
+        for i, combo in enumerate(self.scan_dim_combos):
+            combo.setCurrentText(wanted[i])
+            # Les axes autorisés d'une ligne dépendent de celles d'avant.
+            self._refresh_scan_axis_combos()
+
+        for i, axis in enumerate(axes):
+            name = str(axis.get("name", ""))
+            if i >= len(self.scan_dim_combos) or self.scan_dim_combos[i].currentText() != name:
+                skipped.append(name)
+                continue
+
+            # Polarization est verrouillée (180°, 19 points) : on ne lui impose
+            # ni taille ni nombre de points, seulement son offset et son mode.
+            if not self.pixel_edits[i].isReadOnly():
+                self.pixel_edits[i].setText(str(int(axis.get("pixels", 1) or 1)))
+                self.size_edits[i].setText(f"{float(axis.get('size_um', 0.0) or 0.0):.4f}")
+            self.offset_edits[i].setText(f"{float(axis.get('offset_um', 0.0) or 0.0):.4f}")
+
+            mode = str(axis.get("mode", "around")).lower()
+            if i < len(self.scan_mode_combos) and self._is_stack_mode_axis(name):
+                self.scan_mode_combos[i].setCurrentText(mode.capitalize())
+
+        self.dwell_edit.setText(f"{float(preset.get('dwell_us', 10.0) or 10.0):g}")
+
+        self.bidirectional_button.setChecked(bool(preset.get("bidirectional", False)))
+        self.bidirectional_shift_edit.setText(str(int(preset.get("bidirectional_shift_px", 0) or 0)))
+
+        reps = int(preset.get("repetitions", 1) or 1)
+        self.rep_checkbox.setChecked(reps > 1)
+        self.rep_edit.setText(str(max(1, reps)))
+        self.delay_edit.setText(f"{float(preset.get('delay_between_rep_s', 0.0) or 0.0):g}")
+        self.laser_checkbox.setChecked(bool(preset.get("laser_off_between_rep", False)))
+
+        self._refresh_scan_axis_combos()
+        self._update_total_pixels()
+        self._update_scan_duration()
+        self._on_param_changed()
+
+        return skipped
+
     def apply_region_of_interest(self, region: dict) -> bool:
         """Re-centre and resize the scan on a region drawn in the image.
 

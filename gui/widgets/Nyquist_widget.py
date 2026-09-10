@@ -433,6 +433,40 @@ class NyquistWidget(QWidget):
             "nyquist_sampling_z": self._safe_float(self.sampling_z_edit),
         }
 
+    def apply_optics(self, optics: dict):
+        """Restore the panel from what get_optics() reported.
+
+        The objective goes in first: choosing one imposes its NA and index, so
+        writing them before would be overwritten. For a Custom objective they
+        are the user's own values and are restored after.
+        """
+        optics = dict(optics or {})
+
+        objective = str(optics.get("objective", "") or "")
+        if objective and self.objective_combo.findText(objective) >= 0:
+            self.objective_combo.setCurrentText(objective)
+
+        if optics.get("wavelength_nm") is not None:
+            self.wavelength_edit.setText(f"{float(optics['wavelength_nm']):g}")
+
+        order = int(optics.get("process_order", 1) or 1)
+        {1: self.order_1p_radio, 2: self.order_2p_radio,
+         3: self.order_3p_radio}.get(order, self.order_1p_radio).setChecked(True)
+
+        if objective == "Custom":
+            if optics.get("numerical_aperture") is not None:
+                self.na_edit.setText(f"{float(optics['numerical_aperture']):g}")
+            if optics.get("refractive_index") is not None:
+                self.ref_index_edit.setText(f"{float(optics['refractive_index']):g}")
+
+        for key, edit in (("nyquist_sampling_xy", self.sampling_xy_edit),
+                          ("nyquist_sampling_z", self.sampling_z_edit)):
+            if optics.get(key) is not None:
+                edit.setText(f"{float(optics[key]):.2f}")
+
+        # Recalcule résolutions, pixel size et pas Z depuis ce qui vient d'être posé.
+        self.update_values()
+
     def _set_editable(self, le: QLineEdit, editable: bool):
         le.setReadOnly(not editable)
         if editable:

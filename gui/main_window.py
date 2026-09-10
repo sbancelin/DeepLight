@@ -2,12 +2,15 @@ from PySide6.QtWidgets import QMainWindow, QFileDialog
 from PySide6.QtGui import QIcon, QGuiApplication
 from PySide6.QtCore import Slot, QTimer, Qt
 
+import json
 import os
+from datetime import datetime
 
 import numpy as np
 import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder='row-major')
 
+from ..config import last_session_preset_path, preset_folder
 from .main_window_design import MainWindowLayout
 from .resources import icon_path
 from .managers.Acquisition_Manager import AcquisitionManager
@@ -171,6 +174,8 @@ class MainWindow(QMainWindow):
         self.ui.save_widget.sigSaveClicked.connect(self.on_save_clicked)
         self.ui.save_widget.sigSnapshotPng.connect(self.save_snapshot_png)
         self.ui.save_widget.sigSnapshotClipboard.connect(self.copy_snapshot_to_clipboard)
+        self.ui.save_widget.sigPresetSave.connect(self.save_acquisition_preset)
+        self.ui.save_widget.sigPresetLoad.connect(self.load_acquisition_preset)
         self.acquisition_manager.acquisition_frame.connect(self.on_rec_frame)
         self.acquisition_manager.samples_progress.connect(self.on_samples_progress)
         self.acquisition_manager.sample_status_updated.connect(self.on_sample_status_updated)
@@ -238,8 +243,13 @@ class MainWindow(QMainWindow):
         self._visualizer_flush_timer = QTimer(self)
         self._visualizer_flush_timer.setInterval(250)
         self._visualizer_flush_timer.timeout.connect(self._flush_visualizers)
-                
-        self.init_ready = True  # Marque l'initialisation comme terminée     
+
+        # Rouvrir sur les réglages de la dernière session, une fois tous les
+        # panneaux construits et connectés. Ne bouge aucun matériel : seuls les
+        # champs sont réécrits.
+        self._restore_last_session_preset()
+
+        self.init_ready = True  # Marque l'initialisation comme terminée
     
     @Slot()
     def _sync_laser_widget_from_hardware(self):
@@ -860,6 +870,9 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
+        # Avant de couper les logs : rouvrir demain sur les réglages d'aujourd'hui.
+        self._save_last_session_preset()
+
         # En dernier : tout ce qui précède mérite d'être dans le fichier.
         logger.info("[MainWindow] DeepLight closed")
         logger.close_files()
@@ -1245,6 +1258,165 @@ class MainWindow(QMainWindow):
         ] or ["default"]
 
         return params
+
+    # ---- Presets d'acquisition ------------------------------------------
+
+    #: Bumped only if the shape of a preset file changes incompatibly.
+    PRESET_VERSION = 1
+
+    def acquisition_preset(self) -> dict:
+        """The current acquisition settings, as a file.
+
+        The recipe block is exactly what the scripting API consumes, so a
+        preset saved from the window can be replayed by a batch script without
+        being translated. Hardware calibration is deliberately absent: a preset
+        describes an experiment, not a microscope.
+        """
+        recipe = self.ui.scan_widget.get_preset()
+        recipe["detectors"] = self.ui.detector_widget.enabled_detectors()
+        recipe["fmt"] = self.ui.save_widget.get_manual_format()
+        recipe["comment"] = self.ui.save_widget.comment_text_edit.toPlainText().strip()
+
+        try:
+            recipe["optics"] = self.ui.nyquist_widget.get_optics()
+        except Exception as e:
+            logger.warning(f"[Preset] optics unavailable: {e}")
+            recipe["optics"] = {}
+
+        return {
+            "deeplight_preset": self.PRESET_VERSION,
+            "saved": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "recipe": recipe,
+            "ui": {"rec_format": self.ui.save_widget.get_rec_format()},
+        }
+
+    def apply_acquisition_preset(self, doc: dict) -> list:
+        """Restore the panels from a preset; returns what could not be applied.
+
+        Each panel is restored independently: one that refuses a value should
+        not cost the others, and what was dropped is said out loud rather than
+        left for the user to notice mid-experiment.
+        """
+        doc = dict(doc or {})
+        version = int(doc.get("deeplight_preset", 0) or 0)
+        if version > self.PRESET_VERSION:
+            raise ValueError(
+                f"This preset was written by a newer DeepLight (format {version}, "
+                f"this one reads {self.PRESET_VERSION})."
+            )
+        if "recipe" not in doc:
+            raise ValueError("Not a DeepLight preset: no 'recipe' block.")
+
+        recipe = dict(doc.get("recipe") or {})
+        rejected = []
+
+        for label, apply in (
+            ("scan", lambda: self.ui.scan_widget.apply_preset(recipe)),
+            ("detectors", lambda: self.ui.detector_widget.apply_preset(recipe.get("detectors", []))),
+        ):
+            try:
+                rejected += [f"{label}: {item}" for item in (apply() or [])]
+            except Exception as e:
+                logger.error(f"[Preset] restoring the {label} failed: {e}")
+                rejected.append(f"{label}: {e}")
+
+        try:
+            self.ui.nyquist_widget.apply_optics(recipe.get("optics", {}))
+        except Exception as e:
+            logger.error(f"[Preset] restoring the optics failed: {e}")
+            rejected.append(f"optics: {e}")
+
+        self.ui.save_widget.set_manual_format(recipe.get("fmt", "OME-TIFF"))
+        self.ui.save_widget.set_rec_format(dict(doc.get("ui") or {}).get("rec_format", "OME-TIFF"))
+
+        comment = str(recipe.get("comment", "") or "")
+        if comment:
+            self.ui.save_widget.comment_text_edit.setPlainText(comment)
+
+        self._update_estimated_stack_size()
+        return rejected
+
+    @Slot()
+    def save_acquisition_preset(self):
+        """Ask for a file and write the current settings into it."""
+        folder = preset_folder()
+        os.makedirs(folder, exist_ok=True)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save an acquisition preset",
+            os.path.join(str(folder), "preset.json"), "DeepLight preset (*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(self.acquisition_preset(), fh, indent=2, default=str)
+        except OSError as e:
+            logger.error(f"[Preset] could not write {path}: {e}")
+            self.statusBar().showMessage(f"Preset not saved: {e}", 5000)
+            return
+
+        logger.info(f"[Preset] saved to {path}")
+        self.statusBar().showMessage(f"Preset saved: {os.path.basename(path)}", 4000)
+
+    @Slot()
+    def load_acquisition_preset(self):
+        """Ask for a file and restore the settings it holds."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load an acquisition preset",
+            str(preset_folder()), "DeepLight preset (*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            rejected = self.apply_acquisition_preset(doc)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            logger.error(f"[Preset] could not load {path}: {e}")
+            self.statusBar().showMessage(f"Preset not loaded: {e}", 6000)
+            return
+
+        logger.info(f"[Preset] loaded from {path}")
+        if rejected:
+            logger.warning(f"[Preset] not applied: {', '.join(rejected)}")
+            self.statusBar().showMessage(
+                f"Preset loaded, {len(rejected)} setting(s) not applied — see the log", 6000
+            )
+        else:
+            self.statusBar().showMessage(f"Preset loaded: {os.path.basename(path)}", 4000)
+
+    def _restore_last_session_preset(self):
+        """Reopen on the settings the last session closed with.
+
+        Best effort and silent on failure: a missing or stale file means the
+        panels keep their defaults, which is what a first launch does anyway.
+        """
+        path = last_session_preset_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            rejected = self.apply_acquisition_preset(doc)
+        except Exception as e:
+            logger.warning(f"[Preset] last session not restored: {e}")
+            return
+
+        logger.info("[Preset] settings restored from the last session")
+        if rejected:
+            logger.warning(f"[Preset] not restored: {', '.join(rejected)}")
+
+    def _save_last_session_preset(self):
+        path = last_session_preset_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(self.acquisition_preset(), fh, indent=2, default=str)
+        except Exception as e:
+            logger.warning(f"[Preset] last session not saved: {e}")
 
     def _push_save_context(self):
         """Hand the save manager the optics and lasers of the moment.

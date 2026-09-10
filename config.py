@@ -338,6 +338,26 @@ def data_root() -> Path:
     return Path(root)
 
 
+def preset_folder() -> Path:
+    """Where acquisition presets are offered: ``<data root>/presets``.
+
+    A default the file dialogs start from, not a constraint: a preset is a
+    plain file and can be kept anywhere, including next to the data it goes
+    with.
+    """
+    return data_root() / "presets"
+
+
+def last_session_preset_path() -> str:
+    """The settings reopened at the next launch.
+
+    Beside the user's config rather than under the data root: it belongs to the
+    person at this machine, not to a dataset, and should not follow the data
+    onto a shared drive.
+    """
+    return str(_user_config_path().parent / "last_session.json")
+
+
 def log_folder() -> Path:
     """Where session logs are kept: ``<data root>/logs``.
 

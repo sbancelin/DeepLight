@@ -57,6 +57,11 @@ class SaveWidget(QWidget):
     sigSnapshotPng = Signal()
     sigSnapshotClipboard = Signal()
 
+    #: Acquisition preset: the scan, the detectors and the optics as a file,
+    #: so a series can be set up once and picked up again next week.
+    sigPresetSave = Signal()
+    sigPresetLoad = Signal()
+
     def __init__(self, parent=None):
 
         super().__init__(parent)
@@ -209,6 +214,29 @@ class SaveWidget(QWidget):
         self.snapshot_png_button.clicked.connect(lambda: self.sigSnapshotPng.emit())
         grid_layout.addWidget(self.snapshot_png_button, 6, 2)
 
+        # --- Ligne 7 : Preset d'acquisition ---
+        # Le scan, les détecteurs et l'optique dans un fichier : une série se
+        # règle une fois et se retrouve la semaine suivante.
+        preset_label = QLabel("Preset")
+        preset_label.setStyleSheet("color: white; font-weight: bold;")
+        grid_layout.addWidget(preset_label, 7, 0)
+
+        self.preset_load_button = QPushButton("Load")
+        self.preset_load_button.setToolTip("Load an acquisition preset (scan, detectors, optics)")
+        self.preset_load_button.setStyleSheet(BUTTON_STYLE)
+        self.preset_load_button.setMinimumWidth(0)
+        self.preset_load_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.preset_load_button.clicked.connect(lambda: self.sigPresetLoad.emit())
+        grid_layout.addWidget(self.preset_load_button, 7, 1)
+
+        self.preset_save_button = QPushButton("Save")
+        self.preset_save_button.setToolTip("Save the current acquisition settings as a preset")
+        self.preset_save_button.setStyleSheet(BUTTON_STYLE)
+        self.preset_save_button.setMinimumWidth(0)
+        self.preset_save_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.preset_save_button.clicked.connect(lambda: self.sigPresetSave.emit())
+        grid_layout.addWidget(self.preset_save_button, 7, 2)
+
         # Ajout du layout grid au layout principal
         content_layout.addLayout(grid_layout)
         self.main_layout.addWidget(content_widget)
@@ -251,6 +279,14 @@ class SaveWidget(QWidget):
 
     def get_rec_format(self) -> str:
         return self.rec_format_combo.currentText().strip()
+
+    def set_manual_format(self, fmt: str):
+        if self.format_combo.findText(str(fmt)) >= 0:
+            self.format_combo.setCurrentText(str(fmt))
+
+    def set_rec_format(self, fmt: str):
+        if self.rec_format_combo.findText(str(fmt)) >= 0:
+            self.rec_format_combo.setCurrentText(str(fmt))
 
     def set_estimated_size_text(self, text: str):
         self.estimated_size_label.setText(text)
