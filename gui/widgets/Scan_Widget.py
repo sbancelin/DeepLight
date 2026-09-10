@@ -1113,11 +1113,18 @@ class ScanWidget(QWidget):
             return [ax_x, ax_y]
 
         if row_index == 1:
+            # Z-Vcoil n'est PAS proposé ici. Une tranche XZ demande un axe lent
+            # d'image qui soit un stepper : un pas de Z, puis une ligne. Le plan
+            # d'exécution ne sait faire qu'un axe lent analogique, et acceptait
+            # Z-Vcoil sans émettre le moindre déplacement — le galvo balayait X,
+            # rien ne bougeait en Z, et la même ligne était enregistrée N fois.
+            # La logique de famille XZ/YZ plus bas est conservée : elle sera
+            # juste le jour où ce mode existera.
             if a0 == ax_x:
-                return [ax_y, "Z-Vcoil"]
+                return [ax_y]
             if a0 == ax_y:
-                return [ax_x, "Z-Vcoil"]
-            return [ax_x, ax_y, "Z-Vcoil"]
+                return [ax_x]
+            return [ax_x, ax_y]
 
         pair = (a0, a1)
         pair_set = {a0, a1}

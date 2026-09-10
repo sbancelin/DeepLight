@@ -26,6 +26,7 @@ from .widgets.Save_Widget import SaveWidget
 from .widgets.Analog_visualizer_widget import AnalogOutVisualizerWidget
 from .widgets.Stepper_visualizer_widget import StepperVisualizerWidget
 from .widgets.Nyquist_widget import NyquistWidget
+from .widgets.Positions_Widget import PositionsWidget
 from .widgets.Depth_Compensation_Widget import DepthCompensationWidget
 from .widgets.Line_profile_widget import LineProfileWidget
 from .widgets.Histogram_widget import HistogramWidget
@@ -358,6 +359,7 @@ class MainWindowLayout:
         self.visu_step_widget = StepperVisualizerWidget()
         self.nyquist_widget = NyquistWidget()
         self.depth_comp_widget = DepthCompensationWidget()
+        self.positions_widget = PositionsWidget()
         self.line_profile_widget = LineProfileWidget()
         self.histogram_widget = HistogramWidget()
         self.frc_widget = FRCWidget()
@@ -367,6 +369,7 @@ class MainWindowLayout:
         self.stepper_panel = CollapsiblePanel("Stepper Visualizer", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
         self.depth_comp_panel = CollapsiblePanel("Depth Power", self.depth_comp_widget, collapsed=True, parent=self.right_panel_dock.container)
+        self.positions_panel = CollapsiblePanel("Positions", self.positions_widget, collapsed=True, preferred_content_height=220, parent=self.right_panel_dock.container)
         self.line_profile_panel = CollapsiblePanel("Line Profile", self.line_profile_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.histogram_panel = CollapsiblePanel("Histogram", self.histogram_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
@@ -376,6 +379,7 @@ class MainWindowLayout:
         self.right_panel_dock.add_panel(self.stepper_panel)
         self.right_panel_dock.add_panel(self.nyquist_panel)
         self.right_panel_dock.add_panel(self.depth_comp_panel)
+        self.right_panel_dock.add_panel(self.positions_panel)
         self.right_panel_dock.add_panel(self.line_profile_panel)
         self.right_panel_dock.add_panel(self.histogram_panel)
         self.right_panel_dock.add_panel(self.frc_panel)

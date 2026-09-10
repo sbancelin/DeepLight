@@ -66,6 +66,31 @@ def test_an_impossible_recipe_is_refused_where_a_script_can_see_it(recipe, messa
         recipe.validate()
 
 
+def test_a_slice_through_a_stepped_axis_is_refused():
+    """An XZ slice needs a slow image axis that steps, which the execution plan
+    cannot do. It used to be offered anyway, emit no movement at all, and record
+    the same line N times -- silently."""
+    with pytest.raises(ValueError, match="cannot draw the image"):
+        Recipe(axes=[Axis("X-Galvo", 64, 20.0),
+                     Axis("Z-Vcoil", 16, 30.0)]).validate()
+
+
+def test_the_image_axes_have_to_match_the_scan_kind():
+    """Galvos draw a laser scan, stages draw a sample scan; mixing the two
+    would ask the plan to sweep one axis and step the other."""
+    with pytest.raises(ValueError, match="cannot draw the image"):
+        Recipe(axes=[Axis("X-Galvo", 64, 20.0), Axis("Y-Stage", 64, 20.0)]).validate()
+
+    Recipe(axes=[Axis("X-Stage", 64, 20.0), Axis("Y-Stage", 64, 20.0)],
+           scan_kind="sample").validate()
+
+
+def test_a_stage_axis_cannot_step_a_stack():
+    with pytest.raises(ValueError, match="cannot be a stack axis"):
+        Recipe(axes=[Axis("X-Galvo", 64, 20.0), Axis("Y-Galvo", 64, 20.0),
+                     Axis("X-Stage", 4, 100.0)]).validate()
+
+
 def test_a_polarisation_stack_cannot_be_repeated():
     """It is already a series; repeating it would overwrite its own planes."""
     recipe = Recipe(

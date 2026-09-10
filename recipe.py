@@ -30,11 +30,22 @@ DETECTOR_CHANNELS = {
     "Ch 1": "digital",
 }
 
-#: Axes a scan can drive. The first two are swept by the galvos and make the
-#: image; the others step between frames.
+#: Axes a scan can drive. The first two make the image; the others step
+#: between frames.
 SCAN_AXES = ("X-Galvo", "Y-Galvo", "X-Stage", "Y-Stage", "Z-Vcoil", "Polarization")
 
-#: Axes that step a stack, and to which the around/from mode applies.
+#: The pair that makes the image, per scan kind. Both axes have to come from
+#: the same pair: the execution plan draws an image from two *continuously
+#: swept* axes, and mixing in a stepped one -- an XZ slice, say -- would need a
+#: slow-axis mode that does not exist yet. Asked for it anyway, the plan used
+#: to emit no movement at all and record the same line N times.
+IMAGE_AXES = {
+    "laser": ("X-Galvo", "Y-Galvo"),
+    "sample": ("X-Stage", "Y-Stage"),
+}
+
+#: Axes that step a stack, and to which the around/from mode applies. They can
+#: only appear from the third row on.
 STACK_AXES = ("Z-Vcoil", "Polarization")
 
 #: How many axis rows the pipeline expects, padded with "None".
@@ -160,6 +171,28 @@ class Recipe:
             if axis.mode not in ("around", "from"):
                 raise ValueError(f"{axis.name}: mode must be 'around' or 'from', got {axis.mode!r}")
 
+        if self.scan_kind not in IMAGE_AXES:
+            raise ValueError(
+                f"scan_kind must be one of {sorted(IMAGE_AXES)}, got {self.scan_kind!r}"
+            )
+
+        image_pair = IMAGE_AXES[self.scan_kind]
+        for index, axis in enumerate(active[:2]):
+            if axis.name not in image_pair:
+                raise ValueError(
+                    f"{axis.name} cannot draw the image: a {self.scan_kind} scan is "
+                    f"drawn by {image_pair[0]} and {image_pair[1]}. A slice through "
+                    f"a stepped axis such as Z-Vcoil is not supported yet -- it would "
+                    f"need a slow image axis that steps, and asking for one produces "
+                    f"no movement at all."
+                )
+        for axis in active[2:]:
+            if axis.name not in STACK_AXES:
+                raise ValueError(
+                    f"{axis.name} cannot be a stack axis: only {list(STACK_AXES)} "
+                    f"step between frames."
+                )
+
         if self.dwell_us <= 0:
             raise ValueError(f"dwell_us must be > 0, got {self.dwell_us}")
         if self.repetitions < 1:
@@ -176,8 +209,6 @@ class Recipe:
         if not self.detectors:
             raise ValueError("At least one detector is needed")
 
-        if self.scan_kind not in ("laser", "sample"):
-            raise ValueError(f"scan_kind must be 'laser' or 'sample', got {self.scan_kind!r}")
 
     # ---- the dictionary the pipeline speaks ---------------------------
 

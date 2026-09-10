@@ -31,6 +31,7 @@ from .managers.Spectro_Manager import SpectroManager
 from .managers.Laser_Manager import LaserManager
 from .widgets.Log_Widget import logger, open_session_log
 from .widgets.Depth_Compensation_Widget import DEPTH_AXIS
+from .widgets.Positions_Widget import POSITION_AXES
 
 
 class MainWindow(QMainWindow):
@@ -118,6 +119,9 @@ class MainWindow(QMainWindow):
 
         self.scan_manager = ScanManager(self)
         self.ui.positioner_widget.set_manager(self.positioner_manager)
+
+        self.ui.positions_widget.set_position_getter(self._current_stage_position)
+        self.ui.positions_widget.sigGoToPosition.connect(self.go_to_position)
 
         self.spectro_manager = SpectroManager(hardware_manager=self.hardware, positioner_manager=self.positioner_manager, parent=self)
 
@@ -1466,6 +1470,53 @@ class MainWindow(QMainWindow):
 
         return params
 
+    # ---- Positions mémorisées -------------------------------------------
+
+    def _current_stage_position(self) -> dict:
+        """Where every axis is, in the relative frame the scan offsets use."""
+        position = {}
+        for axis in POSITION_AXES:
+            try:
+                position[axis] = float(self.positioner_manager.get_rel_pos(axis))
+            except Exception:
+                position[axis] = 0.0
+        return position
+
+    @Slot(dict)
+    def go_to_position(self, position: dict):
+        """Drive the stage back to a remembered position.
+
+        XY go together when the controller offers a combined move -- driving
+        them one after the other traces an L across the sample instead of a
+        diagonal, which passes the beam over places nobody asked to expose.
+        """
+        if self.acquisition_manager.is_running:
+            logger.warning("[Positions] not moving: an acquisition is running.")
+            return
+
+        def speed(axis):
+            try:
+                return max(0.01, float(self.positioner_manager.get_max_speed(axis)))
+            except Exception:
+                return 1.0
+
+        try:
+            x, y = float(position.get("x", 0.0)), float(position.get("y", 0.0))
+            move_xy = getattr(self.positioner_manager, "move_xy_to_rel", None)
+            if callable(move_xy):
+                move_xy(x, y, speed("x"), speed("y"))
+            else:
+                self.positioner_manager.move_to_rel("x", x, speed("x"))
+                self.positioner_manager.move_to_rel("y", y, speed("y"))
+
+            for axis in ("z", "p"):
+                if axis in position and self.positioner_manager.has_axis(axis):
+                    self.positioner_manager.move_to_rel(
+                        axis, float(position[axis]), speed(axis)
+                    )
+        except Exception as e:
+            logger.error(f"[Positions] move failed: {e}")
+
     # ---- Presets d'acquisition ------------------------------------------
 
     #: Bumped only if the shape of a preset file changes incompatibly.
@@ -1494,7 +1545,12 @@ class MainWindow(QMainWindow):
             "deeplight_preset": self.PRESET_VERSION,
             "saved": datetime.now().astimezone().isoformat(timespec="seconds"),
             "recipe": recipe,
-            "ui": {"rec_format": self.ui.save_widget.get_rec_format()},
+            "ui": {
+                "rec_format": self.ui.save_widget.get_rec_format(),
+                # Kept beside the recipe rather than inside it: a position is a
+                # place on this sample, not part of the acquisition's shape.
+                "positions": self.ui.positions_widget.positions(),
+            },
         }
 
     def apply_acquisition_preset(self, doc: dict) -> list:
@@ -1533,8 +1589,15 @@ class MainWindow(QMainWindow):
             logger.error(f"[Preset] restoring the optics failed: {e}")
             rejected.append(f"optics: {e}")
 
+        ui = dict(doc.get("ui") or {})
         self.ui.save_widget.set_manual_format(recipe.get("fmt", "OME-TIFF"))
-        self.ui.save_widget.set_rec_format(dict(doc.get("ui") or {}).get("rec_format", "OME-TIFF"))
+        self.ui.save_widget.set_rec_format(ui.get("rec_format", "OME-TIFF"))
+
+        if "positions" in ui:
+            rejected += [
+                f"position: {item}"
+                for item in self.ui.positions_widget.set_positions(ui["positions"])
+            ]
 
         comment = str(recipe.get("comment", "") or "")
         if comment:
