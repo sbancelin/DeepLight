@@ -303,7 +303,7 @@ class StitchingManager(QObject):
                     except Exception:
                         plane_outer = False
 
-        return MosaicRunConfig(
+        config = MosaicRunConfig(
             tiles_x=tiles_x,
             tiles_y=tiles_y,
             overlap_px=overlap_px,
@@ -329,6 +329,87 @@ class StitchingManager(QObject):
             stack_tol_um=stack_tol,
             start_stack_rel_um=start_stack_rel,
         )
+
+        # Ici plutôt que dans la fenêtre : la géométrie appartient à ce manager,
+        # et start_run relaie déjà l'erreur vers run_failed.
+        self._validate_extent(config, scan_params, row_x, row_y, extra_rows)
+
+        return config
+
+    def _tile_stage_margins(self, scan_params: dict, row: dict) -> tuple[float, float]:
+        """How far the stage travels either side of a tile's centre, in µm.
+
+        Nothing at all in the usual case: the galvos sweep the tile and the
+        stage holds still between moves. It is only a sample scan that drags
+        the stage across each tile, and then the sweep has to be counted or the
+        edge tiles are checked at their centres alone.
+        """
+        if str(scan_params.get("scan_kind", "laser") or "laser") != "sample":
+            return 0.0, 0.0
+
+        size = abs(float(row.get("size_um", 0.0) or 0.0))
+        modes = scan_params.get("scan_modes", {}) or {}
+        mode = str(modes.get(str(row.get("axis", "")), "around"))
+
+        # "from" leaves the centre and goes one way; "around" splits the sweep.
+        return (0.0, size) if mode == "from" else (size / 2.0, size / 2.0)
+
+    def _validate_extent(self, cfg: MosaicRunConfig, scan_params: dict,
+                         row_x: dict, row_y: dict, extra_rows: list):
+        """Refuse a mosaic that would drive an axis past its limits.
+
+        Checking one tile would say nothing useful: a mosaic starts where the
+        sample already is and walks outward, so the corner that leaves the
+        range is the last one reached, well into the run. Everything the run
+        will visit is known before it starts -- the tile grid, the stage sweep
+        inside a tile when it is the sample that moves, and the stack axis --
+        so all of it is checked here, while stopping costs nothing.
+        """
+        pm = self.positioner_manager
+        allowed = getattr(pm, "is_rel_target_allowed", None)
+        if not callable(allowed):
+            return
+
+        tile_advice = "Use fewer tiles, a smaller field, or start closer to the middle of the range."
+        stack_advice = "Reduce the stack depth, or start closer to the middle of the range."
+        targets: list[tuple[str, str, float, str]] = []
+
+        for axis, label, start, step, tiles, row in (
+            ("x", "X", cfg.start_x_rel_um, cfg.step_x_um, cfg.tiles_x, row_x),
+            ("y", "Y", cfg.start_y_rel_um, cfg.step_y_um, cfg.tiles_y, row_y),
+        ):
+            if not pm.has_axis(axis):
+                continue
+            back, forward = self._tile_stage_margins(scan_params, row)
+            far = start + (max(1, tiles) - 1) * step
+            targets.append((axis, label, min(start, far) - back, tile_advice))
+            targets.append((axis, label, max(start, far) + forward, tile_advice))
+
+        for row in extra_rows:
+            display = str(row.get("axis", ""))
+            axis = {"Z-Vcoil": "z", "Polarization": "p"}.get(display)
+            if axis is None or not pm.has_axis(axis):
+                continue
+            modes = scan_params.get("scan_modes", {}) or {}
+            positions = self._compute_stack_positions(row, str(modes.get(display, "around")))
+            if positions:
+                targets.append((axis, display, min(positions), stack_advice))
+                targets.append((axis, display, max(positions), stack_advice))
+
+        for axis, label, target, advice in targets:
+            if allowed(axis, float(target)):
+                continue
+
+            try:
+                lo_abs, hi_abs = pm.get_limits(axis)
+                lo, hi = sorted((pm.abs_to_rel(axis, lo_abs), pm.abs_to_rel(axis, hi_abs)))
+                span = f"[{lo:.1f}, {hi:.1f}] µm"
+            except Exception:
+                span = "the device range"
+
+            raise ValueError(
+                f"The mosaic would reach {label} = {target:.1f} µm, outside {span}. {advice}"
+            )
 
     def _compute_stack_positions(self, row: dict, mode: str) -> list[float]:
         """

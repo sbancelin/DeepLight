@@ -1364,6 +1364,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_stitch_run_failed(self, message: str):
+        # Le bandeau du panneau est étroit : le message complet va au log, qui
+        # est maintenant aussi un fichier.
+        logger.error(f"[Stitch] {message}")
         self.ui.stitch_widget.set_running(False)
         self.ui.stitch_widget.set_status(f"Error: {message}")
         try:
