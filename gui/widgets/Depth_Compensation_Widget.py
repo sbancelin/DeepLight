@@ -11,7 +11,9 @@ from ..managers.Depth_Compensation import (
     DepthCompensation,
     compute_power_profile,
     depth_axis_um,
+    format_power_table,
     max_reachable_depth_um,
+    parse_power_table,
     validate_power_profile,
 )
 from .Log_Widget import logger
@@ -128,8 +130,23 @@ class DepthCompensationWidget(QWidget):
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
 
+        # --- mode
+        grid.addWidget(QLabel("Mode"), 0, 0)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Exponential", "Table"])
+        self.mode_combo.setStyleSheet(COMBO_STYLE)
+        self.mode_combo.setToolTip(
+            "Exponential: P(z) = P(0)·exp(µz) from the surface power.\n"
+            "Table: measured powers read off a list, for a sample that does\n"
+            "not follow Beer-Lambert. The table gives absolute percentages,\n"
+            "so the surface power is not used."
+        )
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        grid.addWidget(self.mode_combo, 0, 1)
+
         # --- attenuation
-        grid.addWidget(QLabel("Attenuation (µm⁻¹)"), 0, 0)
+        self.attenuation_label = QLabel("Attenuation (µm⁻¹)")
+        grid.addWidget(self.attenuation_label, 1, 0)
         self.attenuation_edit = QLineEdit("0.005")
         self.attenuation_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.attenuation_edit.setValidator(QDoubleValidator(0.0, 10.0, 6))
@@ -142,19 +159,35 @@ class DepthCompensationWidget(QWidget):
             "constant holds an n-photon signal constant for any n."
         )
         self.attenuation_edit.textChanged.connect(self._recompute)
-        grid.addWidget(self.attenuation_edit, 0, 1)
+        grid.addWidget(self.attenuation_edit, 1, 1)
+
+        # --- table (mode "Table")
+        self.table_label = QLabel("Depth:power")
+        grid.addWidget(self.table_label, 2, 0)
+        self.table_edit = QLineEdit("0:10, 40:25, 80:60")
+        self.table_edit.setStyleSheet(LINE_EDIT_STYLE)
+        self.table_edit.setToolTip(
+            "Measured powers, as depth:percent pairs — for example\n"
+            "    0:10, 40:25, 80:60\n"
+            "Interpolated linearly between the points, and held flat beyond\n"
+            "them: continuing the curve past the deepest measured point is\n"
+            "how a sample gets cooked."
+        )
+        self.table_edit.textChanged.connect(self._recompute)
+        grid.addWidget(self.table_edit, 2, 1)
 
         # --- laser
-        grid.addWidget(QLabel("Laser"), 1, 0)
+        grid.addWidget(QLabel("Laser"), 3, 0)
         self.laser_combo = QComboBox()
         self.laser_combo.addItems(RAMPABLE_LASERS)
         self.laser_combo.setStyleSheet(COMBO_STYLE)
         self.laser_combo.setToolTip("Laser whose power is ramped during the stack.")
         self.laser_combo.currentIndexChanged.connect(self._recompute)
-        grid.addWidget(self.laser_combo, 1, 1)
+        grid.addWidget(self.laser_combo, 3, 1)
 
         # --- surface power (read from the laser, not typed twice)
-        grid.addWidget(QLabel("Surface power (%)"), 2, 0)
+        self.base_power_label = QLabel("Surface power (%)")
+        grid.addWidget(self.base_power_label, 4, 0)
         self.base_power_edit = QLineEdit("")
         self.base_power_edit.setReadOnly(True)
         self.base_power_edit.setStyleSheet(READONLY_STYLE)
@@ -164,7 +197,7 @@ class DepthCompensationWidget(QWidget):
             "afterwards: reading it live would feed the ramp its own output and\n"
             "make the power run away step after step."
         )
-        grid.addWidget(self.base_power_edit, 2, 1)
+        grid.addWidget(self.base_power_edit, 4, 1)
 
         main_layout.addLayout(grid)
 
@@ -175,7 +208,9 @@ class DepthCompensationWidget(QWidget):
 
         main_layout.addStretch()
 
-        self._recompute()
+        # Après la construction complète : _on_mode_changed recompute, et le
+        # recalcul a besoin du status_label créé juste au-dessus.
+        self._on_mode_changed(self.mode_combo.currentText())
 
     # ------------------------------------------------------------------
     # Wiring
@@ -217,10 +252,19 @@ class DepthCompensationWidget(QWidget):
     # Model
     # ------------------------------------------------------------------
 
+    def mode(self) -> str:
+        return "table" if self.mode_combo.currentText() == "Table" else "exponential"
+
     def get_compensation(self) -> DepthCompensation:
+        try:
+            table = parse_power_table(self.table_edit.text())
+        except ValueError:
+            table = ()          # _recompute reports it; the model stays honest
         return DepthCompensation(
             attenuation_um_inv=self._read_float(self.attenuation_edit, 0.0),
             enabled=bool(self.activate_button.isChecked() and self._z_active),
+            mode=self.mode(),
+            table=table,
         )
 
     def base_power_percent(self) -> float:
@@ -232,7 +276,31 @@ class DepthCompensationWidget(QWidget):
         comp = self.get_compensation()
         if not comp.enabled:
             return self._base_percent
-        return float(self._base_percent * comp.power_gain(float(depth_um)))
+        try:
+            return float(compute_power_profile(comp, self._base_percent, float(depth_um)))
+        except ValueError as e:
+            # An unusable table must not move the laser at all.
+            logger.warning(f"[DepthComp] {e}; holding the surface power.")
+            return self._base_percent
+
+    def _on_mode_changed(self, _text=None):
+        """Show only what the chosen mode uses.
+
+        The surface power stays visible in table mode but greyed: the table
+        gives absolute percentages, so P(0) plays no part, and hiding it would
+        leave someone wondering whether it still did.
+        """
+        table_mode = self.mode() == "table"
+
+        self.attenuation_label.setVisible(not table_mode)
+        self.attenuation_edit.setVisible(not table_mode)
+        self.table_label.setVisible(table_mode)
+        self.table_edit.setVisible(table_mode)
+
+        self.base_power_edit.setEnabled(not table_mode)
+        self.base_power_label.setEnabled(not table_mode)
+
+        self._recompute()
 
     # ------------------------------------------------------------------
     # Internals
@@ -280,9 +348,24 @@ class DepthCompensationWidget(QWidget):
             self.status_label.setText("Z-Vcoil is not an active scan axis.")
             return
 
+        if self.mode() == "table":
+            # Report a malformed table where it is being typed, rather than
+            # silently falling back to something that looks like it worked.
+            try:
+                parse_power_table(self.table_edit.text())
+            except ValueError as e:
+                self.status_label.setStyleSheet("color: #FF7700;")
+                self.status_label.setText(f"Power table: {e}.")
+                return
+
         comp = self.get_compensation()
         depths = depth_axis_um(self._z_size_um, self._z_pixels)
-        percents = compute_power_profile(comp, self._base_percent, depths)
+        try:
+            percents = compute_power_profile(comp, self._base_percent, depths)
+        except ValueError as e:
+            self.status_label.setStyleSheet("color: #FF7700;")
+            self.status_label.setText(str(e))
+            return
         report = validate_power_profile(percents, depths)
 
         if report.ok:

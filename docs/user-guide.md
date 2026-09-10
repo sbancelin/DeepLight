@@ -126,6 +126,29 @@ armed — the ramp always starts from there rather than from wherever the previo
 stack ended, so arming twice cannot compound. The laser returns to its surface
 power when the run finishes.
 
+For a sample that does not follow Beer-Lambert, switch *Mode* to **Table** and
+type the powers you measured as `depth:percent` pairs — `0:10, 40:25, 80:60`.
+These are absolute percentages, so the surface power plays no part and is greyed
+out. Between points the power is interpolated; **beyond them it is held flat
+rather than extrapolated**, because continuing the curve past the deepest point
+anyone measured is how a sample gets cooked. A table that cannot be read is
+reported where you type it, and an unusable one holds the surface power rather
+than moving the laser.
+
+---
+
+## Positions
+
+The **Positions** panel remembers places on the sample. *Add* captures where the
+stage is now, *Go* — or a double-click on a row — drives back to it, *Update*
+replaces one with the current position. The list travels in the preset.
+
+Coordinates are stored in the relative frame, the same one the scan offsets use
+and the *Set 0* buttons define, so a saved position still means something after
+a re-home. X and Y are driven together where the controller allows it: one axis
+then the other traces an L across the sample instead of a diagonal. A move is
+refused while an acquisition is running.
+
 ---
 
 ## Recording

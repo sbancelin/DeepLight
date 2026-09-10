@@ -35,12 +35,58 @@ from .Hardware_Manager import (
     MIRA_ROTATOR_REL_MIN_DEG,
 )
 
+#: How the power is decided at a given depth.
+RAMP_MODES = ("exponential", "table")
+
+
+def parse_power_table(text: str):
+    """Read ``0:10, 40:25, 80:60`` into ((depth_um, percent), ...).
+
+    A compact text field rather than a grid of cells: the panel is narrow, the
+    points are few, and a line like this can be pasted straight out of the
+    notebook where the powers were measured.
+    """
+    points = []
+    for chunk in str(text or "").replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        depth, _, percent = chunk.partition(":")
+        if not _:
+            raise ValueError(f"{chunk!r} is not a depth:percent pair")
+        try:
+            points.append((float(depth.replace(",", ".")),
+                           float(percent.replace(",", "."))))
+        except ValueError:
+            raise ValueError(f"{chunk!r} is not a depth:percent pair") from None
+
+    points.sort(key=lambda point: point[0])
+
+    depths = [d for d, _ in points]
+    if len(set(depths)) != len(depths):
+        raise ValueError("the same depth appears twice")
+
+    return tuple(points)
+
+
+def format_power_table(table) -> str:
+    """The inverse of parse_power_table, for putting a table back in the field."""
+    return ", ".join(f"{depth:g}:{percent:g}" for depth, percent in (table or ()))
+
+
 @dataclass
 class DepthCompensation:
     """Settings of the depth ramp."""
 
     attenuation_um_inv: float = 0.0
     enabled: bool = False
+    #: "exponential" follows Beer-Lambert from the surface power; "table"
+    #: reads measured powers off a list, for a sample that does not.
+    mode: str = "exponential"
+    #: ((depth_um, percent), ...) sorted by depth. Absolute percentages, not
+    #: gains: these are the powers someone measured, and making them relative
+    #: to a surface power captured later would change what they mean.
+    table: tuple = ()
 
     def effective_coefficient(self) -> float:
         """Coefficient applied to the depth, in µm^-1."""
@@ -106,12 +152,43 @@ def depth_axis_um(size_um: float, pixels: int) -> np.ndarray:
     return np.linspace(0.0, float(size_um), n, dtype=np.float64)
 
 
+def interpolate_power_table(table, depths_um) -> np.ndarray:
+    """Power at each depth, read off a measured table.
+
+    Held flat outside the measured range rather than extrapolated. Continuing
+    an exponential-looking curve past the deepest point someone actually
+    measured is how a sample gets cooked, and the flat hold is visible in the
+    profile rather than silent.
+    """
+    points = tuple(table or ())
+    if not points:
+        raise ValueError("The power table is empty: add at least one depth:percent pair.")
+
+    depths = np.asarray(depths_um, dtype=np.float64)
+    known_depths = np.array([d for d, _ in points], dtype=np.float64)
+    known_percents = np.array([p for _, p in points], dtype=np.float64)
+
+    # np.interp already clamps to the end values outside the range.
+    values = np.interp(depths, known_depths, known_percents)
+    return float(values) if values.ndim == 0 else values
+
+
 def compute_power_profile(
     compensation: DepthCompensation,
     base_percent: float,
     depths_um,
 ) -> np.ndarray:
-    """Power percentage requested at each depth."""
+    """Power percentage requested at each depth.
+
+    In table mode the surface power is not used: the table already says what
+    the power should be, and multiplying it by wherever the laser happened to
+    be would silently rescale a measurement.
+    """
+    if str(compensation.mode) == "table":
+        return np.asarray(
+            interpolate_power_table(compensation.table, depths_um), dtype=np.float64
+        )
+
     return float(base_percent) * np.asarray(
         compensation.power_gain(depths_um), dtype=np.float64
     )
