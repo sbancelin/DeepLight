@@ -13,6 +13,7 @@ from DeepLight.gui.managers.Detector_Manager_Base import validate_detector_contr
 from DeepLight.gui.managers.Microscopes.Microscope_Backend_Base import (
     validate_backend_contract,
 )
+from DeepLight.gui.managers.Shutter_Manager import validate_shutter_contract
 from DeepLight.gui.managers.Spectrograph_Manager import (
     create_spectrograph,
     validate_spectrograph_contract,
@@ -68,6 +69,96 @@ def test_a_detector_manager_satisfies_its_contract(qapp):
 def test_a_spectrograph_satisfies_its_contract():
     spectrograph = create_spectrograph("mock")
     validate_spectrograph_contract(spectrograph)
+
+
+def test_a_shutter_satisfies_its_contract():
+    from DeepLight.gui.managers.Shutter_Manager import create_shutter
+
+    validate_shutter_contract(create_shutter("mock"))
+    validate_shutter_contract(create_shutter("thorlabs", "68800404"))
+
+
+def test_the_simulated_shutter_actually_moves():
+    """A mock that ignored the command would leave the shutter logic untested,
+    which is what it did before it existed: a dark frame is only dark if
+    something shut."""
+    from DeepLight.gui.managers.Shutter_Manager import create_shutter
+
+    shutter = create_shutter("mock")
+    shutter.connect()
+
+    assert shutter.is_open() is False        # found shut, never assumed open
+    shutter.set_open(True)
+    assert shutter.is_open() is True
+    shutter.set_open(False)
+    assert shutter.is_open() is False
+
+
+def test_a_shutter_refuses_to_move_before_it_is_connected():
+    from DeepLight.gui.managers.Shutter_Manager import MockShutter
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        MockShutter().set_open(True)
+
+
+def test_close_disconnects_a_shutter_rather_than_shutting_it():
+    """The one naming trap in this family, pinned so it cannot be reintroduced:
+    close() means disconnect, the light is moved with set_open()."""
+    from DeepLight.gui.managers.Shutter_Manager import MockShutter
+
+    shutter = MockShutter()
+    shutter.connect()
+    shutter.set_open(True)
+    shutter.close()
+
+    assert shutter.connected is False
+
+
+def test_the_power_actuators_satisfy_their_contract():
+    from DeepLight.gui.managers.Power_Actuator import (
+        DirectPowerActuator, MockPowerActuator, RotationMountActuator,
+        WaveplateActuator, validate_power_actuator_contract,
+    )
+
+    for actuator in (MockPowerActuator("Mira 900"),
+                     RotationMountActuator(None, speed=1, steps_per_degree=1.0, offset_deg=0.0),
+                     WaveplateActuator(None, offset_deg=0.0),
+                     DirectPowerActuator(None, "Alcor 920")):
+        validate_power_actuator_contract(actuator)
+
+
+def test_a_new_power_mechanism_needs_one_small_class():
+    """The extensibility claim, checked rather than asserted: an actuator for a
+    mechanism DeepLight has never seen satisfies the contract as written."""
+    from DeepLight.gui.managers.Power_Actuator import (
+        PowerActuatorBase, validate_power_actuator_contract,
+    )
+
+    class AomActuator(PowerActuatorBase):
+        kind = "acousto-optic modulator"
+
+        def __init__(self):
+            self.volts = None
+
+        def set_power_percent(self, percent):
+            self.volts = self.clamp(percent) / 100.0
+
+        def get_power_percent(self):
+            return None                    # write-only, and says so
+
+    actuator = AomActuator()
+    validate_power_actuator_contract(actuator)
+
+    actuator.set_power_percent(250.0)
+    assert actuator.volts == 1.0           # clamped by the base class
+    assert actuator.get_power_percent() is None
+
+
+def test_an_incomplete_power_actuator_is_rejected():
+    from DeepLight.gui.managers.Power_Actuator import validate_power_actuator_contract
+
+    with pytest.raises(TypeError, match="does not satisfy"):
+        validate_power_actuator_contract(object())
 
 
 def test_the_simulated_microscope_needs_no_hardware_library(qapp):

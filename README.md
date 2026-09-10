@@ -216,6 +216,12 @@ Every one of these has a software mock, selected with `--backend mock` or per
 instrument in the configuration file, so the whole application can be exercised
 without a bench.
 
+Each family sits behind a small contract — a base class, a simulated
+implementation and a validator that refuses an incomplete one — so supporting
+another brand means writing one class rather than editing the application.
+[docs/adding-hardware.md](docs/adding-hardware.md) walks through it with a
+shutter and a power actuator as worked examples.
+
 
 ## Repository layout
 

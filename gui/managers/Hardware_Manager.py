@@ -13,6 +13,13 @@ from PySide6.QtCore import QObject, Slot, QTimer
 from ...config import CONFIG
 from .Field_Correction import average_frames
 from .Positioner_Manager import MockPositionerManager, PositionerManager
+from .Power_Actuator import (
+    DirectPowerActuator,
+    MockPowerActuator,
+    RotationMountActuator,
+    WaveplateActuator,
+)
+from .Shutter_Manager import create_shutter
 from ..widgets.Log_Widget import logger
 from .Motic_Camera_Manager import CameraController, OpenCVCameraBackend, MockCameraBackend
 from .PiCam_Manager import PiCamManager
@@ -2814,10 +2821,19 @@ class HardwareManager(QObject):
         self._positioner_axes = ["x", "y", "z", "p", "p4"]
         self.settings_manager = settings_manager
 
-        self._shutter = None
+        # Un shutter existe dans tous les cas, simulé compris : la logique
+        # d'obturation (ouverte au début d'une acquisition, fermée pendant un
+        # dark) n'était jamais exercée tant que set_shutter ne faisait rien en
+        # mock. Le vrai est construit dans _ensure_real_devices, sous la
+        # gestion d'erreur qui va avec le fait de joindre un appareil.
+        self._shutter = None if self.backend_name == "nidaq" else create_shutter("mock")
+        if self._shutter is not None:
+            self._shutter.connect()
+
         self._xy_controller = None
         self._z_controller = None
         self._rotators = {}
+        self._power_actuators = {}   # laser name -> simulated actuator
         # Montures Elliptec des positioners P (bus COM15 partagé avec la HWP Cobolt)
         self._ell_lambda2 = None   # P(λ/2), adresse 1
         self._ell_lambda4 = None   # P(λ/4), adresse 2
@@ -2831,10 +2847,6 @@ class HardwareManager(QObject):
         self._camera_backend = None
         self._camera_controller = None
         self._brillouin_camera = None
-
-        # Dernier état commandé au shutter : le KCube ne se relit pas, mais
-        # savoir s'il était ouvert suffit pour le remettre comme on l'a trouvé.
-        self._shutter_open = False
 
         self._brillouin_correction = None
         self._brillouin_correction_enabled = True
@@ -2905,7 +2917,7 @@ class HardwareManager(QObject):
             return
 
         if self._shutter is None:
-            self._shutter = _ThorlabsShutterController(THORLABS_SHUTTER_SERIAL)
+            self._shutter = create_shutter("nidaq", THORLABS_SHUTTER_SERIAL)
 
         if self._xy_controller is None:
             # Read per-axis UMS scaling factors from settings_manager if available.
@@ -3064,19 +3076,16 @@ class HardwareManager(QObject):
     
     @Slot(bool)
     def set_shutter(self, open_: bool):
-        self._shutter_open = bool(open_)
-
-        if self.backend_name != "nidaq":
-            return
-
+        """Move the light. Works on the simulated backend too, which is the
+        point: a dark frame is only dark if something actually shut."""
         if self._shutter is None:
             raise RuntimeError("Shutter controller is not initialized.")
 
         self._shutter.set_open(bool(open_))
 
     def is_shutter_open(self) -> bool:
-        """Last state commanded to the shutter; the KCube offers no readback."""
-        return bool(self._shutter_open)
+        """Whether the light is through, as the shutter itself reports it."""
+        return bool(self._shutter is not None and self._shutter.is_open())
 
     def set_laser_power_percent(self, laser_name: str, percent: float, speed: int, steps_per_degree: float, offset_deg: float):
         logger.debug(
@@ -3085,32 +3094,53 @@ class HardwareManager(QObject):
             f"steps_per_degree={steps_per_degree} offset_deg={offset_deg}"
         )
 
-        if self.backend_name != "nidaq":
-            return
+        self.power_actuator(
+            laser_name,
+            speed=speed,
+            steps_per_degree=steps_per_degree,
+            offset_deg=offset_deg,
+        ).set_power_percent(float(percent))
 
-        if str(laser_name) == "Cobolt 660":
+    def power_actuator(self, laser_name: str, speed: int = 0,
+                       steps_per_degree: float = 0.0, offset_deg: float = 0.0):
+        """The thing that sets this laser's power on this bench.
+
+        Which mechanism a laser uses -- a waveplate on a rotation mount, a
+        waveplate on an Elliptec, or the laser's own command -- was decided by
+        matching its name at the point of use. Deciding it once, here, is what
+        lets another mechanism be added by writing one PowerActuatorBase.
+        """
+        laser_name = str(laser_name)
+
+        if self.backend_name != "nidaq":
+            # Simulated, but not inert: the depth ramp drives this during a
+            # mock stack, and a no-op would leave that untested.
+            actuator = self._power_actuators.get(laser_name)
+            if actuator is None:
+                actuator = MockPowerActuator(laser_name)
+                self._power_actuators[laser_name] = actuator
+            return actuator
+
+        if laser_name == "Cobolt 660":
             if self._laser_manager is None:
                 self.create_laser_manager(parent=self)
-
             if self._laser_manager is None or self._laser_manager._cobolt_hwp is None:
                 raise RuntimeError("Cobolt ELL14 HWP controller is not initialized.")
+            return WaveplateActuator(self._laser_manager._cobolt_hwp, offset_deg=offset_deg)
 
-            self._laser_manager._cobolt_hwp.set_power_percent(
-                float(percent),
-                offset_deg=float(offset_deg),
+        rotator = self._rotators.get(laser_name)
+        if rotator is not None:
+            return RotationMountActuator(
+                rotator, speed=speed, steps_per_degree=steps_per_degree,
+                offset_deg=offset_deg,
             )
-            return
-        
-        rot = self._rotators.get(str(laser_name))
-        if rot is None:
-            raise KeyError(f"No rotator configured for laser {laser_name!r}")
 
-        rot.set_power_percent(
-            float(percent),
-            speed=int(speed),
-            steps_per_degree=float(steps_per_degree),
-            offset_deg=float(offset_deg),
-        )
+        # No attenuator in front of it: the laser sets its own level.
+        if self._laser_manager is None:
+            self.create_laser_manager(parent=self)
+        if self._laser_manager is None:
+            raise KeyError(f"No power actuator configured for laser {laser_name!r}")
+        return DirectPowerActuator(self._laser_manager, laser_name)
 
     def get_laser_power_percent(self, laser_name: str) -> float:
         if self.backend_name != "nidaq":
