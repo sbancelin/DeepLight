@@ -338,6 +338,16 @@ def data_root() -> Path:
     return Path(root)
 
 
+def log_folder() -> Path:
+    """Where session logs are kept: ``<data root>/logs``.
+
+    Under the data root rather than beside the program, so the logs follow the
+    data onto whichever drive the experiments live on, and one configured path
+    still decides everything.
+    """
+    return data_root() / "logs"
+
+
 def dated_data_folder(year: str, month: str = "", day: str = "") -> str:
     """``<data root>/<year>[/<month>[/<day>]]`` as a string."""
     path = data_root() / year

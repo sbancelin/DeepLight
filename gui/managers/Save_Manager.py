@@ -86,6 +86,7 @@ class SaveManager:
         # session REC
         self._rec_active = False
         self._rec_path = None
+        self._rec_log_path = None
         self._rec_comment = ""
         self._rec_channels = []
 
@@ -204,6 +205,21 @@ class SaveManager:
             payload.update(extra)
         self._write_json(sidecar, payload)
         return sidecar
+
+    def _start_run_log(self, path: str, fmt: str, reps: int, height: int, width: int):
+        """Begin the log that travels with this acquisition.
+
+        Beside the data and sharing its name, like the JSON sidecar: what the
+        provenance states about the run, the log says about how it went --
+        every warning, every retry, every device that answered slowly. Written
+        as it goes, so it survives a run that never reaches its last frame.
+        """
+        self._rec_log_path = logger.open_run_file(os.path.splitext(path)[0] + ".log")
+        logger.info(
+            f"[REC] {fmt} session: {os.path.basename(path)} — "
+            f"{reps} rep(s) x {self._rec_z} plane(s) x {len(self._rec_channels)} channel(s), "
+            f"{height}x{width} px, channels {self._rec_channels}"
+        )
 
     def _rec_frame_shape(self, scan_parameters: dict) -> tuple[int, int]:
         """(rows, columns) of one frame, as the backend actually builds it.
@@ -524,11 +540,13 @@ class SaveManager:
 
         self._rec_comment = comment or ""
         self._rec_scan_params = json.loads(json.dumps(scan_parameters, default=str))
+        self._rec_log_path = None
 
         # -------- OME-TIFF (écrit à la fin) --------
         if fmt_u == "OME-TIFF":
             path = make_unique_path(folder, filename, ext=".ome.tif", default_stem="REC")
             self._rec_path = path
+            self._start_run_log(path, fmt_u, reps, Y, X)
 
             # buffer en RAM
             try:
@@ -549,6 +567,7 @@ class SaveManager:
             try:
                 path = make_unique_path(folder, filename, ext=".zarr", default_stem="REC")
                 self._rec_path = path
+                self._start_run_log(path, fmt_u, reps, Y, X)
 
                 # zarr group
                 root = zarr.open_group(path, mode="w")
@@ -652,6 +671,7 @@ class SaveManager:
             channels = list(self._rec_channels)
             comment = self._rec_comment
             scan_params = dict(self._rec_scan_params)
+            had_log = self._rec_log_path is not None
 
             # reset état (toujours)
             self._rec_active = False
@@ -687,6 +707,14 @@ class SaveManager:
                 channels=channels,
                 extra={"axes_numpy": "TCZYX"},
             )
+
+        # After the write, so the log records whether the file actually landed,
+        # and closed whatever happened -- an aborted run keeps the log of why.
+        if had_log:
+            if path:
+                logger.info(f"[REC] session closed: {os.path.basename(path)}")
+            logger.close_run_file()
+            self._rec_log_path = None
 
         return path
 

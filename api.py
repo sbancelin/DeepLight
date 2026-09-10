@@ -36,7 +36,7 @@ from .gui.managers.Microscopes import create_microscope_backend
 from .gui.managers.Save_Manager import SaveManager
 from .gui.managers.Scan_manager import ScanManager
 from .gui.managers.Settings_Manager import SettingsManager
-from .gui.widgets.Log_Widget import logger
+from .gui.widgets.Log_Widget import logger, open_session_log
 from .recipe import Axis, Recipe
 
 __all__ = ["Axis", "Recipe", "RunResult", "Session", "run"]
@@ -73,11 +73,18 @@ class Session:
     close() -- a real backend keeps serial ports open until you do.
     """
 
-    def __init__(self, backend: str = "mock"):
+    def __init__(self, backend: str = "mock", session_log: bool = True):
         self._app = QCoreApplication.instance()
         self._owns_app = self._app is None
         if self._owns_app:
             self._app = QCoreApplication(sys.argv[:1] or ["deeplight"])
+
+        # A script has no log panel to watch, so the file is the only trace it
+        # leaves. Skipped when a window already opened one, and on request for
+        # a caller that manages its own logging.
+        self._owns_session_log = False
+        if session_log and self._owns_app:
+            self._owns_session_log = open_session_log() is not None
 
         self.backend_name = str(backend or "mock").lower()
         self.settings = SettingsManager()
@@ -326,6 +333,10 @@ class Session:
             logger.error(f"[API] closing the hardware failed: {e}")
 
         logger.info("[API] headless session closed")
+
+        if self._owns_session_log:
+            logger.close_files()
+            self._owns_session_log = False
 
     def __enter__(self) -> "Session":
         return self

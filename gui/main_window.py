@@ -21,7 +21,7 @@ from .managers.Settings_Manager import SettingsManager
 from .managers.Stitching_Manager import StitchingManager
 from .managers.Spectro_Manager import SpectroManager
 from .managers.Laser_Manager import LaserManager
-from .widgets.Log_Widget import logger
+from .widgets.Log_Widget import logger, open_session_log
 from .widgets.Depth_Compensation_Widget import DEPTH_AXIS
 
 
@@ -45,6 +45,10 @@ class MainWindow(QMainWindow):
 
         #: Première position Z du run : sert de surface pour la rampe de puissance.
         self._depth_surface_rel_um = None
+
+        # Avant de construire quoi que ce soit : ce qui se passe au démarrage
+        # (matériel absent, port occupé) est justement ce qu'on veut relire.
+        open_session_log()
 
         self.ui = MainWindowLayout()
         self.ui.build(self)      # crée les widgets et les attache à la fenêtre
@@ -855,6 +859,10 @@ class MainWindow(QMainWindow):
             self.hardware.close()
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        # En dernier : tout ce qui précède mérite d'être dans le fichier.
+        logger.info("[MainWindow] DeepLight closed")
+        logger.close_files()
 
         super().closeEvent(event)
     
