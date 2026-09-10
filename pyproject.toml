@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "deeplight"
 description = "Control software for a multiphoton microscope: laser and sample scanning, polarisation-resolved SHG, Brillouin and Raman spectroscopy."
+readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Stéphane Bancelin" }]
 keywords = ["microscopy", "multiphoton", "SHG", "Brillouin", "Raman", "acquisition"]
