@@ -29,6 +29,15 @@ exports/
 tmp/
 temp/
 
+# Vendor binaries. DeepLight loads none of its own: the drivers it uses come
+# from the SDK installed on the acquisition PC (Kinesis, PI GCS, NI-DAQmx,
+# PICam), whose paths live in the config file. Committing a vendor DLL would
+# redistribute someone else's binary, which an OSI-licensed release cannot do
+# without checking the terms.
+*.dll
+*.so
+*.dylib
+
 # OS
 .DS_Store
 Thumbs.db

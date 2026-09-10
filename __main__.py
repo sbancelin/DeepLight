@@ -27,7 +27,7 @@ if __name__ == "__main__":
             "DeepLight.Microscope.App.1.0"
         )
 
-    from .gui import MainWindow
+    from .gui.main_window import MainWindow
 
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 
