@@ -1489,9 +1489,21 @@ class MainWindow(QMainWindow):
         XY go together when the controller offers a combined move -- driving
         them one after the other traces an L across the sample instead of a
         diagonal, which passes the beam over places nobody asked to expose.
+
+        Refused only while something is *recording*: a preview is for looking
+        around, and jumping between saved fields during one is the whole point
+        of keeping them. This matches the keyboard lock, which the acquisition
+        arms and a preview does not.
         """
-        if self.acquisition_manager.is_running:
-            logger.warning("[Positions] not moving: an acquisition is running.")
+        recording = (
+            str(getattr(self.acquisition_manager, "mode", "")) == "acquisition"
+            or self.stitching_manager.is_running()
+        )
+        if recording:
+            logger.warning("[Positions] not moving: an acquisition is recording.")
+            self.statusBar().showMessage(
+                "Stop the acquisition before moving to a saved position.", 4000
+            )
             return
 
         def speed(axis):

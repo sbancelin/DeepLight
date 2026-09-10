@@ -146,8 +146,11 @@ replaces one with the current position. The list travels in the preset.
 Coordinates are stored in the relative frame, the same one the scan offsets use
 and the *Set 0* buttons define, so a saved position still means something after
 a re-home. X and Y are driven together where the controller allows it: one axis
-then the other traces an L across the sample instead of a diagonal. A move is
-refused while an acquisition is running.
+then the other traces an L across the sample instead of a diagonal.
+
+*Go* works during a preview — jumping between saved fields while watching live
+is the point of keeping them. It is refused only while a **recording** or a
+mosaic is running, where moving the stage would corrupt what is being written.
 
 ---
 
