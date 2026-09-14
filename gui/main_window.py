@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QMainWindow, QFileDialog, QMessageBox
-from PySide6.QtGui import QIcon, QGuiApplication
+from PySide6.QtGui import QIcon, QGuiApplication, QPixmap, QPainter, QColor
 from PySide6.QtCore import Slot, QTimer, Qt
 
 import json
@@ -10,7 +10,7 @@ import numpy as np
 import pyqtgraph as pg
 pg.setConfigOptions(imageAxisOrder='row-major')
 
-from ..config import CONFIG, last_session_preset_path, preset_folder
+from ..config import CONFIG, preset_folder
 from .main_window_design import (
     MainWindowLayout,
     SATURATION_ALARM_STYLE, SATURATION_OK_STYLE, SATURATION_WARN_STYLE,
@@ -32,6 +32,34 @@ from .managers.Laser_Manager import LaserManager
 from .widgets.Log_Widget import logger, open_session_log
 from .widgets.Depth_Compensation_Widget import DEPTH_AXIS
 from .widgets.Positions_Widget import POSITION_AXES
+
+#: The app's one accent orange, used everywhere from toggle buttons to the
+#: shutter icon -- Qt's own confirmation dialogs default to a blue "?"
+#: instead, which is the only icon in the app that doesn't match.
+ACCENT_ORANGE = "#FF7700"
+
+
+def _orange_question_icon(size: int = 64) -> QPixmap:
+    """A question-mark icon drawn in ACCENT_ORANGE, for QMessageBox dialogs
+    that would otherwise show Qt's default blue one."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(QColor(ACCENT_ORANGE))
+    painter.setPen(Qt.NoPen)
+    painter.drawEllipse(0, 0, size, size)
+
+    painter.setPen(QColor("white"))
+    font = painter.font()
+    font.setPixelSize(int(size * 0.6))
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, "?")
+    painter.end()
+
+    return pixmap
 
 
 class MainWindow(QMainWindow):
@@ -78,10 +106,16 @@ class MainWindow(QMainWindow):
         )
 
         self.settings_manager = SettingsManager()
-        
+        # Avant que les widgets ne remplissent leurs défauts codés en dur (ce
+        # qu'ils ne font que pour un axe/laser encore vide) : une valeur
+        # sauvegardée ("Save value" d'un popup settings) l'emporte ainsi sur
+        # le défaut d'usine.
+        self.settings_manager.load_persisted()
+
         self.ui.scan_widget.set_settings_manager(self.settings_manager)
         self.ui.positioner_widget.set_settings_manager(self.settings_manager)
         self.ui.laser_widget.set_settings_manager(self.settings_manager)
+        self.ui.spectro_panel_widget.set_settings_manager(self.settings_manager)
 
         self.setDockOptions(
             QMainWindow.AnimatedDocks |
@@ -143,6 +177,11 @@ class MainWindow(QMainWindow):
         self._connect_spectro_controls()
 
         self._rec_saving_active = False
+        # Pour les notices [Acquisition] Started/Finished/Stopped manually :
+        # capturés au démarrage, car acquisition_manager.mode est déjà remis à
+        # None quand acquisition_stopped s'émet (cf. AcquisitionManager.stop_acquisition).
+        self._last_acquisition_mode = None
+        self._user_stop_requested = False
         self._stepper_return_targets_rel = {"x": None, "y": None, "z": None, "p": None}
         self._update_estimated_stack_size()
 
@@ -181,10 +220,8 @@ class MainWindow(QMainWindow):
         self.acquisition_manager.stepper_move_requested.connect(self.positioner_manager.move_from_scan)
         
         self.ui.save_widget.sigSaveClicked.connect(self.on_save_clicked)
-        self.ui.save_widget.sigSnapshotPng.connect(self.save_snapshot_png)
-        self.ui.save_widget.sigSnapshotClipboard.connect(self.copy_snapshot_to_clipboard)
-        self.ui.save_widget.sigPresetSave.connect(self.save_acquisition_preset)
-        self.ui.save_widget.sigPresetLoad.connect(self.load_acquisition_preset)
+        self.ui.scan_widget.sigPresetSave.connect(self.save_acquisition_preset)
+        self.ui.scan_widget.sigPresetLoad.connect(self.load_acquisition_preset)
         self.acquisition_manager.acquisition_frame.connect(self.on_rec_frame)
         self.acquisition_manager.samples_progress.connect(self.on_samples_progress)
         self.acquisition_manager.sample_status_updated.connect(self.on_sample_status_updated)
@@ -215,6 +252,13 @@ class MainWindow(QMainWindow):
         self.ui.stitch_widget.spin_tile_y.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.spin_overlap.valueChanged.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.cb_show_layout.toggled.connect(self.refresh_stitching_preview_grid)
+        self.ui.stitch_widget.combo_scan_order.currentTextChanged.connect(self.refresh_stitching_preview_grid)
+        self.ui.stitch_widget.combo_tile_order.currentTextChanged.connect(self.refresh_stitching_preview_grid)
+        # Reset seul (_reset_controls) efface la grille de tuiles et ne la
+        # redessine pas : il ne connaît pas les paramètres du ScanWidget. Sans
+        # ce second appel, la tuile placeholder unique remplace la vraie
+        # grille -- refresh_stitching_preview_grid() doit tourner APRÈS.
+        self.ui.stitch_widget.button_reset.clicked.connect(self.refresh_stitching_preview_grid)
         self.ui.stitch_widget.button_save.clicked.connect(self.on_stitch_save_clicked)
         # Le layout doit suivre les paramètres du ScanWidget (taille/pixels des
         # tuiles), sinon la grille reste basée sur d'anciennes valeurs et
@@ -223,15 +267,22 @@ class MainWindow(QMainWindow):
             lambda _params: self.refresh_stitching_preview_grid()
         )
 
-        # La compensation en profondeur doit suivre l'activation de Z, or
+        # La compensation en profondeur et l'aperçu de mosaïque (dont le choix
+        # d'ordre de scan Z/P) doivent suivre le choix d'axe, or
         # view_update_requested n'est émis que par le bouton "Update view" :
-        # sans ces connexions, choisir Z-Vcoil ne débloquait pas Activate.
+        # sans ces connexions, choisir Z-Vcoil ne débloquait pas Activate, et
+        # passer de Z à P (ou l'inverse) laissait le combo "Scan order" de
+        # l'onglet Stitching affiché sur les choix de l'ancien axe.
         for combo in self.ui.scan_widget.scan_dim_combos:
             combo.currentTextChanged.connect(
                 lambda _=None: self.refresh_depth_compensation()
             )
+            combo.currentTextChanged.connect(
+                lambda _=None: self.refresh_stitching_preview_grid()
+            )
         for edit in (*self.ui.scan_widget.size_edits, *self.ui.scan_widget.pixel_edits):
             edit.textChanged.connect(lambda _=None: self.refresh_depth_compensation())
+            edit.textChanged.connect(lambda _=None: self.refresh_stitching_preview_grid())
 
         self.ui.depth_comp_widget.set_laser_widget(self.ui.laser_widget)
         self.ui.depth_comp_widget.powerRampRequested.connect(
@@ -253,11 +304,6 @@ class MainWindow(QMainWindow):
         self._visualizer_flush_timer = QTimer(self)
         self._visualizer_flush_timer.setInterval(250)
         self._visualizer_flush_timer.timeout.connect(self._flush_visualizers)
-
-        # Rouvrir sur les réglages de la dernière session, une fois tous les
-        # panneaux construits et connectés. Ne bouge aucun matériel : seuls les
-        # champs sont réécrits.
-        self._restore_last_session_preset()
 
         self.init_ready = True  # Marque l'initialisation comme terminée
     
@@ -485,13 +531,17 @@ class MainWindow(QMainWindow):
         params = sw.get_brillouin_parameters() if hasattr(sw, "get_brillouin_parameters") else {}
         exposure_ms = float(sw.spin_brillouin_exposure_ms.value())
 
-        if QMessageBox.question(
-            self, "Acquire a Brillouin dark",
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Acquire a Brillouin dark")
+        confirm.setText(
             f"The shutter will be closed and {self.BRILLOUIN_DARK_FRAMES} images "
             f"averaged at {exposure_ms:.0f} ms.\n\n"
-            "A dark is only valid for this exposure and binning.",
-            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel,
-        ) != QMessageBox.Ok:
+            "A dark is only valid for this exposure and binning."
+        )
+        confirm.setIconPixmap(_orange_question_icon())
+        confirm.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        confirm.setDefaultButton(QMessageBox.Cancel)
+        if confirm.exec() != QMessageBox.Ok:
             return
 
         sw.label_brillouin_dark.setText("measuring…")
@@ -804,11 +854,13 @@ class MainWindow(QMainWindow):
             "Put an empty, evenly lit field in front of the camera, then continue."
         )
 
-        if QMessageBox.question(
-            self, f"Acquire a {kind} reference",
-            f"{instruction}\n\n{self.REFERENCE_FRAMES} frames will be averaged.",
-            QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel,
-        ) != QMessageBox.Ok:
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle(f"Acquire a {kind} reference")
+        confirm.setText(f"{instruction}\n\n{self.REFERENCE_FRAMES} frames will be averaged.")
+        confirm.setIconPixmap(_orange_question_icon())
+        confirm.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        confirm.setDefaultButton(QMessageBox.Cancel)
+        if confirm.exec() != QMessageBox.Ok:
             return
 
         try:
@@ -1057,9 +1109,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
-        # Avant de couper les logs : rouvrir demain sur les réglages d'aujourd'hui.
-        self._save_last_session_preset()
-
         # En dernier : tout ce qui précède mérite d'être dans le fichier.
         logger.info("[MainWindow] DeepLight closed")
         logger.close_files()
@@ -1074,7 +1123,11 @@ class MainWindow(QMainWindow):
         scan_params = self.ui.scan_widget.get_scan_parameters()
         scan_params = self._attach_detector_specs(scan_params)
         channels = list(scan_params.get("active_channels", [])) or ["default"]
-        scan_params["repetitions"] = 1
+        # Répétitions volontairement PAS forcées à 1 ici : StitchingManager en
+        # a besoin (scan_params["repetitions"]) pour savoir combien de fois
+        # répéter la mosaïque entière (T, cf. _build_config). Chaque
+        # acquisition individuelle d'une tuile est, elle, forcée à 1 rep plus
+        # loin (_launch_single_preview) -- c'est ce qui compte pour le backend.
 
         # XY obligatoires pour la mosaïque ; les axes stack (Z/P) éventuels sont
         # gérés en profondeur (pile de plans par tuile).
@@ -1213,7 +1266,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] depth compensation refresh failed: {e}")
 
-        # Adapte les choix d'ordre de balayage (Z vs P) à l'axe stack actif.
+        # Adapte les choix d'ordre de balayage (Z vs P vs T) à l'axe stack actif.
+        # T (répétitions) n'a de choix à proposer que si aucun axe spatial (Z/P)
+        # n'est déjà le stack actif : sinon T se superpose automatiquement, sans
+        # entrée de combo dédiée (cf. StitchingManager._build_config).
         try:
             rows = [r for r in scan_params.get("rows", []) if r.get("axis") != "None"]
             _AXIS_TO_POS = {"Z-Vcoil": "z", "Polarization": "p"}
@@ -1222,9 +1278,16 @@ class MainWindow(QMainWindow):
                 for r in rows
                 if str(r.get("axis", "")) in _AXIS_TO_POS
             ]
-            self.ui.stitch_widget.set_stack_axis(
-                stack_axes[0] if len(stack_axes) == 1 else None
-            )
+            reps = int(scan_params.get("repetitions", 1) or 1)
+
+            if len(stack_axes) == 1:
+                stack_axis = stack_axes[0]
+            elif not stack_axes and reps > 1:
+                stack_axis = "t"
+            else:
+                stack_axis = None
+
+            self.ui.stitch_widget.set_stack_axis(stack_axis)
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
@@ -1289,8 +1352,10 @@ class MainWindow(QMainWindow):
             speed_y_mm_s=speed("y", 3.8),
             n_planes=n_planes,
             plane_outer=plane_outer,
+            tile_order=str(mp.get("tile_order", "row")),
             stack_range_um=stack_range_um,
             stack_speed_mm_s=stack_speed,
+            n_reps=max(1, int(scan_params.get("repetitions", 1) or 1)),
         )
 
     @Slot()
@@ -1350,7 +1415,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_stitch_run_started(self):
         self.ui.stitch_widget.set_running(True)
-        self.ui.stitch_widget.set_status("Mosaic started...")
+        logger.notice("[Stitch] Mosaic started.")
         # Barre de progression globale : suit la mosaïque entière (nb de tuiles/
         # plans acquis), et non chaque image tuile par tuile.
         try:
@@ -1361,7 +1426,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_stitch_run_finished(self):
         self.ui.stitch_widget.set_running(False)
-        self.ui.stitch_widget.set_status("Mosaic finished.")
+        logger.notice("[Stitch] Mosaic finished.")
         try:
             self.ui.global_progress_widget.finish_task("Done")
         except Exception as e:
@@ -1669,36 +1734,6 @@ class MainWindow(QMainWindow):
             )
         else:
             self.statusBar().showMessage(f"Preset loaded: {os.path.basename(path)}", 4000)
-
-    def _restore_last_session_preset(self):
-        """Reopen on the settings the last session closed with.
-
-        Best effort and silent on failure: a missing or stale file means the
-        panels keep their defaults, which is what a first launch does anyway.
-        """
-        path = last_session_preset_path()
-        if not os.path.isfile(path):
-            return
-        try:
-            with open(path, encoding="utf-8") as fh:
-                doc = json.load(fh)
-            rejected = self.apply_acquisition_preset(doc)
-        except Exception as e:
-            logger.warning(f"[Preset] last session not restored: {e}")
-            return
-
-        logger.info("[Preset] settings restored from the last session")
-        if rejected:
-            logger.warning(f"[Preset] not restored: {', '.join(rejected)}")
-
-    def _save_last_session_preset(self):
-        path = last_session_preset_path()
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(self.acquisition_preset(), fh, indent=2, default=str)
-        except Exception as e:
-            logger.warning(f"[Preset] last session not saved: {e}")
 
     def _push_save_context(self):
         """Hand the save manager the optics and lasers of the moment.
@@ -2409,6 +2444,10 @@ class MainWindow(QMainWindow):
                 logger.info(
                     f"[ROI] {axis}: size {size_um:.2f} µm, relative offset {rel_off:.2f} µm"
                 )
+            # Même effet que de cliquer sur "Update" : le champ de vue est
+            # immédiatement recalculé, pour bien voir que la ROI a été prise
+            # en compte plutôt que de le découvrir à la prochaine image.
+            self.ui.scan_widget.apply_button.click()
         else:
             logger.warning("[ROI] the drawn region could not be applied.")
 
@@ -2448,6 +2487,18 @@ class MainWindow(QMainWindow):
     @Slot()
     def on_acquisition_started(self):
         """Handle the start of an acquisition/preview run."""
+        # Capturé maintenant : par le temps qu'acquisition_stopped s'émette,
+        # acquisition_manager.mode est déjà remis à None.
+        self._last_acquisition_mode = self.acquisition_manager.mode
+        # Une tuile de mosaïque tourne aussi en mode "acquisition" (cf.
+        # _start_stitch_preview_single) : sans cette exclusion, une notice
+        # "Started"/"Finished" apparaissait à CHAQUE tuile. "Mosaic started."/
+        # "Mosaic finished." (_on_stitch_run_started/_finished) couvrent déjà
+        # le run complet.
+        if self._last_acquisition_mode == "acquisition" and not self.stitching_manager.is_running():
+            filename = self.ui.save_widget.filename_line_edit.text().strip() or "(auto name)"
+            logger.notice(f"[Acquisition] Started: {filename}")
+
         # La surface est la première position Z rencontrée : on l'oublie entre
         # deux runs, sinon la rampe repartirait de la profondeur précédente.
         self._depth_surface_rel_um = None
@@ -2481,6 +2532,18 @@ class MainWindow(QMainWindow):
     @Slot()
     def on_acquisition_stopped(self):
         """Handle the end of the acquisition."""
+        # Voir on_acquisition_started : une tuile de mosaïque tourne aussi en
+        # mode "acquisition", et le run de stitching reste "running" jusqu'au
+        # retour à la base tout à la fin -- donc encore vrai pour la dernière
+        # tuile, pas seulement les tuiles intermédiaires.
+        if self._last_acquisition_mode == "acquisition" and not self.stitching_manager.is_running():
+            if self._user_stop_requested:
+                logger.notice("[Acquisition] Stopped manually.")
+            else:
+                logger.notice("[Acquisition] Finished.")
+        self._last_acquisition_mode = None
+        self._user_stop_requested = False
+
         # Ramener le laser à sa puissance de surface : le laisser à la valeur
         # du plan le plus profond exposerait l'échantillon suivant en surface.
         if self._depth_surface_rel_um is not None:
@@ -2738,8 +2801,8 @@ class MainWindow(QMainWindow):
             lbl = self.ui.im_status_labels.get(channel)
             if lbl is not None:
                 unit = self._channel_unit_label(channel)
-                if unit in ("V", "V·µs"):
-                    lbl.setText("x: -  y: -  V: -")
+                if unit == "V·µs":
+                    lbl.setText("x: -  y: -  V·µs: -")
                 elif unit == "counts":
                     lbl.setText("x: -  y: -  counts: -")
                 else:
@@ -2764,7 +2827,10 @@ class MainWindow(QMainWindow):
         if 0 <= x_px < img.shape[1] and 0 <= y_px < img.shape[0]:
             value = float(img[y_px, x_px])
 
-            if unit == "V":
+            if unit == "V·µs":
+                # Pixel = mean(V) x dwell (see Frame_Builder._reduce): not a
+                # voltage, so it is labelled for what it is rather than shown
+                # as a bare "value" that invites reading it as volts.
                 text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  {unit}: {value:.4f}"
             elif unit == "counts":
                 text = f"x: {x_um:7.2f} µm  y: {y_um:7.2f} µm  counts: {value:.0f}"
@@ -2823,11 +2889,6 @@ class MainWindow(QMainWindow):
         scan_parameters = self._attach_detector_specs(scan_parameters)
         channels = list(scan_parameters.get("active_channels", [])) or ["default"]
 
-        # sécurité: interdit P + rep>1
-        if "Polarization" in scan_parameters.get("active_axes", []) and int(scan_parameters.get("repetitions", 1)) != 1:
-            logger.error("ERROR: Polarization requires Repetitions = 1.")
-            return
-
         # check 2 axes minimum
         if len(scan_parameters.get("active_axes", [])) < 2:
             logger.error("ERROR: Need at least 2 active axes for acquisition.")
@@ -2872,7 +2933,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def stopButtonClicked(self):
         """Stop the running acquisition."""
-        
+        # Distingue une fin normale d'un arrêt manuel pour la notice de log
+        # (cf. on_acquisition_stopped) ; lu et remis à False là-bas.
+        self._user_stop_requested = True
+
         self.acquisition_manager.stop_acquisition()
 
         try:

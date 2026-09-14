@@ -8,7 +8,7 @@ import serial
 from threading import Lock
 from typing import Optional
 
-from PySide6.QtCore import QObject, Slot, QTimer
+from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer
 
 from ...config import CONFIG
 from .Field_Correction import average_frames
@@ -1035,7 +1035,6 @@ class _KinesisLoader:
         clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.DeviceManagerCLI.dll"))
         clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.GenericMotorCLI.dll"))
         clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.SolenoidCLI.dll"))
-        clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.DCServoCLI.dll"))
 
         from Thorlabs.MotionControl.DeviceManagerCLI import DeviceManagerCLI, DeviceConfiguration
         from Thorlabs.MotionControl.KCube.SolenoidCLI import KCubeSolenoid, SolenoidStatus
@@ -1045,19 +1044,27 @@ class _KinesisLoader:
         cls.KCubeSolenoid = KCubeSolenoid
         cls.SolenoidStatus = SolenoidStatus
 
-        try:
-            from Thorlabs.MotionControl.KCube.DCServoCLI import KCubeDCServo
-            cls.KCubeDCServo = KCubeDCServo
-        except Exception as e:
-            cls.KCubeDCServo = None
-            logger.warning(f"[Kinesis] KCubeDCServo unavailable: {e}")
-
-        try:
-            from Thorlabs.MotionControl.KCube.StepperMotorCLI import KCubeStepperMotor
-            cls.KCubeStepperMotor = KCubeStepperMotor
-        except Exception as e:
-            cls.KCubeStepperMotor = None
-            logger.warning(f"[Kinesis] KCubeStepperMotor unavailable: {e}")
+        # Only the rotator family actually configured (thorlabs.rotator_controller_kind)
+        # is loaded: attempting the other one is not "trying an optional
+        # feature", it is guaranteed to fail (its .dll reference is not even
+        # added below), so warning about it on every startup regardless of
+        # config was pure noise for anyone using the other kind.
+        if THORLABS_ROTATOR_CONTROLLER_KIND == "KCubeStepperMotor":
+            clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.StepperMotorCLI.dll"))
+            try:
+                from Thorlabs.MotionControl.KCube.StepperMotorCLI import KCubeStepperMotor
+                cls.KCubeStepperMotor = KCubeStepperMotor
+            except Exception as e:
+                cls.KCubeStepperMotor = None
+                logger.warning(f"[Kinesis] KCubeStepperMotor unavailable: {e}")
+        else:
+            clr.AddReference(os.path.join(dll_path, "Thorlabs.MotionControl.KCube.DCServoCLI.dll"))
+            try:
+                from Thorlabs.MotionControl.KCube.DCServoCLI import KCubeDCServo
+                cls.KCubeDCServo = KCubeDCServo
+            except Exception as e:
+                cls.KCubeDCServo = None
+                logger.warning(f"[Kinesis] KCubeDCServo unavailable: {e}")
 
         cls.DeviceManagerCLI.BuildDeviceList()
         cls._loaded = True
@@ -1239,6 +1246,17 @@ class _PIVoiceCoilController:
         if self.connected and self.device is not None:
             try:
                 self.device.STP()
+            except GCSError as e:
+                if e == 10:
+                    # "Controller was stopped by command": the controller's own
+                    # confirmation that STP interrupted a move in progress --
+                    # expected every time Stop is pressed while an axis is
+                    # moving, not a failure. Kept at debug (session log file
+                    # only) so it stops flooding the UI log; any other GCS
+                    # error here still surfaces as a warning.
+                    logger.debug(f"[PI] stop command (STP) on axis {self.axis}: {e}")
+                else:
+                    logger.warning(f"[PI] stop command (STP) failed on axis {self.axis}: {e}")
             except Exception as e:
                 logger.warning(f"[PI] stop command (STP) failed on axis {self.axis}: {e}")
 
@@ -2024,6 +2042,35 @@ class _XYStallError(RuntimeError):
         self.err_um = float(err_um)
 
 
+class _PolarizationScanMover(QObject):
+    """Runs a scan-driven Polarization move off the GUI thread.
+
+    The ELL14 only replies once the physical rotation is over (see
+    _ElliptecELL14Controller.move_to_angle_deg): the serial round-trip itself
+    cannot be made non-blocking, only moved off the thread that also has to
+    repaint the image. A scan repeats this once per plane, so on the GUI
+    thread it means a stutter at every polarization step.
+
+    Safe to run elsewhere: the galvo waveform already reserves a hold sized
+    to this move's expected duration before the next plane starts
+    (Scan_manager.reserve_settle, using the same fixed ELL14 speed) -- that
+    hold is what keeps acquisition timing correct, not which thread happens
+    to issue the move. Running it here only changes whether the GUI stays
+    responsive while it happens.
+    """
+
+    def __init__(self, manager: "RealHardwarePositionerManager"):
+        super().__init__()
+        self._manager = manager
+
+    @Slot(float, str)
+    def run(self, target_rel: float, reason: str):
+        try:
+            PositionerManager._handle_polarization_scan(self._manager, float(target_rel), str(reason))
+        except Exception as e:
+            logger.error(f"[RealHardwarePositioner] polarization scan move failed: {e}")
+
+
 class RealHardwarePositionerManager(PositionerManager):
     """
     Real V1 hardware positioner manager.
@@ -2040,6 +2087,9 @@ class RealHardwarePositionerManager(PositionerManager):
     # (pas de poll, pas de relecture avant un move) : la position en cache est
     # rafraîchie après chaque mouvement, au démarrage et sur set_zero.
     _ELLIPTEC_AXES = ("p", "p4")
+
+    #: Relayed to _PolarizationScanMover, which lives on its own thread.
+    _polarizationScanMoveRequested = Signal(float, str)
 
     def __init__(
         self,
@@ -2063,6 +2113,15 @@ class RealHardwarePositionerManager(PositionerManager):
         # True pendant un move XY bloquant (worker scan/spectro) :
         # le poll GUI ne touche alors pas au port série XY.
         self._xy_blocking_busy = False
+
+        # Thread dédié au mouvement de scan de la polarisation : le déplacement
+        # ELL14 y bloque au lieu de bloquer le thread GUI (cf.
+        # _PolarizationScanMover). Persistant, comme acquisition_thread.
+        self._polar_mover_thread = QThread()
+        self._polar_mover = _PolarizationScanMover(self)
+        self._polar_mover.moveToThread(self._polar_mover_thread)
+        self._polar_mover_thread.start()
+        self._polarizationScanMoveRequested.connect(self._polar_mover.run)
 
         # Initialize abs positions from hardware when possible
         self._refresh_from_hardware("x")
@@ -2590,6 +2649,16 @@ class RealHardwarePositionerManager(PositionerManager):
         self._move_abs(axis, target_abs=target_abs, speed=float(speed))
 
     @Slot(str, float, float, float, str)
+    def _handle_polarization_scan(self, target_rel: float, reason: str):
+        """Hand the actual move to _PolarizationScanMover's thread and return.
+
+        Overrides PositionerManager's synchronous version, which is still
+        used as-is by the mock backend (instant there, nothing to offload).
+        Real hardware queues the request instead of blocking here: see
+        _PolarizationScanMover for why that is safe.
+        """
+        self._polarizationScanMoveRequested.emit(float(target_rel), str(reason))
+
     def move_from_scan(
         self,
         axis_name: str,
@@ -2789,6 +2858,12 @@ class RealHardwarePositionerManager(PositionerManager):
             logger.debug(f"[Positioner] stopping the poll timer failed: {e}")
 
         try:
+            self._polar_mover_thread.quit()
+            self._polar_mover_thread.wait(3000)
+        except Exception as e:
+            logger.debug(f"[Positioner] stopping the polarization mover thread failed: {e}")
+
+        try:
             if self._xy is not None:
                 self._xy.close()
         except Exception as e:
@@ -2924,9 +2999,9 @@ class HardwareManager(QObject):
             scaling_x = SCIENTIFICA_STAGE_DEFAULT_SCALING_X
             scaling_y = SCIENTIFICA_STAGE_DEFAULT_SCALING_Y
             try:
-                if self._settings_manager is not None:
-                    sx_settings = self._settings_manager.get_axis_settings("X-Stage") or {}
-                    sy_settings = self._settings_manager.get_axis_settings("Y-Stage") or {}
+                if self.settings_manager is not None:
+                    sx_settings = self.settings_manager.get_axis_settings("X-Stage") or {}
+                    sy_settings = self.settings_manager.get_axis_settings("Y-Stage") or {}
                     scaling_x = float(sx_settings.get("ums_scaling", scaling_x))
                     scaling_y = float(sy_settings.get("ums_scaling", scaling_y))
             except Exception as e:

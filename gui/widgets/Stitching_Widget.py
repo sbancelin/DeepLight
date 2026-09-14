@@ -10,6 +10,8 @@ from PySide6.QtGui import QTransform, QPen, QColor, QPalette
 import numpy as np
 import pyqtgraph as pg
 
+from .Log_Widget import logger
+
 
 _BUTTON_STYLE_TOGGLE = """
 QPushButton {
@@ -188,10 +190,16 @@ class StitchingWidget(QWidget):
         self.button_stop.setFixedWidth(52)
         controls_layout.addWidget(self.button_stop)
 
-        self.label_status = QLabel("Idle")
-        self.label_status.setStyleSheet(_STATUS_VALUE_STYLE)
-        self.label_status.setMinimumWidth(42)
-        controls_layout.addWidget(self.label_status)
+        # Temps estimé TOTAL du run (calculé côté MainWindow : acquisitions +
+        # trajets XY + moves stack + latences + retour à la base). Affiché ici
+        # plutôt qu'une case de statut : celle-ci était trop étroite pour un
+        # message complet et illisible en pratique -- le texte de statut va
+        # maintenant dans le log (voir set_status()).
+        self._total_seconds = 0.0
+        self.label_tiles_est = QLabel()
+        self.label_tiles_est.setStyleSheet(_STATUS_VALUE_STYLE)
+        self.label_tiles_est.setMinimumWidth(72)
+        controls_layout.addWidget(self.label_tiles_est)
 
         self.button_reset = QPushButton("Reset")
         self.button_reset.setStyleSheet(_BUTTON_STYLE)
@@ -259,9 +267,9 @@ class StitchingWidget(QWidget):
 
         self.combo_scan_order = QComboBox()
         self.combo_scan_order.addItems(
-            ["XYZ Tiles", "XY Tiles Z", "XYP Tiles", "XY Tiles P"]
+            ["XY Tiles Z", "XYZ Tiles", "XY Tiles P", "XYP Tiles"]
         )
-        self.combo_scan_order.setCurrentText("XYZ Tiles")
+        self.combo_scan_order.setCurrentText("XY Tiles Z")
         self.combo_scan_order.setToolTip(
             "XYZ Tiles: for each XY tile, the full Z stack, then the next tile.\n"
             "XY Tiles Z: the full XY mosaic for each Z plane, then the next Z plane\n"
@@ -275,12 +283,21 @@ class StitchingWidget(QWidget):
         self.combo_scan_order.setMinimumWidth(96)
         controls_layout.addWidget(self.combo_scan_order)
 
-        # Temps estimé TOTAL du run (calculé côté MainWindow : acquisitions +
-        # trajets XY + moves stack + latences + retour à la base).
-        self._total_seconds = 0.0
-        self.label_tiles_est = QLabel()
-        self.label_tiles_est.setStyleSheet(_STATUS_VALUE_STYLE)
-        controls_layout.addWidget(self.label_tiles_est)
+        tile_order_label = QLabel("Tile order")
+        controls_layout.addWidget(tile_order_label)
+
+        self.combo_tile_order = QComboBox()
+        self.combo_tile_order.addItems(["Row", "Column"])
+        self.combo_tile_order.setCurrentText("Row")
+        self.combo_tile_order.setToolTip(
+            "Order tiles are visited in, within the XY plane. Always a\n"
+            "back-and-forth sweep -- no flyback move needed between passes.\n"
+            "Row: sweeps left-right, alternating direction every row (default).\n"
+            "Column: sweeps top-bottom, alternating direction every column."
+        )
+        self.combo_tile_order.setStyleSheet(self.combo_channel.styleSheet())
+        self.combo_tile_order.setMinimumWidth(90)
+        controls_layout.addWidget(self.combo_tile_order)
 
         controls_layout.addStretch(1)
 
@@ -389,21 +406,38 @@ class StitchingWidget(QWidget):
         "XYP Tiles": "p_per_tile",
         "XY Tiles P": "p_per_plane",
         "XY Tiles": "z_per_tile",   # pas d'axe stack : ordre indifférent
+        # T (répétitions) est toujours la dimension la plus externe -- il n'y
+        # a pas de variante "par tuile" à proposer, et la valeur elle-même
+        # n'est pas interprétée par _build_config (T vient de
+        # scan_params["repetitions"], pas de ce combo) : un nom qui ne
+        # matche jamais "z_"/"p_" suffit à ne rien déclencher côté Z/P.
+        "XY Tiles T": "t_per_plane",
+    }
+
+    _TILE_ORDER_MAP = {
+        "Row": "row",
+        "Column": "column",
     }
 
     def set_stack_axis(self, axis):
         """
         Adapt the choices of the 'Scan order' combo to the stack axis actually
         active in the Scan tab.
-            axis == 'z'  -> XYZ Tiles / XY Tiles Z
-            axis == 'p'  -> XYP Tiles / XY Tiles P
+            axis == 'z'  -> XY Tiles Z / XYZ Tiles
+            axis == 'p'  -> XY Tiles P / XYP Tiles
+            axis == 't'  -> XY Tiles T only (repetitions: always outermost,
+                             no "per tile" variant makes physical sense)
             otherwise (no stack axis, or several) -> XY Tiles (per tile)
-        This avoids offering a P order when only Z is being swept.
+        This avoids offering a P order when only Z is being swept. The "per
+        plane" variant is listed first: a fresh mosaic (nothing selected yet,
+        or switching Z <-> P) defaults to it rather than to "stack per tile".
         """
         if axis == "z":
-            items = ["XYZ Tiles", "XY Tiles Z"]
+            items = ["XY Tiles Z", "XYZ Tiles"]
         elif axis == "p":
-            items = ["XYP Tiles", "XY Tiles P"]
+            items = ["XY Tiles P", "XYP Tiles"]
+        elif axis == "t":
+            items = ["XY Tiles T"]
         else:
             items = ["XY Tiles"]
 
@@ -429,10 +463,24 @@ class StitchingWidget(QWidget):
             "scan_order": self._SCAN_ORDER_MAP.get(
                 self.combo_scan_order.currentText(), "z_per_tile"
             ),
+            "tile_order": self._TILE_ORDER_MAP.get(
+                self.combo_tile_order.currentText(), "row"
+            ),
         }
 
     def set_status(self, text):
-        self.label_status.setText(str(text))
+        """Report a status/progress message to the log, not a dedicated label.
+
+        The toolbar had no room for a readable status message -- it sat in a
+        42px-wide box between two buttons, so anything longer than a couple
+        words was clipped and never fully readable. The log panel isn't.
+        """
+        text = str(text)
+        lowered = text.lower()
+        if lowered.startswith("error") or "failed" in lowered or lowered.startswith("cannot"):
+            logger.warning(f"[Stitching] {text}")
+        else:
+            logger.info(f"[Stitching] {text}")
 
     def set_estimated_time(self, total_seconds: float):
         """Estimated total duration of the mosaic run (computed upstream)."""
@@ -465,6 +513,7 @@ class StitchingWidget(QWidget):
         self.combo_channel.setEnabled(not running)
         self.cb_show_layout.setEnabled(not running)
         self.combo_scan_order.setEnabled(not running)
+        self.combo_tile_order.setEnabled(not running)
 
         self.cb_autoscale.setEnabled(not running)
         self.cb_lock.setEnabled(not running)
@@ -621,7 +670,7 @@ class StitchingWidget(QWidget):
         self.spin_tile_y.setValue(self._default_tile_y)
         self.spin_overlap.setValue(self._default_overlap)
         self.cb_show_layout.setChecked(self._default_show_layout)
-        self.label_status.setText("Idle")
+        self.set_status("Idle")
         self.button_acquire.setChecked(False)
         self._clear_mosaic_preview()
         self._update_layout_placeholder()
@@ -769,7 +818,11 @@ class StitchingWidget(QWidget):
 
         pen = QPen(QColor("#9CFF9C"))
         pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setWidth(1)
+        # Cosmetic: width is in device pixels regardless of the µm-scale view
+        # transform, instead of scene units (µm) scaling up with zoom. 2 px
+        # reads clearly without being heavy.
+        pen.setWidth(2)
+        pen.setCosmetic(True)
 
         rect = QGraphicsRectItem(
             QRectF(0.0, 0.0, self._default_width_um, self._default_height_um)
@@ -806,7 +859,11 @@ class StitchingWidget(QWidget):
 
         pen = QPen(QColor("#9CFF9C"))
         pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setWidth(1)
+        # Cosmetic: width is in device pixels regardless of the µm-scale view
+        # transform, instead of scene units (µm) scaling up with zoom. 2 px
+        # reads clearly without being heavy.
+        pen.setWidth(2)
+        pen.setCosmetic(True)
 
         view = self.image_view.getView()
 

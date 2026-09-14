@@ -36,6 +36,10 @@ class MosaicRunConfig:
     tol_x_um: float
     tol_y_um: float
 
+    # Ordre de visite des tuiles dans le plan XY : "row" (défaut) ou "column",
+    # toujours en aller-retour (cf. _build_tile_sequence).
+    tile_order: str = "row"
+
     # Ordre de balayage de l'axe stack (Z/P) :
     #   plane_outer=False -> "Z per tile" : pile complète par tuile (défaut)
     #   plane_outer=True  -> "Z per plane" : mosaïque XY complète par plan
@@ -46,6 +50,12 @@ class MosaicRunConfig:
     stack_speed_mm_s: float = 1.0
     stack_tol_um: float = 0.1
     start_stack_rel_um: float = 0.0
+
+    # Répétitions (T) : toujours la dimension la plus externe, sans choix de
+    # "par tuile" -- on répète l'intégralité de la séquence (tuiles + ordre
+    # Z/P déjà choisi) n_reps fois, chacune dans son propre bloc de plans.
+    n_reps: int = 1
+    delay_between_rep_s: float = 0.0
 
 
 class StitchingManager(QObject):
@@ -88,11 +98,14 @@ class StitchingManager(QObject):
         self._mosaic = None
         self._reg_margin_px = 0
         self._tile_sequence: list[tuple[int, int]] = []
-        # Séquence unifiée d'étapes : (plane_index_or_None, ix, iy).
-        # plane_index None -> mode Z per tile (pile complète collée d'un coup).
+        # Séquence unifiée d'étapes : (plane_local_or_None, plane_offset_global, ix, iy).
+        # plane_local None -> mode Z/P per tile (pile complète collée d'un coup).
+        # plane_offset_global inclut le décalage de bloc dû à T (répétitions).
         self._step_sequence: list[tuple] = []
         self._step_index = -1
-        self._current_plane = None            # plan stack actuellement positionné
+        self._current_plane = None            # plan stack (local) actuellement positionné
+        self._current_rep = None              # répétition (T) du bloc en cours
+        self._rep_delay_done = False          # délai entre reps déjà purgé pour la transition en cours
         self._pending_xy_after_stack = None   # (x, y) à atteindre après le move stack
         self._motion_phase = None             # "stack" | "xy" | "home"
 
@@ -152,10 +165,10 @@ class StitchingManager(QObject):
         )
 
         try:
-            # Mosaïque 3D : un plan par index d'axe stack (Z/P). n_planes == 1
-            # -> mosaïque 2D classique. Le poids reste 2D (géométrie identique
-            # pour tous les plans).
-            self._mosaic = np.zeros((cfg.n_planes, mosaic_h, mosaic_w), dtype=np.float32)
+            # Mosaïque 3D : un plan par (répétition, index d'axe stack Z/P).
+            # n_planes * n_reps == 1 -> mosaïque 2D classique. Le poids reste
+            # 2D (géométrie identique pour tous les plans).
+            self._mosaic = np.zeros((cfg.n_planes * cfg.n_reps, mosaic_h, mosaic_w), dtype=np.float32)
         except Exception as e:
             self._running = False
             self.run_failed.emit(f"Unable to allocate mosaic image: {e}")
@@ -163,21 +176,39 @@ class StitchingManager(QObject):
 
         self._mosaic_weight = np.zeros((mosaic_h, mosaic_w), dtype=np.float32)
 
-        self._tile_sequence = self._build_serpentine_sequence(cfg.tiles_x, cfg.tiles_y)
+        self._tile_sequence = self._build_tile_sequence(cfg.tile_order, cfg.tiles_x, cfg.tiles_y)
 
         if cfg.plane_outer:
             # Plans en externe, tuiles en interne : mosaïque XY complète par plan.
-            self._step_sequence = [
+            base_steps = [
                 (p, ix, iy)
                 for p in range(cfg.n_planes)
                 for (ix, iy) in self._tile_sequence
             ]
         else:
-            # Z per tile : pile complète collée par tuile (plane_index None).
-            self._step_sequence = [(None, ix, iy) for (ix, iy) in self._tile_sequence]
+            # Z/P per tile : pile complète collée par tuile (plan local None).
+            base_steps = [(None, ix, iy) for (ix, iy) in self._tile_sequence]
+
+        # T (répétitions) : dimension la plus externe -- toute la séquence
+        # ci-dessus se répète n_reps fois, chaque passage dans son propre bloc
+        # de plans de la mosaïque. Le plan LOCAL (pour savoir où déplacer l'axe
+        # Z/P, et détecter un changement de plan) reste indépendant de T ; seul
+        # le décalage GLOBAL dans la mosaïque avance d'un bloc entier par
+        # répétition. Se réduit exactement au cas d'avant quand n_reps == 1.
+        self._step_sequence = [
+            (
+                local_plane,
+                (t * cfg.n_planes + local_plane) if local_plane is not None else t * cfg.n_planes,
+                ix, iy,
+            )
+            for t in range(cfg.n_reps)
+            for (local_plane, ix, iy) in base_steps
+        ]
 
         self._step_index = -1
         self._current_plane = None
+        self._current_rep = None
+        self._rep_delay_done = False
 
         order_txt = f"{cfg.stack_axis_display} per plane" if cfg.plane_outer else "stack per tile"
         self.status_changed.emit(
@@ -210,6 +241,7 @@ class StitchingManager(QObject):
         tiles_x = max(1, int(mosaic_params.get("tiles_x", 1)))
         tiles_y = max(1, int(mosaic_params.get("tiles_y", 1)))
         overlap_px = max(0, int(mosaic_params.get("overlap_px", 0)))
+        tile_order = str(mosaic_params.get("tile_order", "row"))
         channel = str(mosaic_params.get("channel", "")).strip()
         if not channel:
             raise ValueError("No channel selected for stitching.")
@@ -303,6 +335,13 @@ class StitchingManager(QObject):
                     except Exception:
                         plane_outer = False
 
+        # Répétitions (T) : dimension la plus externe, toujours -- pas de
+        # variante "par tuile" à choisir. La limite à 4 dimensions du
+        # ScanWidget (X, Y, Z, P, Rep) garantit déjà qu'on n'arrive jamais ici
+        # avec Z ET P actifs en même temps que des répétitions.
+        n_reps = max(1, int(scan_params.get("repetitions", 1) or 1))
+        delay_between_rep_s = max(0.0, float(scan_params.get("delay_between_rep_s", 0.0) or 0.0))
+
         config = MosaicRunConfig(
             tiles_x=tiles_x,
             tiles_y=tiles_y,
@@ -321,6 +360,7 @@ class StitchingManager(QObject):
             stage_speed_y_mm_s=speed_y,
             tol_x_um=tol_x,
             tol_y_um=tol_y,
+            tile_order=tile_order,
             plane_outer=plane_outer,
             stack_axis=stack_axis,
             stack_axis_display=stack_axis_display,
@@ -328,6 +368,8 @@ class StitchingManager(QObject):
             stack_speed_mm_s=stack_speed,
             stack_tol_um=stack_tol,
             start_stack_rel_um=start_stack_rel,
+            n_reps=n_reps,
+            delay_between_rep_s=delay_between_rep_s,
         )
 
         # Ici plutôt que dans la fenêtre : la géométrie appartient à ce manager,
@@ -458,13 +500,31 @@ class StitchingManager(QObject):
         p["rows"] = [r for r in p.get("rows", []) if r.get("axis") != stack_display]
         return p
 
-    def _build_serpentine_sequence(self, tiles_x: int, tiles_y: int) -> list[tuple[int, int]]:
+    @staticmethod
+    def _build_tile_sequence(tile_order: str, tiles_x: int, tiles_y: int) -> list[tuple[int, int]]:
+        """Order tiles are visited in, before overlap/registration.
+
+        Always a back-and-forth sweep (a straight raster needs a flyback move
+        to the far side at the start of every pass -- wasted travel for no
+        benefit). "row": sweeps left-right, alternating direction every row.
+        "column": sweeps top-bottom, alternating direction every column.
+        Shared with estimate_duration_seconds() so the time estimate always
+        matches what a run actually does.
+        """
+        order = str(tile_order or "row")
+
+        if order == "column":
+            seq = []
+            for ix in range(tiles_x):
+                ys = range(tiles_y) if ix % 2 == 0 else range(tiles_y - 1, -1, -1)
+                for iy in ys:
+                    seq.append((ix, iy))
+            return seq
+
+        # "row" (default): row-major, alternating direction every row.
         seq = []
         for iy in range(tiles_y):
-            if iy % 2 == 0:
-                xs = range(tiles_x)
-            else:
-                xs = range(tiles_x - 1, -1, -1)
+            xs = range(tiles_x) if iy % 2 == 0 else range(tiles_x - 1, -1, -1)
             for ix in xs:
                 seq.append((ix, iy))
         return seq
@@ -489,25 +549,33 @@ class StitchingManager(QObject):
         plane_outer: bool = False,
         stack_range_um: float = 0.0,
         stack_speed_mm_s: float = 1.0,
+        tile_order: str = "row",
+        n_reps: int = 1,
     ) -> float:
         """
         Estimated total duration of a mosaic run.
 
         On top of the tile acquisition time, it accounts for:
-        - the XY travel of the stage along the serpentine (distance / speed);
+        - the XY travel of the stage along the tile path (distance / speed);
         - in 'per plane' mode: the stack-axis (Z/P) moves and the XY resets
           between planes;
         - a fixed latency per move and per acquisition (see the constants);
-        - the return to the starting position.
+        - T (n_reps): always the outermost dimension -- the whole block above
+          (XY sweep, plus the Z/P stack if any) repeats n_reps times, with an
+          XY flyback (and, in 'per plane' mode, a stack-axis reset) between
+          two repetitions, same cost as the one already paid once between
+          two Z/P planes;
+        - the return to the starting position, paid once at the very end.
 
         `per_acq_full_s` = duration of ONE complete acquisition (Z/P stack
         included), as displayed by the ScanWidget. The total acquisition time is
-        n_tiles × per_acq_full_s in both sweep orders (in 'per plane' each
-        acquisition covers a single plane, but there are n_planes× more of them).
+        n_acq × per_acq_full_s (in 'per plane' each acquisition covers a single
+        plane, but there are n_planes× more of them), repeated n_reps times.
         """
         tiles_x = max(1, int(tiles_x))
         tiles_y = max(1, int(tiles_y))
         n_planes = max(1, int(n_planes))
+        n_reps = max(1, int(n_reps))
         overlap = max(0, int(overlap_px))
         tw = max(1, int(tile_w_px))
         th = max(1, int(tile_h_px))
@@ -526,19 +594,13 @@ class StitchingManager(QObject):
             # move_xy_to_rel déplace X et Y simultanément -> max des deux.
             return max(dx / vx, dy / vy) + _MOVE_OVERHEAD_S
 
-        # serpentin (mêmes indices que _build_serpentine_sequence)
-        seq = []
-        for iy in range(tiles_y):
-            xs = range(tiles_x) if iy % 2 == 0 else range(tiles_x - 1, -1, -1)
-            for ix in xs:
-                seq.append((ix, iy))
+        seq = StitchingManager._build_tile_sequence(tile_order, tiles_x, tiles_y)
 
         pass_time = sum(
             xy_move_time(seq[k][0], seq[k][1], seq[k + 1][0], seq[k + 1][1])
             for k in range(len(seq) - 1)
         )
-
-        acq_time = n_tiles * max(0.0, float(per_acq_full_s))
+        flyback_time = xy_move_time(seq[-1][0], seq[-1][1], seq[0][0], seq[0][1])
 
         if plane_outer and n_planes > 1:
             n_acq = n_tiles * n_planes
@@ -546,19 +608,22 @@ class StitchingManager(QObject):
             stack_step = abs(float(stack_range_um)) / max(1, n_planes - 1)
             # 1 move stack initial + (n_planes-1) inter-plans
             stack_time = n_planes * (stack_step / vs + _MOVE_OVERHEAD_S)
-            reset_time = (n_planes - 1) * xy_move_time(
-                seq[-1][0], seq[-1][1], seq[0][0], seq[0][1]
-            )
-            xy_time = n_planes * pass_time + reset_time + stack_time
-            return_time = (
-                abs(float(stack_range_um)) / vs + _MOVE_OVERHEAD_S
-            ) + xy_move_time(seq[0][0], seq[0][1], 0, 0)
+            reset_time = (n_planes - 1) * flyback_time
+            stack_reset_time = abs(float(stack_range_um)) / vs + _MOVE_OVERHEAD_S
+            rep_xy_time = n_planes * pass_time + reset_time + stack_time
+            # Entre deux répétitions : retour XY au premier plan + axe stack
+            # ramené sur sa première position, comme pour un plan normal.
+            between_reps_time = flyback_time + stack_reset_time
+            return_time = stack_reset_time + xy_move_time(seq[0][0], seq[0][1], 0, 0)
         else:
             n_acq = n_tiles
-            xy_time = pass_time
+            rep_xy_time = pass_time
+            between_reps_time = flyback_time
             return_time = xy_move_time(seq[-1][0], seq[-1][1], 0, 0)
 
-        overhead = n_acq * _ACQ_OVERHEAD_S
+        acq_time = n_reps * n_acq * max(0.0, float(per_acq_full_s))
+        xy_time = n_reps * rep_xy_time + max(0, n_reps - 1) * between_reps_time
+        overhead = n_reps * n_acq * _ACQ_OVERHEAD_S
         return acq_time + xy_time + return_time + overhead
 
     # ------------------------------------------------------------------
@@ -581,16 +646,46 @@ class StitchingManager(QObject):
             self._begin_return_home()
             return
 
-        plane, ix, iy = self._step_sequence[self._step_index]
+        plane, global_offset, ix, iy = self._step_sequence[self._step_index]
+        # Répétition (T) courante, dérivée du décalage global : T est toujours
+        # la dimension la plus externe, donc un bloc entier de n_planes plans
+        # par répétition (cf. start_run).
+        rep = global_offset // self._cfg.n_planes
+
+        # Délai entre répétitions (le même champ que le scan classique) :
+        # purgé une seule fois par transition, avant de traiter quoi que ce
+        # soit d'autre pour cette étape -- pas au tout premier bloc (rep 0).
+        # Le pas courant est "rendu" (step_index décrémenté) et retraité
+        # après le délai, pour que la détection normale de changement de plan
+        # / de répétition (plus bas) s'applique alors normalement.
+        is_new_rep = self._current_rep is not None and rep != self._current_rep
+        if is_new_rep and not self._rep_delay_done and self._cfg.delay_between_rep_s > 0:
+            self._rep_delay_done = True
+            self.status_changed.emit(
+                f"Repetition {rep + 1}/{self._cfg.n_reps} - waiting "
+                f"{self._cfg.delay_between_rep_s:.1f} s..."
+            )
+            self._step_index -= 1
+            QTimer.singleShot(
+                int(round(self._cfg.delay_between_rep_s * 1000)),
+                self._advance_to_next_step,
+            )
+            return
+        self._rep_delay_done = False
+
         self.run_progress.emit(self._step_index, total)
 
         x_target = self._cfg.start_x_rel_um + ix * self._cfg.step_x_um
         y_target = self._cfg.start_y_rel_um + iy * self._cfg.step_y_um
 
-        # Mode Z per plane : quand on change de plan, on déplace d'abord l'axe
-        # stack (une seule fois pour tout le balayage XY du plan), puis les XY.
+        # Mode Z/P per plane : quand on change de plan, on déplace d'abord
+        # l'axe stack (une seule fois pour tout le balayage XY du plan), puis
+        # les XY. Une nouvelle répétition (T) revient au premier plan local,
+        # ce qui est déjà une transition détectée ici -- rien de spécial à y
+        # ajouter pour ce cas.
         if plane is not None and plane != self._current_plane:
             self._current_plane = plane
+            self._current_rep = rep
             # Nouveau plan = mosaïque XY repartant de zéro : on réinitialise le
             # poids 2D partagé (sinon le fondu du plan suivant est corrompu par
             # le poids accumulé du plan précédent).
@@ -604,9 +699,18 @@ class StitchingManager(QObject):
             self._move_stack_to(stack_target)
             return
 
-        self.status_changed.emit(
-            f"Step {self._step_index + 1}/{total} - move to X={x_target:.2f} µm, Y={y_target:.2f} µm"
-        )
+        # Mode Z/P per tile (plane local toujours None) : T reste la seule
+        # chose qui avance d'un bloc à l'autre, donc c'est le seul signal
+        # possible pour réinitialiser le poids -- pas de move stack pour
+        # autant, une répétition ne correspond à aucune position physique.
+        if plane is None and rep != self._current_rep:
+            self._current_rep = rep
+            self._mosaic_weight.fill(0.0)
+
+        status = f"Step {self._step_index + 1}/{total} - move to X={x_target:.2f} µm, Y={y_target:.2f} µm"
+        if self._cfg.n_reps > 1:
+            status += f" (rep {rep + 1}/{self._cfg.n_reps})"
+        self.status_changed.emit(status)
         self._move_to(x_target, y_target)
 
     def _move_to(self, x_rel_um: float, y_rel_um: float):
@@ -767,10 +871,9 @@ class StitchingManager(QObject):
                 return
             stack = np.asarray(img, dtype=np.float32)[None, ...]
 
-        # Z per tile -> plane None -> pile complète collée à partir du plan 0.
-        # Z per plane -> plane = index du plan courant -> collage sur ce plan.
-        plane, _ix, _iy = self._step_sequence[self._step_index]
-        plane_offset = 0 if plane is None else int(plane)
+        # Z/P per tile -> collage à partir du bloc de la répétition courante.
+        # Z/P per plane -> collage sur ce plan précis (déjà décalé par T).
+        _plane, plane_offset, _ix, _iy = self._step_sequence[self._step_index]
 
         try:
             self._paste_tile(stack, plane_offset=plane_offset)
@@ -893,7 +996,7 @@ class StitchingManager(QObject):
             )
 
         margin = int(getattr(self, "_reg_margin_px", 0) or 0)
-        _plane, ix, iy = self._step_sequence[self._step_index]
+        _plane, _plane_offset, ix, iy = self._step_sequence[self._step_index]
         x0 = margin + ix * (self._cfg.tile_width_px - self._cfg.overlap_px)
         y0 = margin + iy * (self._cfg.tile_height_px - self._cfg.overlap_px)
 

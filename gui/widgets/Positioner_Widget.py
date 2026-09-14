@@ -327,6 +327,74 @@ def setup_positioner_settings_dialog(dialog):
 
     dialog.accepted.connect(on_dialog_accepted)
 
+    def _save_values():
+        """Apply the fields (like OK) and remember them for next launch."""
+        on_dialog_accepted()
+        if positioner_widget.axis_settings_manager is not None:
+            positioner_widget.axis_settings_manager.save_axis_settings()
+            logger.info("[Positioner] axis settings saved for next launch")
+
+    def _reset_origin():
+        """Discard customisation and go back to the built-in defaults.
+
+        Writes the defaults into the open dialog's fields, then runs the
+        normal accept logic on them -- validation, the settings manager and
+        the physical push to the positioner all follow the same path OK
+        uses, instead of a second copy of it. Persisted too, so the reset is
+        a genuine undo of an earlier mistaken Save.
+        """
+        if positioner_widget.axis_settings_manager is None:
+            return
+
+        for axis_key, _axis_label, shared_axis_name, _pos_unit, _vel_unit, has_ums, has_backlash in axes:
+            defaults = STEPPER_AXIS_DEFAULTS.get(shared_axis_name, {})
+
+            min_edit = dialog.findChild(QLineEdit, f"min_position_edit_{axis_key}")
+            max_edit = dialog.findChild(QLineEdit, f"max_position_edit_{axis_key}")
+            vel_edit = dialog.findChild(QLineEdit, f"velocity_edit_{axis_key}")
+            if min_edit is not None:
+                min_edit.setText(str(defaults.get("min_um", positioner_widget.axis_limits[axis_key]["min"])))
+            if max_edit is not None:
+                max_edit.setText(str(defaults.get("max_um", positioner_widget.axis_limits[axis_key]["max"])))
+            # Lames ELL14 (p/p4) : vitesse fixe, le champ est déjà en lecture
+            # seule -- pas de default à y remettre.
+            if vel_edit is not None and axis_key not in ("p", "p4"):
+                vel_edit.setText(str(defaults.get("vel_max", positioner_widget.axis_velocity_limits[axis_key]["max"])))
+
+            if has_backlash:
+                backlash_edit_w = dialog.findChild(QLineEdit, f"backlash_edit_{axis_key}")
+                if backlash_edit_w is not None:
+                    backlash_edit_w.setText(str(defaults.get("backlash_um", 1.2)))
+                backlash_fwd_edit_w = dialog.findChild(QLineEdit, f"backlash_fwd_edit_{axis_key}")
+                if backlash_fwd_edit_w is not None:
+                    backlash_fwd_edit_w.setText(str(defaults.get("backlash_forward_um", 0.0)))
+            else:
+                tol_edit = dialog.findChild(QLineEdit, f"tolerance_edit_{axis_key}")
+                if tol_edit is not None:
+                    tol_edit.setText(str(defaults.get("tolerance", 0.1)))
+
+            if axis_key == "p":
+                offset_edit_w = dialog.findChild(QLineEdit, f"offset_edit_{axis_key}")
+                if offset_edit_w is not None:
+                    offset_edit_w.setText(str(defaults.get("offset_deg", 0.0)))
+
+            if axis_key == "p4":
+                for key in ("linear_deg", "cd_deg", "cg_deg"):
+                    e = dialog.findChild(QLineEdit, f"{key}_edit_{axis_key}")
+                    if e is not None:
+                        e.setText(str(defaults.get(key, 0.0)))
+
+            if has_ums:
+                ums_edit_w = dialog.findChild(QLineEdit, f"ums_scaling_edit_{axis_key}")
+                if ums_edit_w is not None:
+                    ums_edit_w.setText(str(defaults.get("ums_scaling", 1.0)))
+
+        on_dialog_accepted()
+        positioner_widget.axis_settings_manager.save_axis_settings()
+        logger.info("[Positioner] axis settings reset to built-in defaults")
+
+    dialog.set_persistence_callbacks(_save_values, _reset_origin)
+
 class PositionerWidget(QWidget):
     """Widget holding the positioner controls."""
     stepperPositionForVisualizer = Signal(str, float)  # axis label UI, relative position

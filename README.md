@@ -109,7 +109,7 @@ Qt, so `-platform` and friends still work.
 | `F1` / `F2` | pull the black / white point onto the image extremes |
 | `Ctrl+R` / `Ctrl+Return` | draw a zoom ROI / apply it as the next field of view |
 | `F9` / `F10` | fold the left / right panel |
-| `Ctrl+P` / `Ctrl+Shift+C` | snapshot to PNG / to the clipboard |
+| `Ctrl+S` / `Ctrl+E` | snapshot to PNG (in Folder) / to the clipboard |
 | `Ctrl+Q` | toggle the shutter |
 
 

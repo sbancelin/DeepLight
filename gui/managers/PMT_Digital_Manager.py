@@ -96,6 +96,13 @@ class PMTDigitalManager(QObject):
         self._frame_samples_read = 0
         self._channel_runtime: dict[str, _DigitalChannelRuntime] = {}
 
+        # The start-trigger routing either works or it doesn't -- it depends
+        # on the counter hardware, not on anything that changes frame to
+        # frame. Warning about it on every single frame (many times a second
+        # in continuous preview) buries whatever else is in the log; one
+        # warning per session says it exactly as often as it is new information.
+        self._start_trigger_warned = False
+
     def _log(self, msg: str):
         logger.debug(f"[PMTDigitalManager] {msg}")
 
@@ -278,11 +285,19 @@ class PMTDigitalManager(QObject):
                 task.triggers.start_trigger.cfg_dig_edge_start_trig(trigger_source)
             except Exception as e:
                 # Without its start trigger the counter free-runs, so the counts
-                # no longer line up with the scan. Never fail this silently.
-                logger.warning(
+                # no longer line up with the scan. Never fail this silently --
+                # but a card that can't route this trigger won't suddenly be
+                # able to next frame either, so say it once per session
+                # (loudly) instead of once per frame (unreadable in preview).
+                message = (
                     f"[PMT] start trigger on {trigger_source} not configured, "
                     f"counting will not be synchronised with the scan: {e}"
                 )
+                if self._start_trigger_warned:
+                    logger.debug(message)
+                else:
+                    logger.warning(message + " (further frames: see the session log only)")
+                    self._start_trigger_warned = True
 
             runtime.task = task
             runtime.reader = CounterReader(task.in_stream)

@@ -162,13 +162,19 @@ class DepthCompensationWidget(QWidget):
         grid.addWidget(self.attenuation_edit, 1, 1)
 
         # --- table (mode "Table")
-        self.table_label = QLabel("Depth:power")
+        self.table_label = QLabel("Depth:power (µm:%)")
         grid.addWidget(self.table_label, 2, 0)
-        self.table_edit = QLineEdit("0:10, 40:25, 80:60")
+        self.table_edit = QLineEdit("")
+        # An example, not a default: pre-filling it with real-looking numbers
+        # made it easy to mistake for a measured table left over from
+        # someone else's sample. Empty + greyed-out placeholder says "type
+        # your own" instead.
+        self.table_edit.setPlaceholderText("e.g. 0:10, 40:25, 80:60")
         self.table_edit.setStyleSheet(LINE_EDIT_STYLE)
         self.table_edit.setToolTip(
             "Measured powers, as depth:percent pairs — for example\n"
             "    0:10, 40:25, 80:60\n"
+            "means 10 % at the surface (0 µm), 25 % at 40 µm, 60 % at 80 µm.\n"
             "Interpolated linearly between the points, and held flat beyond\n"
             "them: continuing the curve past the deepest measured point is\n"
             "how a sample gets cooked."
@@ -195,7 +201,9 @@ class DepthCompensationWidget(QWidget):
             "Power at the top of the stack, P(0) in P(z) = P(0)·exp(µz).\n"
             "Taken from the selected laser when the ramp is armed, and held\n"
             "afterwards: reading it live would feed the ramp its own output and\n"
-            "make the power run away step after step."
+            "make the power run away step after step.\n"
+            "In Table mode this is shown for reference only -- the table gives\n"
+            "absolute percentages, so P(0) plays no part in the computation."
         )
         grid.addWidget(self.base_power_edit, 4, 1)
 
@@ -217,9 +225,16 @@ class DepthCompensationWidget(QWidget):
     # ------------------------------------------------------------------
 
     def set_laser_widget(self, laser_widget):
-        """The laser panel owns the power; this one only reads and ramps it."""
+        """The laser panel owns the power; this one only reads and ramps it.
+
+        Called after the panel is built (so __init__ ran with no laser to read
+        yet, base_percent stuck at 0). _recompute(), not just a display
+        refresh: the status line was computed from that 0 and never
+        redone, showing "0 % to 0 %" regardless of the actual settings
+        until something else happened to touch a field.
+        """
         self._laser_widget = laser_widget
-        self._refresh_base_power_display()
+        self._recompute()
 
     def laser_name(self) -> str:
         return self.laser_combo.currentText()

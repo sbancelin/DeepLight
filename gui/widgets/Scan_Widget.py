@@ -425,9 +425,71 @@ def setup_scan_settings_dialog(dialog):
 
     dialog.accepted.connect(on_dialog_accepted)
 
+    def _save_values():
+        """Apply the fields (like OK) and remember them for next launch."""
+        on_dialog_accepted()
+        if scan_widget is not None and scan_widget.axis_settings_manager is not None:
+            scan_widget.axis_settings_manager.save_axis_settings()
+            logger.info("[Scan] axis settings saved for next launch")
+
+    def _reset_origin():
+        """Discard customisation and go back to the built-in defaults.
+
+        Refreshes the open dialog's fields so the reset is visible right away,
+        and persists it too: a "reset" that a restart could undo would not be
+        the safety net it is meant to be against a mistaken Save.
+        """
+        if scan_widget is None or scan_widget.axis_settings_manager is None:
+            return
+
+        for axis_name in axes:
+            key = axis_name.replace("-", "_")
+            defaults = SCAN_AXIS_DEFAULTS.get(axis_name, {})
+            scan_widget.axis_settings_manager.update_axis_settings(axis_name, **defaults)
+
+            conv_edit = dialog.findChild(QLineEdit, f"conv_edit_{key}")
+            vmin_edit = dialog.findChild(QLineEdit, f"vmin_edit_{key}")
+            vmax_edit = dialog.findChild(QLineEdit, f"vmax_edit_{key}")
+            vel_edit = dialog.findChild(QLineEdit, f"vel_edit_{key}")
+            if conv_edit is not None:
+                conv_edit.setText(str(defaults.get("conv_um_per_v")))
+            if vmin_edit is not None:
+                vmin_edit.setText(str(defaults.get("vmin", -10.0)))
+            if vmax_edit is not None:
+                vmax_edit.setText(str(defaults.get("vmax", 10.0)))
+            if vel_edit is not None:
+                vel_edit.setText(str(defaults.get("vel_max", 1.0)))
+
+            if axis_name == "X-Galvo":
+                overscan_edit = dialog.findChild(QLineEdit, f"overscan_edit_{key}")
+                if overscan_edit is not None:
+                    overscan_edit.setText(str(100.0 * defaults.get("overscan_fraction", 0.0)))
+            elif axis_name == "Y-Galvo":
+                flyback_edit = dialog.findChild(QLineEdit, f"flyback_edit_{key}")
+                if flyback_edit is not None:
+                    flyback_edit.setText(str(defaults.get("frame_flyback_time_s", 0.0) * 1e3))
+
+            lag_edit = dialog.findChild(QLineEdit, f"bidir_lag_edit_{key}")
+            if lag_edit is not None:
+                lag_edit.setText(str(defaults.get("bidir_lag_us", 0.0)))
+
+        scan_widget.axis_settings_manager.save_axis_settings()
+        scan_widget.axis_settings = scan_widget.axis_settings_manager.get_all_axis_settings()
+        scan_widget._update_scan_duration()
+        scan_widget.refresh_bidirectional_shift()
+        scan_widget._on_param_changed()
+        logger.info("[Scan] axis settings reset to built-in defaults")
+
+    dialog.set_persistence_callbacks(_save_values, _reset_origin)
+
 class ScanWidget(QWidget):
     """Widget holding the scan controls."""
     view_update_requested = Signal(object)   # pix_x, pix_y
+
+    #: Acquisition preset: the scan, the detectors and the optics as a file,
+    #: so a series can be set up once and picked up again next week.
+    sigPresetSave = Signal()
+    sigPresetLoad = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -449,7 +511,7 @@ class ScanWidget(QWidget):
             "Y-Galvo": {"size": "100", "pixels": "256", "offset": "0"},
             "X-Stage": {"size": "100", "pixels": "64", "offset": "0"},
             "Y-Stage": {"size": "100", "pixels": "64", "offset": "0"},
-            "Z-Vcoil": {"size": "10", "pixels": "10", "offset": "0"},
+            "Z-Vcoil": {"size": "10", "pixels": "11", "offset": "0"},
             "Polarization": {"size": "180", "pixels": "19", "offset": "0"},
         }
 
@@ -483,6 +545,35 @@ class ScanWidget(QWidget):
         mode_layout.addWidget(self.sample_mode_button)
 
         self.main_layout.addWidget(mode_group)
+
+        # =========================
+        # Preset row (load/save) -- no box: sits right under the mode toggle
+        # =========================
+        preset_layout = QHBoxLayout()
+        preset_layout.setContentsMargins(4, 0, 4, 0)
+        preset_layout.setSpacing(6)
+
+        preset_label = QLabel("Preset")
+        preset_label.setStyleSheet(HEADER_LABEL_STYLE)
+        preset_layout.addWidget(preset_label)
+
+        self.preset_load_button = QPushButton("Load")
+        self.preset_load_button.setToolTip("Load an acquisition preset (scan, detectors, optics)")
+        self.preset_load_button.setStyleSheet(BUTTON_STYLE)
+        self.preset_load_button.setMinimumWidth(0)
+        self.preset_load_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.preset_load_button.clicked.connect(lambda: self.sigPresetLoad.emit())
+        preset_layout.addWidget(self.preset_load_button)
+
+        self.preset_save_button = QPushButton("Save")
+        self.preset_save_button.setToolTip("Save the current acquisition settings as a preset")
+        self.preset_save_button.setStyleSheet(BUTTON_STYLE)
+        self.preset_save_button.setMinimumWidth(0)
+        self.preset_save_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.preset_save_button.clicked.connect(lambda: self.sigPresetSave.emit())
+        preset_layout.addWidget(self.preset_save_button)
+
+        self.main_layout.addLayout(preset_layout)
 
         # =========================
         # Spatial parameters group
@@ -1160,15 +1251,12 @@ class ScanWidget(QWidget):
             axis = combo.currentText()
             if axis == "None":
                 self._disable_axis_fields(i)
-            elif axis == "Polarization":
-                # Verrouillé : size=180°, 19 points (step 10°), non modifiable.
-                self._apply_polarization_row_lock(i)
             else:
                 self.size_edits[i].setEnabled(True)
                 self.pixel_edits[i].setEnabled(True)
                 self.offset_edits[i].setEnabled(True)
 
-                # Réautorise l'édition si la ligne sortait d'un verrou Polarization.
+                # Réautorise l'édition si la ligne sortait d'un axe désactivé.
                 for e in (self.size_edits[i], self.pixel_edits[i], self.offset_edits[i]):
                     e.setReadOnly(False)
 
@@ -1267,12 +1355,9 @@ class ScanWidget(QWidget):
                 skipped.append(name)
                 continue
 
-            # Polarization est verrouillée (180°, 19 points) : on ne lui impose
-            # ni taille ni nombre de points, seulement son offset et son mode.
-            if not self.pixel_edits[i].isReadOnly():
-                self.pixel_edits[i].setText(str(int(axis.get("pixels", 1) or 1)))
-                self.size_edits[i].setText(f"{float(axis.get('size_um', 0.0) or 0.0):.4f}")
-            self.offset_edits[i].setText(f"{float(axis.get('offset_um', 0.0) or 0.0):.4f}")
+            self.pixel_edits[i].setText(str(int(axis.get("pixels", 1) or 1)))
+            self.size_edits[i].setText(f"{float(axis.get('size_um', 0.0) or 0.0):.2f}")
+            self.offset_edits[i].setText(f"{float(axis.get('offset_um', 0.0) or 0.0):.2f}")
 
             mode = str(axis.get("mode", "around")).lower()
             if i < len(self.scan_mode_combos) and self._is_stack_mode_axis(name):
@@ -1323,8 +1408,8 @@ class ScanWidget(QWidget):
             if not (size_um > 0.0) or size_um != size_um or rel_off != rel_off:
                 continue
 
-            self.size_edits[i].setText(f"{size_um:.4f}")
-            self.offset_edits[i].setText(f"{rel_off:.4f}")
+            self.size_edits[i].setText(f"{size_um:.2f}")
+            self.offset_edits[i].setText(f"{rel_off:.2f}")
             applied = True
 
         return applied
@@ -1439,35 +1524,18 @@ class ScanWidget(QWidget):
     def _is_stage_axis(self, axis_name: str) -> bool:
         return axis_name in ("X-Stage", "Y-Stage", "Z-Vcoil", "Polarization")
     
-    def _is_laser_xy_primary(self) -> bool:
+    def _should_skip_stage_speed_check(self, row_index: int) -> bool:
         """
-        True when the first 2 active axes are the X/Y galvos, in either order.
+        The pixel dwell only paces the two primary raster axes (row 0/1):
+        X/Y-Stage in sample scanning, where the stage genuinely has to cover
+        one step per dwell. Any extra axis (row >= 2 -- Z-Vcoil, Polarization,
+        a future stack axis) moves once per plane, at a speed entered and
+        validated in the Positioner settings, not derived from the raster
+        dwell -- comparing its step to a few-µs pixel dwell would always
+        overshoot, regardless of scan kind (laser or sample) or which axis it
+        is. So: skip for every row past the raster, unconditionally.
         """
-        active_axes = self._get_active_scan_axes()
-        if len(active_axes) < 2:
-            return False
-
-        pair = {active_axes[0], active_axes[1]}
-        return pair == {"X-Galvo", "Y-Galvo"}
-
-    def _should_skip_stage_speed_check(self, row_index: int, axis_name: str) -> bool:
-        """
-        For a genuine laser Z-stack:
-        - the first 2 active axes are the X/Y galvos
-        - Z-Vcoil is an extra axis (row >= 2)
-        In that case Z does not move at the pixel dwell rate, so the step/dwell
-        speed check is meaningless and must be skipped.
-        """
-        if axis_name != "Z-Vcoil":
-            return False
-
-        if self.scan_kind != "laser":
-            return False
-
-        if row_index < 2:
-            return False
-
-        return self._is_laser_xy_primary()
+        return row_index >= 2
     
     def _reset_to_defaults(self):
         """Fully reset the widget according to the current mode."""
@@ -1937,10 +2005,10 @@ class ScanWidget(QWidget):
                     f"Allowed range = [{min_um:.2f}, {max_um:.2f}] µm."
                 )
 
-            # Pour un Z-stack laser (XY raster + Z en axe supplémentaire),
-            # Z-Vcoil ne bouge pas au rythme du dwell pixel mais entre les frames.
-            # Le test step/dwell est donc faux dans ce cas, on le saute.
-            if self._should_skip_stage_speed_check(row_index, axis_name):
+            # Seuls les 2 axes primaires du raster (row 0/1) sont cadencés par
+            # le dwell pixel ; tout axe stack supplémentaire (row >= 2) bouge
+            # une fois par plan, à une vitesse réglée dans le Positioner.
+            if self._should_skip_stage_speed_check(row_index):
                 return True, ""
 
             step_um = size_um / (pixels - 1) if pixels > 1 else size_um
@@ -2203,7 +2271,16 @@ class ScanWidget(QWidget):
             # rel_to_abs) travaille en relatif. Utiliser l'absolu doublait le
             # zero_offset (Z abs 500 -> scan autour de 1000). Bug corrigé.
             current_pos = self._get_axis_current_relative_position_um(axis) if axis != "None" else 0.0
-            off = current_pos + rel_off
+
+            # Polarization fait exception : sa "position courante" est celle de
+            # la lame demi-onde elle-même (degrés de rotation de la lame), pas
+            # l'azimut que cette ligne balaye (degrés d'azimut) -- deux
+            # grandeurs physiques différentes que move_from_scan ne mélange
+            # jamais (cf. _handle_polarization_scan, qui reçoit l'azimut tel
+            # quel). Les additionner déplacerait la lame au mauvais endroit ;
+            # l'offset saisi EST déjà l'azimut de base.
+            azimuth_base = 0.0 if axis == "Polarization" else current_pos
+            off = azimuth_base + rel_off
 
             # step (champ non éditable déjà calculé dans le widget)
             try:
@@ -2408,34 +2485,6 @@ class ScanWidget(QWidget):
         self.step_edits[row_index].clear()
 
         self._update_scan_mode_combo(row_index, "None")
-
-    def _apply_polarization_row_lock(self, row_index):
-        """
-        Polarization axis: the values are imposed and not editable, for now.
-
-        size = 180°, 19 points -> a 10° step. The axis sweeps the AZIMUTH from 0 to
-        180°; the physical positions of the waveplates (λ/2, λ/4) are derived from
-        the calibration table at scan time (see Positioner_Manager).
-        """
-        for edit, val in (
-            (self.size_edits[row_index], "180"),
-            (self.pixel_edits[row_index], "19"),
-            (self.offset_edits[row_index], "0"),
-        ):
-            edit.blockSignals(True)
-            edit.setText(val)
-            edit.setProperty("last_valid_text", val)
-            edit.blockSignals(False)
-            edit.setEnabled(True)
-            edit.setReadOnly(True)
-            self._set_disabled_lineedit_style(edit)
-
-        self._update_scan_mode_combo(row_index, "Polarization")
-        self._update_steps(
-            self.size_edits[row_index],
-            self.pixel_edits[row_index],
-            self.step_edits[row_index],
-        )
 
     def _is_stack_mode_axis(self, axis_name: str) -> bool:
         """The 'stack' stage axes to which the Around/From mode applies."""

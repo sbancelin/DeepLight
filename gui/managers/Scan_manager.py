@@ -216,7 +216,12 @@ class ScanManager(QObject):
         Generate the positions of a discrete axis.
 
         `offset` = reference position (already in RELATIVE coordinates: current
-        relative position + user offset).
+        relative position + user offset). For Polarization, `offset` is the
+        azimuth itself (in degrees): its "current position" is the half-wave
+        plate's own relative angle, a different physical quantity that
+        Scan_Widget.get_scan_parameters() deliberately leaves out of this
+        offset -- move_from_scan receives the azimuth as-is (see
+        _handle_polarization_scan), never a plate-angle delta.
 
         Direction convention:
         - normal axes: increasing (offset -> larger)
@@ -228,15 +233,6 @@ class ScanManager(QObject):
         - "from"  : the full size STARTING FROM `offset` (offset = start)
         """
         n = max(int(n), 1)
-
-        # Polarization : l'axe représente l'AZIMUT absolu, balayé de 0 à `size`
-        # en croissant (indépendant de la position courante / de l'offset UI).
-        # Les positions physiques des lames (λ/2, λ/4) sont dérivées de la table
-        # de calibration au moment du mouvement (move_from_scan).
-        if axis_name == "Polarization":
-            if n == 1:
-                return [0.0]
-            return list(np.linspace(0.0, float(size), n))
 
         if n == 1:
             return [offset]
@@ -335,7 +331,9 @@ class ScanManager(QObject):
                 n3 = max(int(sp.pixel_values[2]), 1)
                 size3 = float(sp.sizes.get(axis3_name, 0.0))
                 # offsets[axis] est déjà en relatif = pos. relative courante +
-                # offset utilisateur (cf. Scan_Widget). On l'utilise tel quel.
+                # offset utilisateur (cf. Scan_Widget), sauf Polarization où
+                # c'est l'azimut seul (pas de position courante à y mélanger,
+                # cf. _compute_axis_positions). On l'utilise tel quel.
                 off3 = float(sp.offsets.get(axis3_name, 0.0))
                 mode3 = str(sp.scan_modes.get(axis3_name, "around"))
 
@@ -354,7 +352,8 @@ class ScanManager(QObject):
                 n4 = max(int(sp.pixel_values[3]), 1)
                 size4 = float(sp.sizes.get(axis4_name, 0.0))
                 # offsets[axis] est déjà en relatif (pos. relative courante +
-                # offset utilisateur) : on l'utilise tel quel, comme axis3.
+                # offset utilisateur, sauf Polarization -- voir axis3 plus
+                # haut) : on l'utilise tel quel, comme axis3.
                 # (Avant : base4 + user_off4 doublait la base -> Z partait à
                 # ~2x la position ; bug corrigé.)
                 off4 = float(sp.offsets.get(axis4_name, 0.0))
