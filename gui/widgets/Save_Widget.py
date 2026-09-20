@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QGridLayout, QLabel, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout, QLabel,
                                QLineEdit, QComboBox, QFileDialog, QPlainTextEdit, QMessageBox, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 
@@ -47,20 +47,12 @@ COMBO_STYLE = """
     }
 """
 
+HEADER_LABEL_STYLE = "color: white; font-weight: bold;"
+
 class SaveWidget(QWidget):
     """Widget handling how files are saved."""
 
     sigSaveClicked = Signal(str, str, str, str)  # Signal émis lors de la sauvegarde (dossier, nom, format, comment)
-
-    #: Snapshot of what is displayed, scale bar burnt in: to a PNG beside the
-    #: data, or straight to the clipboard for a notebook or a slide.
-    sigSnapshotPng = Signal()
-    sigSnapshotClipboard = Signal()
-
-    #: Acquisition preset: the scan, the detectors and the optics as a file,
-    #: so a series can be set up once and picked up again next week.
-    sigPresetSave = Signal()
-    sigPresetLoad = Signal()
 
     def __init__(self, parent=None):
 
@@ -78,7 +70,9 @@ class SaveWidget(QWidget):
         content_layout.setContentsMargins(2, 2, 2, 2)
         content_layout.setSpacing(4)
 
-        # Layout pour les paramètres (grid)
+        # ---------------------------------------------------------------
+        # Where and under what name: shared by the frame save and REC.
+        # ---------------------------------------------------------------
         grid_layout = QGridLayout()
         grid_layout.setContentsMargins(0, 0, 0, 0)
         grid_layout.setHorizontalSpacing(6)
@@ -92,7 +86,7 @@ class SaveWidget(QWidget):
 
         # --- Ligne 1 : Folder ---
         folder_label = QLabel("Folder")
-        folder_label.setStyleSheet("color: white; font-weight: bold;")
+        folder_label.setStyleSheet(HEADER_LABEL_STYLE)
         grid_layout.addWidget(folder_label, 0, 0)
 
         # Champ pour l'adresse du dossier (racine configurable, voir config.py)
@@ -113,7 +107,7 @@ class SaveWidget(QWidget):
 
         # --- Ligne 2 : Name ---
         name_label = QLabel("File Name")
-        name_label.setStyleSheet("color: white; font-weight: bold;")
+        name_label.setStyleSheet(HEADER_LABEL_STYLE)
         grid_layout.addWidget(name_label, 1, 0)
 
         # Champ pour le nom du fichier
@@ -131,36 +125,31 @@ class SaveWidget(QWidget):
         self.comment_text_edit.setMinimumHeight(0)
         grid_layout.addWidget(self.comment_text_edit, 2, 0, 2, 3)
 
-        # --- Ligne 3 : Format and Save ---
-        format_label = QLabel("File Format")
-        format_label.setStyleSheet("color: white; font-weight: bold;")
-        grid_layout.addWidget(format_label, 4, 0)
+        content_layout.addLayout(grid_layout)
 
-        # Menu déroulant pour le format
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["OME-TIFF", "OME-Zarr"])
-        self.format_combo.setCurrentText("OME-TIFF")  # défaut
-        self.format_combo.setStyleSheet(COMBO_STYLE)
-        self.format_combo.setMinimumWidth(0)
-        self.format_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.format_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.format_combo.setMinimumContentsLength(1)
-        grid_layout.addWidget(self.format_combo, 4, 1)
+        # ---------------------------------------------------------------
+        # Two formats, side by side, no box: a centred header names each
+        # column so "Acquisition" (REC, whole series) and "Frame" (one
+        # displayed frame, on demand) stay visually apart without the
+        # weight of a bordered group.
+        # ---------------------------------------------------------------
+        formats_layout = QHBoxLayout()
+        formats_layout.setContentsMargins(0, 4, 0, 0)
+        formats_layout.setSpacing(12)
 
-        # Bouton Save
-        self.save_button = QPushButton("Save")
-        self.save_button.setStyleSheet(BUTTON_STYLE)
-        self.save_button.setMinimumWidth(0)
-        self.save_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.save_button.clicked.connect(self.save_file)
-        grid_layout.addWidget(self.save_button, 4, 2)
+        # --- Acquisition (REC) column ---
+        rec_column = QVBoxLayout()
+        rec_column.setSpacing(4)
 
-        # --- Ligne 5 : REC Save ---
-        rec_format_label = QLabel("REC Format")
-        rec_format_label.setStyleSheet("color: white; font-weight: bold;")
-        grid_layout.addWidget(rec_format_label, 5, 0)
+        rec_title = QLabel("Acquisition Format")
+        rec_title.setStyleSheet(HEADER_LABEL_STYLE)
+        rec_title.setAlignment(Qt.AlignCenter)
+        rec_title.setToolTip("Format used when recording a full acquisition (REC button), for the whole stack/series.")
+        rec_column.addWidget(rec_title)
 
-        # Menu déroulant pour le format
+        rec_row = QHBoxLayout()
+        rec_row.setSpacing(6)
+
         self.rec_format_combo = QComboBox()
         self.rec_format_combo.addItems(["OME-TIFF", "OME-Zarr"])
         self.rec_format_combo.setCurrentText("OME-TIFF")  # défaut: écrit à la fin
@@ -169,11 +158,10 @@ class SaveWidget(QWidget):
         self.rec_format_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.rec_format_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.rec_format_combo.setMinimumContentsLength(1)
-        grid_layout.addWidget(self.rec_format_combo, 5, 1)
+        rec_row.addWidget(self.rec_format_combo)
 
-        # --- Estimated size (read-only) ---
         self.estimated_size_label = QLabel("—")
-        self.estimated_size_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.estimated_size_label.setAlignment(Qt.AlignCenter)
         self.estimated_size_label.setStyleSheet("""
             QLabel {
                 background-color: #252525;
@@ -185,60 +173,50 @@ class SaveWidget(QWidget):
             }
         """)
         self.estimated_size_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        grid_layout.addWidget(self.estimated_size_label, 5, 2)
+        rec_row.addWidget(self.estimated_size_label)
 
-        # --- Ligne 6 : Snapshot ---
-        # L'image telle qu'elle est affichée, barre d'échelle incluse : le PNG
-        # va à côté des données, le presse-papier directement dans un carnet.
-        snapshot_label = QLabel("Snapshot")
-        snapshot_label.setStyleSheet("color: white; font-weight: bold;")
-        grid_layout.addWidget(snapshot_label, 6, 0)
+        rec_column.addLayout(rec_row)
+        formats_layout.addLayout(rec_column)
 
-        self.snapshot_clipboard_button = QPushButton("Clipboard")
-        self.snapshot_clipboard_button.setToolTip(
-            "Copy the displayed image with its scale bar (Ctrl+Shift+C)"
-        )
-        self.snapshot_clipboard_button.setStyleSheet(BUTTON_STYLE)
-        self.snapshot_clipboard_button.setMinimumWidth(0)
-        self.snapshot_clipboard_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.snapshot_clipboard_button.clicked.connect(lambda: self.sigSnapshotClipboard.emit())
-        grid_layout.addWidget(self.snapshot_clipboard_button, 6, 1)
+        # --- Frame column ---
+        frame_column = QVBoxLayout()
+        frame_column.setSpacing(4)
 
-        self.snapshot_png_button = QPushButton("PNG")
-        self.snapshot_png_button.setToolTip(
-            "Write the displayed image with its scale bar as PNG (Ctrl+P)"
-        )
-        self.snapshot_png_button.setStyleSheet(BUTTON_STYLE)
-        self.snapshot_png_button.setMinimumWidth(0)
-        self.snapshot_png_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.snapshot_png_button.clicked.connect(lambda: self.sigSnapshotPng.emit())
-        grid_layout.addWidget(self.snapshot_png_button, 6, 2)
+        frame_title = QLabel("Frame Format")
+        frame_title.setStyleSheet(HEADER_LABEL_STYLE)
+        frame_title.setAlignment(Qt.AlignCenter)
+        frame_title.setToolTip("Format used by the Save button, for the currently displayed frame's data.")
+        frame_column.addWidget(frame_title)
 
-        # --- Ligne 7 : Preset d'acquisition ---
-        # Le scan, les détecteurs et l'optique dans un fichier : une série se
-        # règle une fois et se retrouve la semaine suivante.
-        preset_label = QLabel("Preset")
-        preset_label.setStyleSheet("color: white; font-weight: bold;")
-        grid_layout.addWidget(preset_label, 7, 0)
+        frame_row = QHBoxLayout()
+        frame_row.setSpacing(6)
 
-        self.preset_load_button = QPushButton("Load")
-        self.preset_load_button.setToolTip("Load an acquisition preset (scan, detectors, optics)")
-        self.preset_load_button.setStyleSheet(BUTTON_STYLE)
-        self.preset_load_button.setMinimumWidth(0)
-        self.preset_load_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.preset_load_button.clicked.connect(lambda: self.sigPresetLoad.emit())
-        grid_layout.addWidget(self.preset_load_button, 7, 1)
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["OME-TIFF", "OME-Zarr"])
+        self.format_combo.setCurrentText("OME-TIFF")  # défaut
+        self.format_combo.setStyleSheet(COMBO_STYLE)
+        self.format_combo.setMinimumWidth(0)
+        self.format_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.format_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.format_combo.setMinimumContentsLength(1)
+        frame_row.addWidget(self.format_combo)
 
-        self.preset_save_button = QPushButton("Save")
-        self.preset_save_button.setToolTip("Save the current acquisition settings as a preset")
-        self.preset_save_button.setStyleSheet(BUTTON_STYLE)
-        self.preset_save_button.setMinimumWidth(0)
-        self.preset_save_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.preset_save_button.clicked.connect(lambda: self.sigPresetSave.emit())
-        grid_layout.addWidget(self.preset_save_button, 7, 2)
+        self.save_button = QPushButton("Save")
+        self.save_button.setStyleSheet(BUTTON_STYLE)
+        self.save_button.setMinimumWidth(0)
+        self.save_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.save_button.clicked.connect(self.save_file)
+        frame_row.addWidget(self.save_button)
 
-        # Ajout du layout grid au layout principal
-        content_layout.addLayout(grid_layout)
+        frame_column.addLayout(frame_row)
+        formats_layout.addLayout(frame_column)
+
+        content_layout.addLayout(formats_layout)
+
+        # Note : le snapshot affiché (PNG horodaté / presse-papier, barre
+        # d'échelle incluse) n'a plus de boutons dédiés -- Ctrl+S et Ctrl+E
+        # suffisent et n'encombrent pas ce panneau.
+
         self.main_layout.addWidget(content_widget)
         self.main_layout.addStretch()
 

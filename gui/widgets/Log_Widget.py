@@ -10,6 +10,7 @@ from PySide6.QtGui import QTextCursor
 COLORS = {
     "debug":   "#888888",
     "info":    "#cccccc",
+    "notice":  "#6EC1E4",
     "warning": "#f0a500",
     "error":   "#e05555",
 }
@@ -42,8 +43,13 @@ class _AppLogger(QObject):
 
     Also writes to files, when any are open: a session file covering one run of
     the application, and a run file living beside the data of one acquisition.
-    The panel and the console drop debug messages, the files keep them -- a log
-    read after the fact is exactly where the detail is wanted.
+    Only warning/error/notice reach the panel and the files: info/debug are
+    for someone reading the console live, not for a UI meant to surface
+    problems or a file meant to stay a readable size over a long session.
+    notice() is the deliberate exception -- a handful of milestones (an
+    acquisition or a mosaic starting, finishing, or being stopped by hand)
+    that are not problems but are still worth knowing without reading the
+    console: see notice() below.
     """
 
     message_logged = Signal(str, str)   # (message_html, level)
@@ -141,6 +147,13 @@ class _AppLogger(QObject):
             stream = sys.stderr if level in ("error", "warning") else sys.stdout
             print(f"[{ts}] {label} {msg}", file=stream, flush=True)
 
+        # Only warning/error/notice go to disk: info/debug used to fill the
+        # session file with a line for every step of every tile of every
+        # scan, which made it both unreadable and, over a long session,
+        # enormous.
+        if level not in ("warning", "error", "notice"):
+            return
+
         # Full date and milliseconds in the files: a line read weeks later has
         # to say which day it belongs to, and acquisition timing is in ms.
         line = f"{now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} {label} {msg}\n"
@@ -159,6 +172,13 @@ class _AppLogger(QObject):
 
     def info(self, msg: str):
         self._emit("info", msg)
+
+    def notice(self, msg: str):
+        """A milestone worth seeing without reading the console: an
+        acquisition or a mosaic starting, finishing, or being stopped by
+        hand. Not a problem, so distinct from warning/error, but still shown
+        in the panel and written to the log files, unlike a plain info()."""
+        self._emit("notice", msg)
 
     def warning(self, msg: str):
         self._emit("warning", msg)
@@ -216,7 +236,10 @@ class LogWidget(QWidget):
         logger.message_logged.connect(self._append)
 
     def _append(self, html: str, level: str):
-        if level == "debug":
+        # Errors, warnings and milestone notices only: the panel is for
+        # surfacing problems (and knowing a run started/stopped), not for a
+        # running commentary of every step of a scan.
+        if level not in ("warning", "error", "notice"):
             return
         cursor = self.text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)

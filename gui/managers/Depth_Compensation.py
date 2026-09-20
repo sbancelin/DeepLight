@@ -28,15 +28,17 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .Hardware_Manager import (
-    MIRA_POWER_MAX_PERCENT,
-    MIRA_POWER_MIN_PERCENT,
-    MIRA_ROTATOR_REL_MAX_DEG,
-    MIRA_ROTATOR_REL_MIN_DEG,
-)
-
 #: How the power is decided at a given depth.
 RAMP_MODES = ("exponential", "table")
+
+#: Every ramped laser is commanded in percent (LaserWidget.laser_power_changed
+#: / powerRampRequested carry only a percentage) -- how that percentage
+#: physically becomes power (a waveplate for Mira/Tumecs/Cobolt, a direct
+#: serial setpoint for Alcor) is LaserWidget's business, not this module's.
+#: The ramp itself stays inside the one range that means the same thing for
+#: every laser.
+POWER_MIN_PERCENT = 0.0
+POWER_MAX_PERCENT = 100.0
 
 
 def parse_power_table(text: str):
@@ -115,33 +117,20 @@ class DepthCompensation:
 
 @dataclass
 class PowerRangeReport:
-    """Whether a computed ramp stays inside what the hardware can deliver."""
+    """Whether a computed ramp stays inside what the laser can deliver."""
 
     ok: bool
     percents: np.ndarray
     depths_um: np.ndarray
     min_percent: float
     max_percent: float
-    max_angle_deg: float
     first_invalid_depth_um: float | None
     reason: str
 
     def summary(self) -> str:
         if self.ok:
-            return (
-                f"{self.min_percent:.1f} % to {self.max_percent:.1f} % "
-                f"(waveplate up to {self.max_angle_deg:.1f} deg)"
-            )
+            return f"{self.min_percent:.1f} % to {self.max_percent:.1f} %"
         return self.reason
-
-
-def percent_to_waveplate_deg(percent: float) -> float:
-    """Half-wave plate angle for a power percentage.
-
-    Mirrors the 0-100 % branch of the rotation controller: the plate sweeps
-    MIRA_ROTATOR_REL_MAX_DEG over the full range.
-    """
-    return (float(percent) / 100.0) * MIRA_ROTATOR_REL_MAX_DEG
 
 
 def depth_axis_um(size_um: float, pixels: int) -> np.ndarray:
@@ -197,16 +186,14 @@ def compute_power_profile(
 def validate_power_profile(
     percents,
     depths_um,
-    min_percent: float = MIRA_POWER_MIN_PERCENT,
-    max_percent: float = MIRA_POWER_MAX_PERCENT,
-    max_angle_deg: float = MIRA_ROTATOR_REL_MAX_DEG,
-    min_angle_deg: float = MIRA_ROTATOR_REL_MIN_DEG,
+    min_percent: float = POWER_MIN_PERCENT,
+    max_percent: float = POWER_MAX_PERCENT,
 ) -> PowerRangeReport:
-    """Check the ramp against the laser range and the waveplate travel.
+    """Check the ramp against the laser's percent range.
 
-    Both are checked: a percentage inside 0-100 always maps inside the plate's
-    travel, but the two limits are configured separately and a setup could make
-    them disagree, and finding that out mid-stack is expensive.
+    Percent only: how a laser turns a percentage into power (a waveplate for
+    some, a direct setpoint for Alcor) is LaserWidget's concern, and the ramp
+    already writes through the same percent contract everything else does.
     """
     percents = np.asarray(percents, dtype=np.float64)
     depths = np.asarray(depths_um, dtype=np.float64)
@@ -214,33 +201,29 @@ def validate_power_profile(
     if percents.size == 0:
         return PowerRangeReport(
             ok=False, percents=percents, depths_um=depths,
-            min_percent=0.0, max_percent=0.0, max_angle_deg=0.0,
+            min_percent=0.0, max_percent=0.0,
             first_invalid_depth_um=None, reason="No plane to compute.",
         )
 
     if not np.all(np.isfinite(percents)):
         return PowerRangeReport(
             ok=False, percents=percents, depths_um=depths,
-            min_percent=0.0, max_percent=0.0, max_angle_deg=0.0,
+            min_percent=0.0, max_percent=0.0,
             first_invalid_depth_um=None,
             reason="The ramp is not finite; check the attenuation coefficient.",
         )
 
-    angles = np.array([percent_to_waveplate_deg(p) for p in percents])
-
     too_low = percents < min_percent
     too_high = percents > max_percent
-    angle_out = (angles < min_angle_deg) | (angles > max_angle_deg)
-    invalid = too_low | too_high | angle_out
+    invalid = too_low | too_high
 
     lo = float(np.min(percents))
     hi = float(np.max(percents))
-    hi_angle = float(np.max(angles))
 
     if not np.any(invalid):
         return PowerRangeReport(
             ok=True, percents=percents, depths_um=depths,
-            min_percent=lo, max_percent=hi, max_angle_deg=hi_angle,
+            min_percent=lo, max_percent=hi,
             first_invalid_depth_um=None, reason="",
         )
 
@@ -248,23 +231,18 @@ def validate_power_profile(
     depth = float(depths[first]) if depths.size > first else float("nan")
     percent = float(percents[first])
 
-    if too_high[first] or angle_out[first] and percent > max_percent:
+    if too_high[first]:
         reason = (
             f"{percent:.1f} % needed at {depth:.1f} µm, above the {max_percent:.0f} % "
             "the laser can deliver. Lower the surface power, the depth or the "
             "attenuation."
         )
-    elif too_low[first]:
-        reason = f"{percent:.1f} % requested at {depth:.1f} µm, below {min_percent:.0f} %."
     else:
-        reason = (
-            f"Waveplate would need {angles[first]:.1f} deg at {depth:.1f} µm, "
-            f"beyond its {max_angle_deg:.0f} deg travel."
-        )
+        reason = f"{percent:.1f} % requested at {depth:.1f} µm, below {min_percent:.0f} %."
 
     return PowerRangeReport(
         ok=False, percents=percents, depths_um=depths,
-        min_percent=lo, max_percent=hi, max_angle_deg=hi_angle,
+        min_percent=lo, max_percent=hi,
         first_invalid_depth_um=depth, reason=reason,
     )
 
@@ -272,7 +250,7 @@ def validate_power_profile(
 def max_reachable_depth_um(
     compensation: DepthCompensation,
     base_percent: float,
-    max_percent: float = MIRA_POWER_MAX_PERCENT,
+    max_percent: float = POWER_MAX_PERCENT,
 ) -> float:
     """Depth at which the ramp would hit the ceiling, in µm.
 

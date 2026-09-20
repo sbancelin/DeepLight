@@ -7,9 +7,20 @@ from PySide6.QtCore import Signal, Qt
 
 from ...config import default_dated_folder
 from ..resources import icon_path
+from .Log_Widget import logger
 from PySide6.QtGui import QIcon, QDoubleValidator, QIntValidator
 
 import os
+
+
+#: Built-in defaults for the Spectro settings popup, and what "Reset origin"
+#: there goes back to.
+SPECTRO_SETTINGS_DEFAULTS = {
+    "settle_ms": 10.0,
+    "line_offset_x_um": -1.2,
+    "origin_overshoot_um": 10.0,
+    "stage_speed_mm_s": 4.0,
+}
 
 
 LINE_EDIT_STYLE = """
@@ -144,13 +155,15 @@ class SpectroPanelWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        self.settings_manager = None
+
         # Paramètres de settings (non exposés dans l'UI principale)
-        self._settle_ms = 10.0
-        self._line_offset_x_um = -1.2
-        self._origin_overshoot_um = 10.0
+        self._settle_ms = SPECTRO_SETTINGS_DEFAULTS["settle_ms"]
+        self._line_offset_x_um = SPECTRO_SETTINGS_DEFAULTS["line_offset_x_um"]
+        self._origin_overshoot_um = SPECTRO_SETTINGS_DEFAULTS["origin_overshoot_um"]
         self._brillouin_exposure_ms = 100.0
         self._raman_exposure_ms = 100.0
-        self._stage_speed_mm_s = 4.0
+        self._stage_speed_mm_s = SPECTRO_SETTINGS_DEFAULTS["stage_speed_mm_s"]
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
@@ -462,6 +475,32 @@ class SpectroPanelWidget(QWidget):
     # ==========================================================
     # Settings dialog
     # ==========================================================
+    def set_settings_manager(self, manager):
+        """Inject the shared SettingsManager and load any saved settle/backlash.
+
+        Same "fill only if empty" spirit as the other panels: a settings file
+        with nothing under "spectro" yet (first run, or a version that
+        predates this) leaves the built-in defaults set in __init__ alone.
+        """
+        self.settings_manager = manager
+        saved = manager.get_spectro_settings() if manager is not None else {}
+        if not saved:
+            return
+
+        self._settle_ms = float(saved.get("settle_ms", self._settle_ms))
+        self._line_offset_x_um = float(saved.get("line_offset_x_um", self._line_offset_x_um))
+        self._origin_overshoot_um = float(saved.get("origin_overshoot_um", self._origin_overshoot_um))
+        self._stage_speed_mm_s = float(saved.get("stage_speed_mm_s", self._stage_speed_mm_s))
+        self._update_derived_values()
+
+    def _export_settings(self) -> dict:
+        return {
+            "settle_ms": float(self._settle_ms),
+            "line_offset_x_um": float(self._line_offset_x_um),
+            "origin_overshoot_um": float(self._origin_overshoot_um),
+            "stage_speed_mm_s": float(self._stage_speed_mm_s),
+        }
+
     def open_settings_dialog(self):
         from .Dialogs import SettingsDialog
         dialog = SettingsDialog("Spectro - Settings", self)
@@ -532,6 +571,34 @@ class SpectroPanelWidget(QWidget):
             self.settleTimeChanged.emit(float(self._settle_ms))
 
         dialog.accepted.connect(_on_accepted)
+
+        def _save_values():
+            _on_accepted()
+            if self.settings_manager is not None:
+                self.settings_manager.update_spectro_settings(**self._export_settings())
+                self.settings_manager.save_spectro_settings()
+                logger.info("[Spectro] settings saved for next launch")
+
+        def _reset_origin():
+            self._settle_ms = SPECTRO_SETTINGS_DEFAULTS["settle_ms"]
+            self._line_offset_x_um = SPECTRO_SETTINGS_DEFAULTS["line_offset_x_um"]
+            self._origin_overshoot_um = SPECTRO_SETTINGS_DEFAULTS["origin_overshoot_um"]
+            self._stage_speed_mm_s = SPECTRO_SETTINGS_DEFAULTS["stage_speed_mm_s"]
+
+            settle_edit.setText(str(self._settle_ms))
+            line_offset_edit.setText(str(self._line_offset_x_um))
+            origin_overshoot_edit.setText(str(self._origin_overshoot_um))
+            speed_edit.setText(str(self._stage_speed_mm_s))
+
+            self._update_derived_values()
+            self.settleTimeChanged.emit(float(self._settle_ms))
+
+            if self.settings_manager is not None:
+                self.settings_manager.update_spectro_settings(**self._export_settings())
+                self.settings_manager.save_spectro_settings()
+            logger.info("[Spectro] settings reset to built-in defaults")
+
+        dialog.set_persistence_callbacks(_save_values, _reset_origin)
         dialog.exec()
 
     # ==========================================================

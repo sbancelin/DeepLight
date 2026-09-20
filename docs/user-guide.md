@@ -37,8 +37,8 @@ shutter. The bar at the bottom shows progress, elapsed and remaining time.
 | `Ctrl+R` | draw a rectangle on the image |
 | `Ctrl+Return` | make that rectangle the next field of view |
 | `F9` / `F10` | fold the left / right panel |
-| `Ctrl+P` | write a snapshot as PNG, scale bar included |
-| `Ctrl+Shift+C` | copy that snapshot to the clipboard |
+| `Ctrl+S` | write a snapshot as PNG (in the Save panel's Folder), scale bar included |
+| `Ctrl+E` | copy that snapshot to the clipboard |
 
 **Stage keys.** With *Lock shortcuts* unticked in the Positioners panel, the
 arrow keys drive the stage: `←` `→` for X, `↑` `↓` for Y, `PageUp` / `PageDown`

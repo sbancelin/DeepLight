@@ -3,6 +3,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QPushButton, QGr
 from PySide6.QtCore import Signal, Qt, QLocale
 from PySide6.QtGui import QPalette, QColor
 
+from .Log_Widget import logger
+
 SMALL_BUTTON_STYLE = """
     QPushButton {
         background-color: #333;
@@ -93,8 +95,18 @@ LASER_DEFAULTS = {
 }
 
 LASERS_WITHOUT_POWER_BUTTON = {"Mira 900", "Tumecs", "Cobolt 660"}
+
+# Same set, different reason: these 3 set power by turning a physical
+# waveplate, whose Malus-law curve is non-monotonic near the ends -- a small
+# overshoot past 0/100 % is a valid (if unusual) calibration point. Alcor sets
+# its power directly over serial: no waveplate, no overshoot, hard-bounded to
+# 0-100 % like any percentage.
+WAVEPLATE_POWER_LASERS = LASERS_WITHOUT_POWER_BUTTON
+
 POWER_UI_MIN = -10.0
 POWER_UI_MAX = 110.0
+POWER_UI_DIRECT_MIN = 0.0
+POWER_UI_DIRECT_MAX = 100.0
 POWER_UI_DECIMALS = 1
 POWER_UI_STEP = 0.1
 POWER_BUTTON_STEP = 1.0
@@ -219,6 +231,45 @@ def setup_laser_settings_dialog(dialog):
 
     dialog.accepted.connect(on_dialog_accepted)
 
+    def _save_values():
+        """Apply the fields (like OK) and remember them for next launch."""
+        on_dialog_accepted()
+        if laser_widget is not None and laser_widget.settings_manager is not None:
+            laser_widget.settings_manager.save_laser_settings()
+            logger.info("[Laser] laser settings saved for next launch")
+
+    def _reset_origin():
+        """Discard customisation and go back to the built-in defaults.
+
+        Writes the defaults into the open dialog's fields, then runs the
+        normal accept logic so validation and the settings manager follow the
+        same path OK uses. Persisted too, so the reset is a genuine undo of
+        an earlier mistaken Save.
+        """
+        if laser_widget is None or laser_widget.settings_manager is None:
+            return
+
+        for laser_name in laser_names:
+            key = laser_name.replace(" ", "_")
+            defaults = LASER_DEFAULTS.get(laser_name, {})
+
+            speed_edit = dialog.findChild(QLineEdit, f"speed_edit_{key}")
+            conv_edit = dialog.findChild(QLineEdit, f"steps_per_deg_edit_{key}")
+            offset_edit = dialog.findChild(QLineEdit, f"offset_deg_edit_{key}")
+
+            if speed_edit is not None:
+                speed_edit.setText(str(defaults.get("speed", 429410)))
+            if conv_edit is not None:
+                conv_edit.setText(str(defaults.get("steps_per_degree", 1919.14)))
+            if offset_edit is not None:
+                offset_edit.setText(str(defaults.get("offset_deg", 0.0)))
+
+        on_dialog_accepted()
+        laser_widget.settings_manager.save_laser_settings()
+        logger.info("[Laser] laser settings reset to built-in defaults")
+
+    dialog.set_persistence_callbacks(_save_values, _reset_origin)
+
 
 class LaserWidget(QWidget):
     """Widget for controlling the lasers."""
@@ -323,12 +374,17 @@ class LaserWidget(QWidget):
         power_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         power_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 
+        if laser_name in WAVEPLATE_POWER_LASERS:
+            power_min, power_max = POWER_UI_MIN, POWER_UI_MAX
+        else:
+            power_min, power_max = POWER_UI_DIRECT_MIN, POWER_UI_DIRECT_MAX
+
         setpoint_spin = QDoubleSpinBox()
         setpoint_spin.setMinimumWidth(70)
         setpoint_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         setpoint_spin.setDecimals(POWER_UI_DECIMALS)
         setpoint_spin.setSingleStep(POWER_UI_STEP)
-        setpoint_spin.setRange(POWER_UI_MIN, POWER_UI_MAX)
+        setpoint_spin.setRange(power_min, power_max)
         setpoint_spin.setValue(0.0)
         setpoint_spin.setSuffix(" %")
         _force_dot_locale_on_spinbox(setpoint_spin)
@@ -349,8 +405,8 @@ class LaserWidget(QWidget):
         setpoint_slider.setMinimumWidth(60)
         setpoint_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         setpoint_slider.setRange(
-            int(round(POWER_UI_MIN * POWER_SLIDER_SCALE)),
-            int(round(POWER_UI_MAX * POWER_SLIDER_SCALE)),
+            int(round(power_min * POWER_SLIDER_SCALE)),
+            int(round(power_max * POWER_SLIDER_SCALE)),
         )
         setpoint_slider.setValue(0)
         setpoint_slider.setStyleSheet("""

@@ -348,14 +348,14 @@ def preset_folder() -> Path:
     return data_root() / "presets"
 
 
-def last_session_preset_path() -> str:
-    """The settings reopened at the next launch.
+def hardware_settings_path() -> str:
+    """Calibration settings a "Save value" button in a settings popup writes.
 
-    Beside the user's config rather than under the data root: it belongs to the
-    person at this machine, not to a dataset, and should not follow the data
-    onto a shared drive.
+    Beside the user's config, under the per-user location: this describes
+    this microscope (galvo conversion factors, stage limits, laser offsets,
+    spectro backlash...), not a dataset, so it stays off the data root.
     """
-    return str(_user_config_path().parent / "last_session.json")
+    return str(_user_config_path().parent / "hardware_settings.json")
 
 
 def log_folder() -> Path:

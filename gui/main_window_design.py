@@ -539,13 +539,15 @@ class MainWindowLayout:
             lambda: self.pull_levels_to_image_extreme("max")
         )
 
-        # ---- Snapshot : Ctrl+P écrit un PNG, Ctrl+Maj+C copie ----
-        # Branchés dans MainWindow._connect_actions() : le rendu a besoin des
-        # paramètres de scan pour la barre d'échelle, que ce module ignore.
-        self.shortcut_snapshot_png = QShortcut(QKeySequence("Ctrl+P"), window)
+        # ---- Snapshot : Ctrl+S écrit un PNG dans Folder, Ctrl+E copie ----
+        # Pas de bouton dédié : ça encombrait le panneau Save pour un geste
+        # qu'on fait au clavier, les yeux sur l'image. Branchés dans
+        # MainWindow._connect_actions() : le rendu a besoin des paramètres de
+        # scan pour la barre d'échelle, que ce module ignore.
+        self.shortcut_snapshot_png = QShortcut(QKeySequence("Ctrl+S"), window)
         self.shortcut_snapshot_png.setContext(Qt.ApplicationShortcut)
 
-        self.shortcut_snapshot_clipboard = QShortcut(QKeySequence("Ctrl+Shift+C"), window)
+        self.shortcut_snapshot_clipboard = QShortcut(QKeySequence("Ctrl+E"), window)
         self.shortcut_snapshot_clipboard.setContext(Qt.ApplicationShortcut)
 
         # ---- ROI de zoom : Ctrl+R dessine, Ctrl+Entrée applique ----
