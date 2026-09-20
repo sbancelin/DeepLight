@@ -5,6 +5,10 @@ from ..managers.Scan_Types import (
     SCAN_AXIS_DEFAULTS, STEPPER_AXIS_DEFAULTS, stack_move_time_s,
     bidirectional_shift_px, bidirectional_lag_us,
 )
+from ..managers.Waveplate_Rotator import (
+    DEFAULT_POLARIZATION_MODE,
+    POLARIZATION_MODES,
+)
 from .Log_Widget import logger
 
 DAQ_SAMPLE_RATE_HZ = 500_000.0
@@ -294,6 +298,37 @@ def setup_scan_settings_dialog(dialog):
 
         dialog.add_layout(dyn_layout_2)
 
+    # --- Mode P-SHG : seulement si Polarization est un axe actif du scan.
+    # Le choix ne vit que là où il a un sens ; l'offrir en permanence
+    # suggérerait qu'il agit sur autre chose que la polarisation.
+    if scan_widget is not None and scan_widget.has_active_axis("Polarization"):
+        separator = QLabel()
+        separator.setFrameShape(QLabel.HLine)
+        separator.setFrameShadow(QLabel.Sunken)
+        separator.setStyleSheet("color: #555; margin-top: 0px; margin-bottom: 0px;")
+        dialog.add_widget(separator)
+        dialog.add_widget(QLabel("<b>P-SHG</b>"))
+
+        pshg_layout = QHBoxLayout()
+        pshg_combo = QComboBox()
+        pshg_combo.setObjectName("pshg_mode_combo")
+        pshg_combo.addItems(["Compensator", "Calibration"])
+        pshg_combo.setStyleSheet(SCAN_COMBO_STYLE)
+        pshg_combo.setCurrentText(scan_widget.pshg_mode().capitalize())
+        pshg_combo.setToolTip(
+            "How a polarisation series reaches its azimuths.\n\n"
+            "Compensator: the λ/2 turns by half the azimuth and the λ/4 is\n"
+            "parked on its measured 'linear' position. One number per mount,\n"
+            "and nothing to re-measure when the azimuths change.\n\n"
+            "Calibration: both plates are placed from the measured table\n"
+            "(polarization_table.csv), which lists where each has to sit for\n"
+            "each azimuth. Heavier to maintain, but it assumes nothing about\n"
+            "the chain."
+        )
+        pshg_layout.addWidget(QLabel("Mode:"))
+        pshg_layout.addWidget(pshg_combo)
+        dialog.add_layout(pshg_layout)
+
     def _read_float(le: QLineEdit, default: float) -> float:
         try:
             return float(le.text().replace(",", "."))
@@ -417,6 +452,12 @@ def setup_scan_settings_dialog(dialog):
                     vel_max=vel,
                     bidir_lag_us=_read_bidir_lag(key, old),
                 )
+
+        pshg_combo = dialog.findChild(QComboBox, "pshg_mode_combo")
+        if pshg_combo is not None:
+            scan_widget.axis_settings_manager.update_axis_settings(
+                "Polarization", pshg_mode=pshg_combo.currentText().strip().lower(),
+            )
 
         scan_widget.axis_settings = scan_widget.axis_settings_manager.get_all_axis_settings()
         scan_widget._update_scan_duration()
@@ -2266,6 +2307,7 @@ class ScanWidget(QWidget):
             "current_positions": current_positions,   # positions relatives
             "initial_relative_positions": dict(current_positions),
             "scan_modes": scan_modes,                 # "around"/"from" par axe
+            "pshg_mode": self.pshg_mode(),            # "compensator"/"calibration"
             "step_sizes": step_sizes,
             "total_pixels": total_pixels,
         }
@@ -2436,6 +2478,23 @@ class ScanWidget(QWidget):
             self.pixel_edits[row_index],
             self.step_edits[row_index],
         )
+
+    def has_active_axis(self, axis_name: str) -> bool:
+        """Whether this axis is one of the scan's active rows."""
+        return any(combo.currentText() == str(axis_name)
+                   for combo in self.scan_dim_combos)
+
+    def pshg_mode(self) -> str:
+        """How a polarisation series reaches its azimuths.
+
+        Read from the shared settings rather than held here, so the positioner
+        panel and the saved provenance see the same answer.
+        """
+        settings = {}
+        if self.axis_settings_manager is not None:
+            settings = self.axis_settings_manager.get_axis_settings("Polarization") or {}
+        mode = str(settings.get("pshg_mode", DEFAULT_POLARIZATION_MODE)).strip().lower()
+        return mode if mode in POLARIZATION_MODES else DEFAULT_POLARIZATION_MODE
 
     def _is_stack_mode_axis(self, axis_name: str) -> bool:
         """The 'stack' stage axes to which the Around/From mode applies."""

@@ -4,7 +4,11 @@ from PySide6.QtGui import QIcon
 from functools import partial
 
 from ..managers.Scan_Types import STEPPER_AXIS_DEFAULTS
-from ..managers.Waveplate_Rotator import COMPENSATOR_SETTING_KEYS
+from ..managers.Waveplate_Rotator import (
+    COMPENSATOR_SETTING_KEYS,
+    DEFAULT_POLARIZATION_MODE,
+    POLARIZATION_MODES,
+)
 from .Log_Widget import logger
 
 # Vitesse interne fixe des lames Elliptec ELL14 (P(λ/2)/P(λ/4)) : 430°/s.
@@ -139,8 +143,10 @@ def setup_positioner_settings_dialog(dialog):
             tol_layout.addWidget(tol_edit)
             dialog.add_layout(tol_layout)
 
-        # P(λ/2) : un seul nombre. C'est elle qui porte l'azimut, le scan y va
-        # à azimut/2, et rien d'autre n'a besoin d'être réglé.
+        # P(λ/2) : l'angle de l'horizontale suffit en mode compensateur. Les
+        # deux positions circulaires ne servent qu'en mode calibration, où
+        # cette lame participe aussi à l'état de polarisation ; elles restent
+        # visibles pour qu'un changement de mode ne demande pas d'y revenir.
         if axis_key == "p":
             cur_offset = float(axis_cfg.get("offset_deg", defaults.get("offset_deg", 0.0)))
             off_layout = QHBoxLayout()
@@ -154,6 +160,21 @@ def setup_positioner_settings_dialog(dialog):
             off_layout.addWidget(QLabel(f"Horizontal at ({pos_unit}):"))
             off_layout.addWidget(off_edit)
             dialog.add_layout(off_layout)
+
+            for key, label in (("cd_deg", "CD — right circ."),
+                               ("cg_deg", "CG — left circ.")):
+                value = float(axis_cfg.get(key, defaults.get(key, 0.0)))
+                row = QHBoxLayout()
+                edit = QLineEdit(str(value))
+                edit.setObjectName(f"{key}_edit_{axis_key}")
+                edit.setToolTip(
+                    "Calibration mode only: where this plate sits for that\n"
+                    "circular state. The compensator mode leaves the λ/2 where\n"
+                    "the azimuth put it and moves the λ/4 alone."
+                )
+                row.addWidget(QLabel(f"{label} ({pos_unit}):"))
+                row.addWidget(edit)
+                dialog.add_layout(row)
 
         # P(λ/4) : compensateur. Trois positions mesurées, jamais scannées.
         if axis_key == "p4":
@@ -267,7 +288,10 @@ def setup_positioner_settings_dialog(dialog):
 
                 if positioner_widget.axis_settings_manager is not None:
                     positioner_widget.axis_settings_manager.update_axis_settings(
-                        shared_axis_name, offset_deg=offset_deg,
+                        shared_axis_name,
+                        offset_deg=offset_deg,
+                        cd_deg=_read(f"cd_deg_edit_{axis_key}", 0.0),
+                        cg_deg=_read(f"cg_deg_edit_{axis_key}", 0.0),
                     )
 
                 if positioner_widget.manager is not None:
@@ -705,37 +729,75 @@ class PositionerWidget(QWidget):
     # Correspondance axe positioner -> nom partagé (settings) des lames d'onde.
     _WAVEPLATE_SHARED_NAMES = {"p": "Polarization", "p4": "Polarization-L4"}
 
-    def apply_compensator(self, state: str):
-        """Park the quarter-wave plate on one of its three measured positions.
+    def pshg_mode(self) -> str:
+        """The P-SHG mode chosen in the scan panel's settings."""
+        settings = {}
+        if self.axis_settings_manager is not None:
+            settings = self.axis_settings_manager.get_axis_settings("Polarization") or {}
+        mode = str(settings.get("pshg_mode", DEFAULT_POLARIZATION_MODE)).strip().lower()
+        return mode if mode in POLARIZATION_MODES else DEFAULT_POLARIZATION_MODE
 
-        Only the λ/4 moves. The azimuth belongs to the half-wave plate and has
-        no reason to change because the ellipticity does.
+    def _setting_deg(self, axis_key: str, key: str) -> float:
+        """A measured plate position, from the settings or the built-in default."""
+        shared_name = self._WAVEPLATE_SHARED_NAMES[axis_key]
+        value = float(STEPPER_AXIS_DEFAULTS.get(shared_name, {}).get(key, 0.0))
+        if self.axis_settings_manager is not None:
+            settings = self.axis_settings_manager.get_axis_settings(shared_name) or {}
+            value = float(settings.get(key, value))
+        return value
+
+    def _move_plate(self, axis_key: str, target_rel: float, label: str) -> bool:
+        if not self.manager.has_axis(axis_key):
+            return False
+        if not self.manager.is_rel_target_allowed(axis_key, target_rel):
+            logger.warning(
+                f"[PositionerWidget] {label} target {target_rel}° out of range "
+                f"for {axis_key} — ignored."
+            )
+            return False
+        try:
+            self.manager.move_to_rel(axis_key, target_rel, ELL14_FIXED_SPEED_DEG_S)
+            return True
+        except Exception as e:
+            logger.error(f"[PositionerWidget] {label} on {axis_key} failed: {e}")
+            return False
+
+    def apply_compensator(self, state: str):
+        """Set the polarisation state, the way the current P-SHG mode does it.
+
+        In compensator mode only the λ/4 moves: the azimuth belongs to the λ/2
+        and has no reason to change because the ellipticity does.
+
+        In calibration mode both plates carry the state together, so both are
+        placed -- from the measured table for linear, and from the per-plate
+        settings for the two circular states.
         """
         if self.manager is None or not self.manager.has_axis("p4"):
             return
 
-        key = COMPENSATOR_SETTING_KEYS.get(str(state))
+        state = str(state)
+        key = COMPENSATOR_SETTING_KEYS.get(state)
         if key is None:
             logger.warning(f"[PositionerWidget] unknown compensator state {state!r}")
             return
 
-        shared_name = self._WAVEPLATE_SHARED_NAMES["p4"]
-        target_rel = float(STEPPER_AXIS_DEFAULTS.get(shared_name, {}).get(key, 0.0))
-        if self.axis_settings_manager is not None:
-            settings = self.axis_settings_manager.get_axis_settings(shared_name) or {}
-            target_rel = float(settings.get(key, target_rel))
-
-        if not self.manager.is_rel_target_allowed("p4", target_rel):
-            logger.warning(
-                f"[PositionerWidget] compensator {state} target {target_rel}° "
-                f"out of range — ignored."
-            )
+        if self.pshg_mode() != "calibration":
+            self._move_plate("p4", self._setting_deg("p4", key), f"compensator {state}")
             return
 
-        try:
-            self.manager.move_to_rel("p4", target_rel, ELL14_FIXED_SPEED_DEG_S)
-        except Exception as e:
-            logger.error(f"[PositionerWidget] apply_compensator({state}) failed: {e}")
+        if state == "linear":
+            # Linear is not one position in this mode: it is whatever the table
+            # says for a given azimuth. Horizontal -- azimuth 0 -- is the one
+            # that matches what the button means elsewhere.
+            from ..managers.Polarization_Table import get_polarization_table
+
+            l2_deg, l4_deg = get_polarization_table().lookup(0.0)
+        else:
+            l2_deg = self._setting_deg("p", key)
+            l4_deg = self._setting_deg("p4", key)
+
+        self._move_plate("p", l2_deg, f"{state} (calibrated)")
+        self._move_plate("p4", l4_deg, f"{state} (calibrated)")
     
     def set_limits(self, axis, min_limit, max_limit, velocity_limit):
         """Set the limits of a given axis."""

@@ -12,12 +12,16 @@ Two plates sit before the objective. What each one is for:
   and it does not scan. It is parked on one of three measured positions:
   linear, right circular, left circular.
 
-This replaced a calibration table that listed both plate positions for every
-azimuth in ten-degree steps and interpolated between them. That table existed
-because both plates were turned together; with the compensator standing still,
-the azimuth is arithmetic and there is nothing left to tabulate -- no file to
-regenerate when a mount is remounted, and no interpolation between measured
-points to be wrong about.
+That description is the "compensator" mode, and it is the default: one number
+per mount, and the azimuth is arithmetic. It assumes the chain is clean enough
+for the quarter-wave plate to be a fixed correction.
+
+When it is not, the "calibration" mode turns both plates together from a
+measured table listing, for every azimuth, where each plate has to sit (see
+Polarization_Table). It is heavier -- the table has to be re-measured whenever a
+mount is disturbed, and every azimuth between its points is an interpolation --
+but it makes no assumption about the chain. The mode is chosen in the scan
+panel's settings.
 
 Adding another brand of mount means writing one WaveplateRotatorBase.
 """
@@ -25,6 +29,20 @@ Adding another brand of mount means writing one WaveplateRotatorBase.
 from __future__ import annotations
 
 from ..widgets.Log_Widget import logger
+
+#: How a P-SHG series reaches a polarisation.
+#:
+#: "compensator" -- the half-wave plate carries the azimuth and goes to half of
+#:     it; the quarter-wave plate is parked on one measured position and does
+#:     not move. One number to measure per mount, and nothing to re-measure
+#:     when the azimuths change.
+#:
+#: "calibration" -- both plates are placed from a measured table that lists,
+#:     for each azimuth, where each plate has to sit. Heavier to maintain, but
+#:     it is the only option when the chain is not clean enough for the
+#:     compensator description to hold.
+POLARIZATION_MODES = ("compensator", "calibration")
+DEFAULT_POLARIZATION_MODE = "compensator"
 
 #: The three positions a compensator is parked on.
 COMPENSATOR_STATES = ("linear", "CD", "CG")

@@ -1742,6 +1742,14 @@ class MainWindow(QMainWindow):
             logger.debug(f"[Save] half-wave zero unavailable: {e}")
 
         try:
+            # Which of the two ways the azimuths were reached. Without it a
+            # P-SHG series cannot be re-read: the same angle means a different
+            # pair of plate positions in each mode.
+            context["mode"] = self.positioner_manager.polarization_mode()
+        except Exception as e:
+            logger.debug(f"[Save] P-SHG mode unavailable: {e}")
+
+        try:
             state = self.positioner_manager.compensator_state()
             context["compensator"] = state if state else "unknown"
             context["compensator_deg"] = float(self.positioner_manager.get_rel_pos("p4"))
@@ -1805,6 +1813,16 @@ class MainWindow(QMainWindow):
     
     def start_scan_outputs(self, scan_parameters: dict, mode: str):
         """Prepare the analog/stepper plan; the real timing will come from the acquisition."""
+        # Le mode P-SHG décide de ce que fait chaque lame pendant le scan. Posé
+        # ici plutôt qu'à chaque point : les trois entrées (preview simple,
+        # preview continu, REC) passent toutes par cette méthode.
+        try:
+            self.positioner_manager.set_polarization_mode(
+                scan_parameters.get("pshg_mode", "compensator")
+            )
+        except Exception as e:
+            logger.warning(f"[Scan] could not set the P-SHG mode: {e}")
+
         self.ui.analog_out_widget.reset_buffer()
         try:
             self.ui.visu_step_widget.reset_buffer()

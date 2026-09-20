@@ -1,8 +1,10 @@
-"""The polarisation chain: a rotating half-wave plate and a fixed compensator.
+"""The polarisation chain, and the two ways it reaches an azimuth.
 
-Reaching an azimuth used to mean looking both plate positions up in a measured
-table and interpolating between its points. With the compensator standing still
-it is one halving, which is what these tests pin.
+In compensator mode the half-wave plate carries the azimuth and goes to half of
+it while the quarter-wave plate stands still on a measured position; in
+calibration mode both plates are placed from a measured table. The same angle
+therefore means a different pair of plate positions in each, which is what
+these tests pin -- and why the mode has to travel with the data.
 """
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from DeepLight.gui.managers.Positioner_Manager import MockPositionerManager
 from DeepLight.gui.managers.Waveplate_Rotator import (
     COMPENSATOR_SETTING_KEYS,
+    DEFAULT_POLARIZATION_MODE,
     COMPENSATOR_STATES,
     azimuth_for_half_wave_angle,
     half_wave_angle_for_azimuth,
@@ -161,12 +164,82 @@ def test_an_incomplete_rotator_is_rejected():
         validate_waveplate_rotator_contract(object())
 
 
-def test_no_calibration_table_is_left_to_maintain():
-    """The table was the thing to regenerate whenever a mount was remounted.
-    Its absence is the point of this design, so it is worth a test."""
-    import DeepLight.gui.managers as managers
-    from pathlib import Path
+def test_the_calibration_table_is_available_again():
+    """It was removed when the compensator became the only way; it is back as
+    the second mode, for a chain the compensator description does not fit."""
+    from DeepLight.gui.managers.Polarization_Table import get_polarization_table
 
-    folder = Path(managers.__file__).parent
-    assert not (folder / "Polarization_Table.py").exists()
-    assert not (folder / "polarization_table.csv").exists()
+    table = get_polarization_table()
+    l2, l4 = table.lookup(0.0)
+
+    assert (l2, l4) == pytest.approx((8.3, 94.56))
+
+
+# ---- the two modes ---------------------------------------------------------
+
+def test_compensator_is_the_default(positioner):
+    assert positioner.polarization_mode() == DEFAULT_POLARIZATION_MODE == "compensator"
+
+
+def test_an_unknown_mode_falls_back_rather_than_stopping_a_run(positioner):
+    """Pushed from a settings field: a typo there should not stop an
+    acquisition from starting, but it must not pass unnoticed either."""
+    assert positioner.set_polarization_mode("magic") == "compensator"
+    assert positioner.set_polarization_mode("") == "compensator"
+    assert positioner.set_polarization_mode("CALIBRATION") == "calibration"
+
+
+def test_calibration_mode_places_both_plates_from_the_table(positioner):
+    positioner.set_compensator_positions(linear=12.0, CD=53.48, CG=56.16)
+    positioner.set_polarization_mode("calibration")
+
+    positioner.move_from_scan("Polarization", 90.0, 430.0, 0.0, "polar_step")
+
+    # The 90 degree row of polarization_table.csv.
+    assert positioner._state["p"].target_abs == pytest.approx(54.0)
+    assert positioner._state["p4"].target_abs == pytest.approx(5.15)
+
+
+def test_the_two_modes_disagree_on_purpose(positioner):
+    """The same azimuth means a different pair of plate positions in each mode,
+    which is why the provenance has to record which one was used."""
+    positioner.set_compensator_positions(linear=12.0)
+
+    positioner.set_polarization_mode("compensator")
+    positioner.move_from_scan("Polarization", 90.0, 430.0, 0.0, "polar_step")
+    compensator = positioner._state["p"].target_abs
+
+    positioner._polar_prescan = None
+    positioner.set_polarization_mode("calibration")
+    positioner.move_from_scan("Polarization", 90.0, 430.0, 0.0, "polar_step")
+    calibrated = positioner._state["p"].target_abs
+
+    assert compensator == pytest.approx(45.0)
+    assert calibrated == pytest.approx(54.0)
+    assert compensator != pytest.approx(calibrated)
+
+
+def test_calibration_mode_does_not_park_the_compensator(positioner):
+    """The table already says where the quarter-wave plate goes; parking it on
+    'linear' first would be a move the table immediately undoes."""
+    positioner.set_compensator_positions(linear=12.0)
+    positioner.set_polarization_mode("calibration")
+    positioner._state["p4"].target_abs = None
+
+    positioner.move_from_scan("Polarization", 0.0, 430.0, 0.0, "polar_step")
+
+    assert positioner._state["p4"].target_abs == pytest.approx(94.56)   # the table
+
+
+def test_calibration_mode_restores_both_plates_afterwards(positioner):
+    """Both moved, so both have to be put back -- the compensator mode only
+    has to restore the one it turned."""
+    positioner.set_polarization_mode("calibration")
+    positioner._state["p"].abs_pos = 7.5
+    positioner._state["p4"].abs_pos = 3.25
+
+    positioner.move_from_scan("Polarization", 90.0, 430.0, 0.0, "polar_step")
+    positioner.move_from_scan("Polarization", 0.0, 430.0, 0.0, "polar_return_to_base")
+
+    assert positioner._state["p"].target_abs == pytest.approx(7.5)
+    assert positioner._state["p4"].target_abs == pytest.approx(3.25)

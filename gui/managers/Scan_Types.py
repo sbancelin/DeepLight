@@ -327,7 +327,11 @@ STEPPER_AXIS_DEFAULTS = {
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
         # Angle de la lame donnant l'horizontale -> zero_offset de l'axe.
+        # Mode "compensator" : le scan va à azimut/2 à partir de là.
         "offset_deg": 28.97,
+        # Mode "calibration" seulement : la λ/2 participe aussi aux circulaires.
+        "cd_deg": 9.8,      # circulaire droite (CD)
+        "cg_deg": 53.3,     # circulaire gauche (CG)
     },
     # P(λ/4) : compensateur. Il ne scanne pas ; il se gare sur l'une de trois
     # positions mesurées, qui corrigent l'ellipticité introduite en amont.

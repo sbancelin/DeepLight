@@ -98,20 +98,43 @@ show nothing there: a counter has no fixed ceiling.
 
 ## Polarisation (P-SHG)
 
-Two waveplates before the objective, doing different jobs:
+Two waveplates sit before the objective, and there are two ways of using them.
+The mode is chosen in the **scan panel's settings**, and the choice only appears
+when `Polarization` is one of the active scan axes.
+
+### Compensator (default)
 
 - The **half-wave plate** carries the azimuth. A scan to azimuth θ drives it to
-  θ/2. One setting describes the mount — *Horizontal at*, the plate angle where
-  the light comes out horizontal — in the Positioners settings.
+  θ/2, because a half-wave plate turns linear polarisation by twice its own
+  angle. One setting describes the mount — *Horizontal at*, the plate angle
+  where the light comes out horizontal — in the Positioners settings.
 - The **quarter-wave plate** is a compensator, correcting the ellipticity the
   optics upstream introduce. It does not scan. It parks on one of three measured
   positions, entered in the same settings and reached with the **Lin**, **CD**
-  and **CG** buttons.
+  and **CG** buttons, which move that plate alone.
 
-For a series, put `Polarization` on row 3 and give it the angles you want. A
-scan parks the compensator on *linear* at its first point rather than trusting
-where it was left, and returns the half-wave plate where it started at the end.
-The azimuths visited are listed in the saved file.
+One number to measure per mount, and nothing to re-measure when the azimuths
+change. A scan parks the compensator on *linear* at its first point rather than
+trusting where it was left.
+
+### Calibration
+
+Both plates are placed together from a measured table, `polarization_table.csv`
+beside the code, which lists for each azimuth where each plate has to sit;
+intermediate azimuths are interpolated. The **Lin**, **CD** and **CG** buttons
+move both plates in this mode.
+
+Heavier to maintain — the table has to be re-measured whenever a mount is
+disturbed — but it assumes nothing about how clean the chain is. Use it when the
+compensator description does not hold.
+
+### Either way
+
+Put `Polarization` on row 3 and give it the angles you want. The half-wave plate
+returns where it started at the end, and so does the quarter-wave one in
+calibration mode. The azimuths visited are listed in the saved file, **together
+with the mode** — the same angle means a different pair of plate positions in
+each, so a series cannot be re-read without knowing which was used.
 
 ---
 

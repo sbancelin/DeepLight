@@ -7,7 +7,12 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 from ..widgets.Log_Widget import logger
-from .Waveplate_Rotator import COMPENSATOR_STATES, half_wave_angle_for_azimuth
+from .Waveplate_Rotator import (
+    COMPENSATOR_STATES,
+    DEFAULT_POLARIZATION_MODE,
+    POLARIZATION_MODES,
+    half_wave_angle_for_azimuth,
+)
 
 
 @dataclass
@@ -56,40 +61,71 @@ class PositionerManager(QObject):
         # Positions mesurées du compensateur (λ/4), par état. Vide tant que le
         # panneau positionneur ne les a pas poussées.
         self._compensator_positions: Dict[str, float] = {}
+        # Comment une série P-SHG atteint une polarisation. Poussé par la
+        # fenêtre au lancement du scan, depuis les settings du panneau de scan.
+        self._polarization_mode: str = DEFAULT_POLARIZATION_MODE
 
     def _handle_polarization_scan(self, target_rel: float, reason: str):
         """
         One 'Polarization' scan point = one AZIMUTH (°).
 
-        Only the half-wave plate turns, by half the azimuth: a half-wave plate
-        rotates linear polarisation by twice its own angle. The quarter-wave
-        plate is a compensator, parked once on its 'linear' position at the
-        start of the run and left there -- it corrects the ellipticity the
-        optics upstream introduce, which does not depend on the azimuth.
+        How that azimuth is reached depends on the mode:
 
-        The plate's position before the scan is remembered so it can be
-        restored on 'return_to_base'.
+        * **compensator** -- only the half-wave plate turns, by half the
+          azimuth, since a half-wave plate rotates linear polarisation by twice
+          its own angle. The quarter-wave plate is parked once on its 'linear'
+          position at the start of the run and left there: it corrects the
+          ellipticity the optics upstream introduce, which does not depend on
+          the azimuth.
+
+        * **calibration** -- both plates are placed from the measured table,
+          which says where each has to sit for this azimuth.
+
+        Whichever mode, the plates' positions before the scan are remembered so
+        they can be restored on 'return_to_base'.
         """
         r = str(reason or "")
+        calibrated = self._polarization_mode == "calibration"
+        # En mode calibration la λ/4 bouge aussi, donc elle est à restaurer.
+        axes = ("p", "p4") if calibrated else ("p",)
 
-        # Retour à la base : restaurer la position pré-scan de la λ/2.
+        # Retour à la base : restaurer les positions pré-scan.
         if r.endswith("return_to_base"):
             pre = self._polar_prescan
             self._polar_prescan = None
-            if pre is not None and pre.get("p") is not None and "p" in self._state:
-                self.move_to_rel("p", float(pre["p"]), self._POLAR_SPEED_DEG_S)
+            if pre is not None:
+                for axis in axes:
+                    if axis in self._state and pre.get(axis) is not None:
+                        self.move_to_rel(axis, float(pre[axis]), self._POLAR_SPEED_DEG_S)
             return
 
-        # Première commande du run : mémoriser l'état, et poser le compensateur
-        # sur sa position linéaire. Une série P-SHG n'a de sens qu'en linéaire.
+        # Première commande du run : mémoriser l'état des lames concernées.
         if self._polar_prescan is None:
-            try:
-                self._polar_prescan = {
-                    "p": float(self.get_rel_pos("p")) if "p" in self._state else None
-                }
-            except Exception:
-                self._polar_prescan = {"p": None}
-            self.move_compensator("linear")
+            self._polar_prescan = {}
+            for axis in axes:
+                try:
+                    self._polar_prescan[axis] = (
+                        float(self.get_rel_pos(axis)) if axis in self._state else None
+                    )
+                except Exception:
+                    self._polar_prescan[axis] = None
+
+            # Mode compensateur : poser la λ/4 en linéaire une fois pour toutes.
+            # Une série P-SHG n'a de sens qu'en polarisation linéaire, et s'en
+            # remettre à l'endroit où la session précédente l'a laissée serait
+            # invisible dans les images.
+            if not calibrated:
+                self.move_compensator("linear")
+
+        if calibrated:
+            from .Polarization_Table import get_polarization_table
+
+            l2_deg, l4_deg = get_polarization_table().lookup(float(target_rel))
+            if "p" in self._state:
+                self.move_to_rel("p", float(l2_deg), self._POLAR_SPEED_DEG_S)
+            if "p4" in self._state:
+                self.move_to_rel("p4", float(l4_deg), self._POLAR_SPEED_DEG_S)
+            return
 
         if "p" in self._state:
             # Le zéro de la lame (angle donnant l'horizontale) est porté par le
@@ -99,6 +135,30 @@ class PositionerManager(QObject):
                 half_wave_angle_for_azimuth(float(target_rel)),
                 self._POLAR_SPEED_DEG_S,
             )
+
+    # ---- mode P-SHG -----------------------------------------------------
+
+    def set_polarization_mode(self, mode: str) -> str:
+        """Choose how a P-SHG series reaches its azimuths.
+
+        An unknown name falls back to the default rather than raising: this is
+        pushed from a settings field, and a typo there should not stop a run
+        from starting. It is logged, so it is not silent either.
+        """
+        mode = str(mode or "").strip().lower()
+        if mode not in POLARIZATION_MODES:
+            if mode:
+                logger.warning(
+                    f"[Positioner] unknown P-SHG mode {mode!r}; "
+                    f"using {DEFAULT_POLARIZATION_MODE!r}."
+                )
+            mode = DEFAULT_POLARIZATION_MODE
+
+        self._polarization_mode = mode
+        return mode
+
+    def polarization_mode(self) -> str:
+        return self._polarization_mode
 
     # ---- compensateur (λ/4) --------------------------------------------
 
