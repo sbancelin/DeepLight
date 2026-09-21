@@ -138,6 +138,16 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(icon_path("Microscope_icon_green.ico")))
 
         self.user_shutter_override = None  # None=no override, True/False=user forced state
+        # État de la séquence dark Brillouin (cf. _on_brillouin_dark_clicked) :
+        # tourne pas à pas via QTimer.singleShot plutôt qu'en boucle bloquante,
+        # pour que la barre de progression s'affiche et que Stop puisse l'interrompre.
+        self._brillouin_dark_running = False
+        self._brillouin_dark_stop_requested = False
+        self._brillouin_dark_frames = []
+        self._brillouin_dark_index = 0
+        self._brillouin_dark_params = {}
+        self._brillouin_dark_folder = ""
+        self._brillouin_dark_shutter_was_open = False
         self.hardware = HardwareManager(backend_name=self.backend_name, settings_manager=self.settings_manager, parent=self)
         self.laser_manager = self.hardware.create_laser_manager()
         self.camera_controller = self.hardware.create_camera_controller(parent=self)
@@ -509,23 +519,24 @@ class MainWindow(QMainWindow):
 
         self._on_spectro_status_changed("Spectro stopped")
 
-    #: Brillouin exposures are long, so fewer frames than for the camera; the
-    #: read noise still falls by nearly three.
-    BRILLOUIN_DARK_FRAMES = 8
+    #: A noise-floor reference, not an average to subtract: 10 raw frames is
+    #: enough to characterise it without making the operator wait minutes.
+    BRILLOUIN_DARK_FRAMES = 10
 
     @Slot()
     def _on_brillouin_dark_clicked(self):
-        """Measure the EMCCD's dark and subtract it from every Brillouin image.
+        """Save a short sequence of raw frames (shutter closed) to disk.
 
-        Already loaded? Then this is a request to drop it -- one button for a
-        state that is either on or off, rather than two that are usually wrong.
+        Acquisition only: nothing here is subtracted from a live image, and
+        no correction is installed anywhere -- DeepLight acquires, whatever
+        processing the frames need happens afterwards, outside DeepLight.
+        Runs one frame at a time (QTimer.singleShot) rather than in a
+        blocking loop, so the progress bar updates live and Stop can
+        interrupt it, same as any other acquisition.
         """
         sw = self.ui.spectro_widget
 
-        if self.hardware.get_brillouin_correction() is not None:
-            self.hardware.set_brillouin_correction(None)
-            sw.label_brillouin_dark.setText("no dark")
-            logger.info("[Brillouin] dark correction cleared")
+        if self._brillouin_dark_running:
             return
 
         params = sw.get_brillouin_parameters() if hasattr(sw, "get_brillouin_parameters") else {}
@@ -534,9 +545,9 @@ class MainWindow(QMainWindow):
         confirm = QMessageBox(self)
         confirm.setWindowTitle("Acquire a Brillouin dark")
         confirm.setText(
-            f"The shutter will be closed and {self.BRILLOUIN_DARK_FRAMES} images "
-            f"averaged at {exposure_ms:.0f} ms.\n\n"
-            "A dark is only valid for this exposure and binning."
+            f"The shutter will be closed and {self.BRILLOUIN_DARK_FRAMES} raw frames "
+            f"saved at {exposure_ms:.0f} ms, as a noise-floor reference.\n\n"
+            "Acquisition only: no correction is applied or installed."
         )
         confirm.setIconPixmap(_orange_question_icon())
         confirm.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
@@ -544,32 +555,116 @@ class MainWindow(QMainWindow):
         if confirm.exec() != QMessageBox.Ok:
             return
 
-        sw.label_brillouin_dark.setText("measuring…")
+        folder = self.ui.save_widget.folder_line_edit.text().strip()
+        if not folder:
+            logger.warning("[Brillouin] set a save folder first.")
+            return
         try:
-            dark = self.hardware.acquire_brillouin_dark(
-                params, count=self.BRILLOUIN_DARK_FRAMES
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            logger.error(f"[Brillouin] could not create {folder}: {e}")
+            return
+
+        self._brillouin_dark_params = params
+        self._brillouin_dark_frames = []
+        self._brillouin_dark_index = 0
+        self._brillouin_dark_stop_requested = False
+        self._brillouin_dark_folder = folder
+        self._brillouin_dark_shutter_was_open = self.hardware.is_shutter_open()
+        self._brillouin_dark_running = True
+
+        self.hardware.set_shutter(False)
+        sw.label_brillouin_dark.setText(f"0/{self.BRILLOUIN_DARK_FRAMES}")
+        try:
+            self.ui.global_progress_widget.start_task("Brillouin dark", total=self.BRILLOUIN_DARK_FRAMES)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+        logger.notice(
+            f"[Brillouin] Dark sequence started: {self.BRILLOUIN_DARK_FRAMES} frames at {exposure_ms:.0f} ms."
+        )
+
+        QTimer.singleShot(0, self._acquire_next_brillouin_dark_frame)
+
+    def _acquire_next_brillouin_dark_frame(self):
+        if not self._brillouin_dark_running:
+            return
+
+        sw = self.ui.spectro_widget
+
+        if self._brillouin_dark_stop_requested or self._brillouin_dark_index >= self.BRILLOUIN_DARK_FRAMES:
+            self._finish_brillouin_dark_sequence(stopped=self._brillouin_dark_stop_requested)
+            return
+
+        try:
+            frame = self.hardware.acquire_brillouin_image(self._brillouin_dark_params)
+        except Exception as e:
+            logger.error(f"[Brillouin] dark frame {self._brillouin_dark_index + 1} failed: {e}")
+            self._finish_brillouin_dark_sequence(stopped=True)
+            return
+
+        if frame is None:
+            # Backend mock, ou pas de caméra : le dire vaut mieux que sauver
+            # une séquence vide en silence.
+            if self._brillouin_dark_index == 0:
+                logger.warning("[Brillouin] no camera to acquire a dark from.")
+            self._finish_brillouin_dark_sequence(stopped=True)
+            return
+
+        self._brillouin_dark_frames.append(np.asarray(frame, dtype=np.float32))
+        self._brillouin_dark_index += 1
+
+        sw.label_brillouin_dark.setText(f"{self._brillouin_dark_index}/{self.BRILLOUIN_DARK_FRAMES}")
+        try:
+            self.ui.global_progress_widget.set_progress(
+                self._brillouin_dark_index, self.BRILLOUIN_DARK_FRAMES
             )
         except Exception as e:
-            logger.error(f"[Brillouin] dark acquisition failed: {e}")
-            sw.label_brillouin_dark.setText("failed")
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        QTimer.singleShot(0, self._acquire_next_brillouin_dark_frame)
+
+    def _finish_brillouin_dark_sequence(self, stopped: bool):
+        sw = self.ui.spectro_widget
+        self._brillouin_dark_running = False
+
+        try:
+            if self._brillouin_dark_shutter_was_open:
+                self.hardware.set_shutter(True)
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        n = len(self._brillouin_dark_frames)
+        if n == 0:
+            sw.label_brillouin_dark.setText("no dark")
+            try:
+                self.ui.global_progress_widget.finish_task("Stopped" if stopped else "Failed")
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
             return
 
-        if dark is None:
-            # Backend mock : pas de caméra à mesurer, et le dire vaut mieux
-            # que laisser croire qu'une correction est en place.
-            logger.warning("[Brillouin] no camera to measure a dark from")
-            sw.label_brillouin_dark.setText("no camera")
+        stack = np.stack(self._brillouin_dark_frames, axis=0)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(self._brillouin_dark_folder, f"brillouin_dark_{timestamp}.tif")
+        try:
+            import tifffile
+            tifffile.imwrite(path, stack, photometric="minisblack")
+        except Exception as e:
+            logger.error(f"[Brillouin] could not write the dark sequence: {e}")
+            sw.label_brillouin_dark.setText("save failed")
+            try:
+                self.ui.global_progress_widget.finish_task("Save failed")
+            except Exception as e2:
+                logger.debug(f"[MainWindow] ignored exception: {e2}")
             return
 
-        self.hardware.set_brillouin_correction(FieldCorrection(dark=dark, metadata={
-            "instrument": "brillouin",
-            "frames_averaged": self.BRILLOUIN_DARK_FRAMES,
-            "exposure_ms": exposure_ms,
-        }))
-        sw.label_brillouin_dark.setText(f"dark {exposure_ms:.0f} ms")
-        logger.info(
-            f"[Brillouin] dark: {self.BRILLOUIN_DARK_FRAMES} images at {exposure_ms:.0f} ms, "
-            f"shape {dark.shape}, mean {float(np.mean(dark)):.1f}"
+        sw.label_brillouin_dark.setText(f"{n}/{self.BRILLOUIN_DARK_FRAMES} saved")
+        try:
+            self.ui.global_progress_widget.finish_task("Stopped" if stopped else "Done")
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+        logger.notice(
+            f"[Brillouin] Dark sequence {'stopped' if stopped else 'finished'}: "
+            f"{n}/{self.BRILLOUIN_DARK_FRAMES} frames written to {path}"
         )
 
     @Slot()
@@ -932,7 +1027,11 @@ class MainWindow(QMainWindow):
         )
 
     def _correction_context(self) -> dict:
-        """What was subtracted, for the provenance of the next save."""
+        """What was subtracted, for the provenance of the next save.
+
+        Brillouin has no entry here: DeepLight only acquires for it, it does
+        not subtract anything from a live image (see _on_brillouin_dark_clicked).
+        """
         context = {}
         try:
             correction = self.camera_controller.correction
@@ -940,13 +1039,6 @@ class MainWindow(QMainWindow):
                 context["camera"] = correction.describe()
         except Exception as e:
             logger.debug(f"[Save] camera correction state unavailable: {e}")
-
-        try:
-            brillouin = self.hardware.get_brillouin_correction()
-            if brillouin is not None and not brillouin.is_empty:
-                context["brillouin"] = brillouin.describe()
-        except Exception as e:
-            logger.debug(f"[Save] Brillouin correction state unavailable: {e}")
 
         return context
 
@@ -2936,6 +3028,12 @@ class MainWindow(QMainWindow):
         # Distingue une fin normale d'un arrêt manuel pour la notice de log
         # (cf. on_acquisition_stopped) ; lu et remis à False là-bas.
         self._user_stop_requested = True
+
+        # Séquence dark Brillouin : vérifié en tête de la prochaine frame
+        # (_acquire_next_brillouin_dark_frame), pas d'arrêt immédiat ici --
+        # ce qui a déjà été acquis reste sauvegardé.
+        if self._brillouin_dark_running:
+            self._brillouin_dark_stop_requested = True
 
         self.acquisition_manager.stop_acquisition()
 

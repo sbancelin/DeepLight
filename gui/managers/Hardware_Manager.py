@@ -11,7 +11,6 @@ from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer
 
 from ...config import CONFIG
-from .Field_Correction import average_frames
 from .Positioner_Manager import MockPositionerManager, PositionerManager
 from .Power_Actuator import (
     DirectPowerActuator,
@@ -2923,9 +2922,6 @@ class HardwareManager(QObject):
         self._camera_controller = None
         self._brillouin_camera = None
 
-        self._brillouin_correction = None
-        self._brillouin_correction_enabled = True
-
         self._laser_manager = None
 
         if self.backend_name == "nidaq":
@@ -3309,69 +3305,10 @@ class HardwareManager(QObject):
                 f"[HardwareManager] Kuro image shape={getattr(img, 'shape', None)} "
                 f"dtype={getattr(img, 'dtype', None)}"
             )
-            return self.apply_brillouin_correction(img)
+            return img
 
         logger.warning("[HardwareManager] Brillouin source unavailable")
         return None
-
-    # ---- Brillouin dark / flat ----------------------------------------
-
-    def set_brillouin_correction(self, correction, enabled: bool = True):
-        """Install the dark/flat reference applied to every Brillouin image."""
-        self._brillouin_correction = correction
-        self._brillouin_correction_enabled = bool(enabled)
-
-    def get_brillouin_correction(self):
-        return getattr(self, "_brillouin_correction", None)
-
-    def apply_brillouin_correction(self, img):
-        """Subtract the dark from a Brillouin image, when one applies.
-
-        The EMCCD's dark current is the reason this matters here more than
-        elsewhere: it grows with exposure, and a Brillouin exposure is long.
-        """
-        correction = getattr(self, "_brillouin_correction", None)
-        if img is None or correction is None:
-            return img
-        if not getattr(self, "_brillouin_correction_enabled", True):
-            return img
-        if not correction.matches(img):
-            logger.warning(
-                "[HardwareManager] Brillouin correction ignored: the image geometry changed"
-            )
-            return img
-        return correction.apply(img)
-
-    def acquire_brillouin_dark(self, params=None, count: int = 8):
-        """Average `count` images with the shutter shut, as a dark reference.
-
-        The shutter is closed here rather than left to the operator: a "dark"
-        taken with the beam on is not a dark, and it would be subtracted from
-        every image afterwards without anything looking wrong.
-        """
-        was_open = self.is_shutter_open()
-        self.set_shutter(False)
-        try:
-            frames = []
-            for _ in range(max(1, int(count))):
-                img = self.acquire_brillouin_image_raw(params)
-                if img is None:
-                    return None
-                frames.append(img)
-            return average_frames(frames)
-        finally:
-            if was_open:
-                self.set_shutter(True)
-
-    def acquire_brillouin_image_raw(self, params=None):
-        """One Brillouin image with no correction applied.
-
-        What a reference has to be measured from: correcting the frames a dark
-        is built out of would fold the previous dark into the new one.
-        """
-        if self.backend_name != "nidaq":
-            return None
-        return self._get_brillouin_camera().snap(params or {})
 
     def close(self):
         try:
