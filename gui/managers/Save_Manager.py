@@ -933,6 +933,10 @@ class SaveManager:
             "modalities": dict(metadata_block.get("modalities", {}) or {}),
             "acquisition_parameters": dict(metadata_block.get("acquisition_parameters", {}) or {}),
             "brillouin_parameters": dict(metadata_block.get("brillouin_parameters", {}) or {}),
+            # The camera crop the frames were taken through: it sets the last two
+            # axes of the Brillouin array and how big the file is, so a dataset
+            # that does not state it cannot be read back without guessing.
+            "brillouin_roi": dict(metadata_block.get("brillouin_roi", {}) or {}),
             "raman_parameters": dict(metadata_block.get("raman_parameters", {}) or {}),
             "save_parameters": dict(metadata_block.get("save_parameters", {}) or {}),
             "raman_wavelengths_nm": (
