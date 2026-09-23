@@ -5,7 +5,7 @@ import time
 import math
 import struct
 import serial
-from threading import Lock
+from threading import Lock, RLock
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer
@@ -2926,6 +2926,14 @@ class HardwareManager(QObject):
         self._brillouin_correction = None
         self._brillouin_correction_enabled = True
 
+        # Un seul Picam_Acquire à la fois sur la caméra Brillouin. Le live
+        # tourne dans son QThread, le mapping dans le sien, et le dark part du
+        # thread GUI : deux acquisitions qui se chevauchent sur la même poignée
+        # PICam laissent la caméra armée et inutilisable jusqu'à reconnexion.
+        # Réentrant parce que acquire_brillouin_dark() boucle sur
+        # acquire_brillouin_image_raw(), déjà protégé.
+        self._brillouin_cam_lock = RLock()
+
         self._laser_manager = None
 
         if self.backend_name == "nidaq":
@@ -3274,9 +3282,9 @@ class HardwareManager(QObject):
         if self.backend_name == "mock":
             return None
 
-        cam = self._get_brillouin_camera()
-        return cam
-    
+        with self._brillouin_cam_lock:
+            return self._get_brillouin_camera()
+
     def prepare_brillouin_for_scan(self, params: dict | None = None):
         """
         Pre-initialise the Brillouin camera and apply the parameters once before the
@@ -3284,8 +3292,8 @@ class HardwareManager(QObject):
         """
         if self.backend_name == "mock":
             return
-        cam = self._get_brillouin_camera()
-        cam.apply_parameters(params or {})
+        with self._brillouin_cam_lock:
+            self._get_brillouin_camera().apply_parameters(params or {})
 
     def acquire_brillouin_image(self, params=None):
         """
@@ -3303,8 +3311,7 @@ class HardwareManager(QObject):
 
         if self.backend_name == "nidaq":
             logger.debug("[HardwareManager] Brillouin source = PICam/Kuro")
-            cam = self._get_brillouin_camera()
-            img = cam.snap(params or {})
+            img = self._brillouin_snap(params)
             logger.debug(
                 f"[HardwareManager] Kuro image shape={getattr(img, 'shape', None)} "
                 f"dtype={getattr(img, 'dtype', None)}"
@@ -3313,6 +3320,31 @@ class HardwareManager(QObject):
 
         logger.warning("[HardwareManager] Brillouin source unavailable")
         return None
+
+    def _brillouin_snap(self, params=None):
+        """One frame off the Brillouin camera, serialised and self-healing.
+
+        A PICam acquisition that fails part way -- a timeout, or a second
+        acquisition arriving while this one is armed -- leaves the camera armed
+        and every later snap failing too, with `connected` still True so nothing
+        reconnects on its own. Dropping the connection here means the next Snap
+        or Live re-opens the camera instead of the operator having to press
+        Reconnect, or restart DeepLight.
+        """
+        with self._brillouin_cam_lock:
+            try:
+                return self._get_brillouin_camera().snap(params or {})
+            except Exception:
+                try:
+                    if self._brillouin_camera is not None:
+                        self._brillouin_camera.disconnect()
+                except Exception as e:
+                    logger.debug(f"[HardwareManager] Brillouin camera would not close: {e}")
+                logger.warning(
+                    "[HardwareManager] Brillouin acquisition failed; the camera will be "
+                    "re-opened on the next one."
+                )
+                raise
 
     # ---- Brillouin dark / flat ----------------------------------------
 
@@ -3352,13 +3384,18 @@ class HardwareManager(QObject):
         was_open = self.is_shutter_open()
         self.set_shutter(False)
         try:
-            frames = []
-            for _ in range(max(1, int(count))):
-                img = self.acquire_brillouin_image_raw(params)
-                if img is None:
-                    return None
-                frames.append(img)
-            return average_frames(frames)
+            # Held across the whole series: eight frames taken one at a time,
+            # with a live frame slipped in between, are eight frames of
+            # something else. The caller stops the live view anyway -- this is
+            # what makes it not matter if it forgets.
+            with self._brillouin_cam_lock:
+                frames = []
+                for _ in range(max(1, int(count))):
+                    img = self.acquire_brillouin_image_raw(params)
+                    if img is None:
+                        return None
+                    frames.append(img)
+                return average_frames(frames)
         finally:
             if was_open:
                 self.set_shutter(True)
@@ -3371,7 +3408,7 @@ class HardwareManager(QObject):
         """
         if self.backend_name != "nidaq":
             return None
-        return self._get_brillouin_camera().snap(params or {})
+        return self._brillouin_snap(params)
 
     def close(self):
         try:

@@ -116,6 +116,14 @@ class SaveManager:
     #: extra levels outweighs what a viewer saves by not decoding it whole.
     PYRAMID_MIN_SIDE_PX = 2048
 
+    #: Past this, a classic TIFF can no longer address its own data and BigTIFF
+    #: is the only option. Same threshold tifffile uses when it decides by
+    #: itself, so a file written here and one written by imwrite() agree.
+    #: It matters which side of it a file lands on: ImageJ's own TIFF reader
+    #: does not open BigTIFF at all, and neither it nor a tiled layout is worth
+    #: imposing on a file small enough not to need them.
+    BIGTIFF_THRESHOLD_BYTES = 2 ** 32 - 2 ** 25
+
     @staticmethod
     def _pyramid_levels(height: int, width: int, arr=None):
         """Successive half-resolution copies, largest first.
@@ -131,6 +139,23 @@ class SaveManager:
             current = current[..., ::2, ::2]
             levels.append(current)
         return levels
+
+    def _warn_if_bigtiff(self, label: str, nbytes: int):
+        """Say so before a write that will silently become a BigTIFF.
+
+        tifffile changes format on its own past the 4 GB a classic TIFF can
+        address. The file stays valid and Fiji reads it through Bio-Formats, but
+        ImageJ's own TIFF reader does not open BigTIFF at all -- which looks
+        like a corrupt file rather than a format one. Cheaper to read it in the
+        log than to work it out from the file afterwards.
+        """
+        if int(nbytes) <= self.BIGTIFF_THRESHOLD_BYTES:
+            return
+        logger.warning(
+            f"[{label}] {int(nbytes) / 2**30:.1f} GiB exceeds what a classic TIFF can "
+            "address: written as BigTIFF. Fiji opens it through Bio-Formats; ImageJ's "
+            "own TIFF reader does not. Use OME-Zarr to keep the file readable everywhere."
+        )
 
     def _make_omero_metadata(self, name: str, channels: list[str]) -> dict:
         return {
@@ -466,20 +491,33 @@ class SaveManager:
 
         levels = self._pyramid_levels(arr.shape[-2], arr.shape[-1], arr)
 
+        # A pyramid is only useful with tiles, and tiles and BigTIFF are only
+        # worth their cost on a mosaic big enough to need them. Forcing both on
+        # every mosaic put small ones out of reach of ImageJ's own TIFF reader,
+        # which opens neither, and padded a 50 px mosaic out to a full 256 px
+        # tile. So: strips and a classic TIFF unless the data says otherwise.
+        pyramidal = bool(levels)
+        total_bytes = int(arr.nbytes) + sum(int(level.nbytes) for level in levels)
+        bigtiff = total_bytes > self.BIGTIFF_THRESHOLD_BYTES
+        layout = {"tile": (256, 256)} if pyramidal else {}
+
+        if bigtiff:
+            logger.info(
+                f"[Mosaic] {total_bytes / 2**30:.1f} GiB: written as BigTIFF, which "
+                "Fiji reads through Bio-Formats but ImageJ's own TIFF reader does not."
+            )
+
         with self._lock:
-            # BigTIFF unconditionally: a mosaic is exactly the thing that walks
-            # past the 4 GB the classic format can address, and finding that out
-            # is a failed write at the end of a long run.
             mosaic_metadata = {"axes": axes}
             mosaic_metadata.update(self._ome_physical_size(scan_params))
 
-            with tifffile.TiffWriter(path, bigtiff=True, ome=True) as tif:
+            with tifffile.TiffWriter(path, bigtiff=bigtiff, ome=True) as tif:
                 tif.write(
                     arr,
                     photometric="minisblack",
                     metadata=mosaic_metadata,
                     subifds=len(levels),
-                    tile=(256, 256),
+                    **layout,
                 )
                 # Halved copies, so a viewer can pan a large mosaic without
                 # decoding it whole.
@@ -488,7 +526,7 @@ class SaveManager:
                         level,
                         photometric="minisblack",
                         subfiletype=1,
-                        tile=(256, 256),
+                        **layout,
                     )
 
             self._write_sidecar(
@@ -700,6 +738,7 @@ class SaveManager:
             }
             ome_metadata.update(self._ome_physical_size(scan_params))
 
+            self._warn_if_bigtiff("REC", stack.nbytes)
             tifffile.imwrite(
                 path,
                 stack,  # (T,C,Z,Y,X)
@@ -956,6 +995,7 @@ class SaveManager:
                     stack[t_idx, c_idx, z_idx, :, :] = arr[t_idx, z_idx, y_idx, x_idx, :, :]
 
                 out_name = "brillouin.ome.tif"
+                self._warn_if_bigtiff("Spectro", stack.nbytes)
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
                     stack,
@@ -1012,6 +1052,7 @@ class SaveManager:
 
             if fmt == "OME-TIFF":
                 out_name = "raman.ome.tif"
+                self._warn_if_bigtiff("Spectro", arr.nbytes)
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
                     arr,

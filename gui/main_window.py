@@ -544,7 +544,16 @@ class MainWindow(QMainWindow):
         if confirm.exec() != QMessageBox.Ok:
             return
 
+        # The live view drives the same camera from its own thread. Two
+        # overlapping acquisitions on one PICam handle leave the camera armed
+        # and unusable until it is reconnected, so the live view stops first and
+        # is put back afterwards -- rather than the operator having to know that.
+        was_live = self.spectro_manager.is_brillouin_live_running()
+        if was_live:
+            self.spectro_manager.stop_live_brillouin()
+
         sw.label_brillouin_dark.setText("measuring…")
+        QGuiApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             dark = self.hardware.acquire_brillouin_dark(
                 params, count=self.BRILLOUIN_DARK_FRAMES
@@ -553,6 +562,10 @@ class MainWindow(QMainWindow):
             logger.error(f"[Brillouin] dark acquisition failed: {e}")
             sw.label_brillouin_dark.setText("failed")
             return
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+            if was_live:
+                self.spectro_manager.start_live_brillouin(params)
 
         if dark is None:
             # Backend mock : pas de caméra à mesurer, et le dire vaut mieux
