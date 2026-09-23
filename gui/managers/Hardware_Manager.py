@@ -2925,6 +2925,7 @@ class HardwareManager(QObject):
 
         self._brillouin_correction = None
         self._brillouin_correction_enabled = True
+        self._brillouin_geometry_warned = False
 
         # Un seul Picam_Acquire à la fois sur la caméra Brillouin. Le live
         # tourne dans son QThread, le mapping dans le sien, et le dark part du
@@ -3352,6 +3353,7 @@ class HardwareManager(QObject):
         """Install the dark/flat reference applied to every Brillouin image."""
         self._brillouin_correction = correction
         self._brillouin_correction_enabled = bool(enabled)
+        self._brillouin_geometry_warned = False
 
     def get_brillouin_correction(self):
         return getattr(self, "_brillouin_correction", None)
@@ -3368,9 +3370,16 @@ class HardwareManager(QObject):
         if not getattr(self, "_brillouin_correction_enabled", True):
             return img
         if not correction.matches(img):
-            logger.warning(
-                "[HardwareManager] Brillouin correction ignored: the image geometry changed"
-            )
+            # Once, not once per point: a mapping calls this thousands of times,
+            # and a dark taken at another ROI or binning would otherwise bury
+            # the log -- and the panel -- under the same line.
+            if not getattr(self, "_brillouin_geometry_warned", False):
+                self._brillouin_geometry_warned = True
+                logger.warning(
+                    f"[HardwareManager] Brillouin correction ignored: the dark is "
+                    f"{correction.shape} and the images are {getattr(img, 'shape', None)}. "
+                    "Re-measure the dark at the ROI and binning in use."
+                )
             return img
         return correction.apply(img)
 
