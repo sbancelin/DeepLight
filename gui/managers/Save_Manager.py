@@ -942,10 +942,11 @@ class SaveManager:
             "data_files": {},
             "axis_interpretation": {
                 "brillouin_ome_tiff": {
-                    "axes": "TCZYX",
+                    "axes": "TZCYX",
                     "T": "repetition index (currently always 1 in spectro mock)",
-                    "C": "linear scan index within each XY serpentine plane",
-                    "Z": "mapping z index",
+                    "Z": "linear scan index within each XY serpentine plane"
+                         " (y * pixels_x + x); positions.csv gives its stage position",
+                    "C": "mapping z index",
                     "Y": "camera image y",
                     "X": "camera image x",
                 },
@@ -974,10 +975,10 @@ class SaveManager:
             if arr.ndim == 5:
                 arr = arr[np.newaxis]
             pt, pz, py, px, h, w = arr.shape
-            n_channels = py * px
+            n_points = py * px
 
             if fmt == "OME-TIFF":
-                stack = np.zeros((pt, n_channels, pz, h, w), dtype=np.float32)
+                stack = np.zeros((pt, n_points, pz, h, w), dtype=np.float32)
 
                 order = np.asarray(dataset.get("acquisition_order_indices", []), dtype=np.int32)
 
@@ -991,22 +992,25 @@ class SaveManager:
                     if not (0 <= t_idx < pt and 0 <= z_idx < pz and 0 <= y_idx < py and 0 <= x_idx < px):
                         continue
 
-                    c_idx = int(y_idx * px + x_idx)
-                    stack[t_idx, c_idx, z_idx, :, :] = arr[t_idx, z_idx, y_idx, x_idx, :, :]
+                    point_idx = int(y_idx * px + x_idx)
+                    stack[t_idx, point_idx, z_idx, :, :] = arr[t_idx, z_idx, y_idx, x_idx, :, :]
 
                 out_name = "brillouin.ome.tif"
                 self._warn_if_bigtiff("Spectro", stack.nbytes)
+                # The grid point is the Z index, not a channel. The array and
+                # the page order are the same either way -- only the label
+                # changes -- but a map of 51x51 points declared as 2601
+                # channels is a file no viewer opens: Bio-Formats has to build
+                # 2601 Channel objects out of a 240 kB OME-XML, and ImageJ then
+                # has to make a 2601-channel composite out of the result. As
+                # 2601 Z slices it is an ordinary stack, and the OME-XML is
+                # 644 bytes. A reader that just takes the array back sees no
+                # difference at all.
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
                     stack,
                     photometric="minisblack",
-                    metadata={
-                        "axes": "TCZYX",
-                        "Channel": [
-                            {"Name": f"scan_idx_{i:04d}"}
-                            for i in range(n_channels)
-                        ],
-                    },
+                    metadata={"axes": "TZCYX"},
                 )
             else:
                 out_name = "brillouin.zarr"
