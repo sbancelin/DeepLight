@@ -2,6 +2,8 @@ import time
 import numpy as np
 from PySide6.QtCore import QObject, Signal, QTimer, QThread, Slot
 
+from ..widgets.Log_Widget import logger
+
 class _BrillouinLiveWorker(QObject):
     sigFrameReady = Signal(object)
     sigFailed = Signal(str)
@@ -1068,6 +1070,27 @@ class SpectroManager(QObject):
                 "full_width": int(roi["full_width"]),
                 "full_height": int(roi["full_height"]),
             }
+
+            # The ROI checkbox is per-session UI state: nothing saves it, so it
+            # comes back unticked at every launch and a map then stores the whole
+            # sensor per point. That is the difference between a file of a few
+            # hundred MB and one of several GB -- past 4 GB tifffile switches to
+            # BigTIFF on its own -- and until it is said out loud it is invisible
+            # until the file will not open.
+            nbytes = int(dataset["brillouin_images"].nbytes)
+            crop = (f"ROI {w}x{h} at ({roi['x']},{roi['y']})" if roi["enabled"]
+                    else f"no ROI -- the whole {roi['full_width']}x{roi['full_height']} field")
+            logger.notice(
+                f"[Brillouin] {pt * pz * py * px} point(s) x {w}x{h} px, {crop}, "
+                f"{nbytes / 2**30:.2f} GiB in memory and in the file"
+            )
+            if nbytes > 2 ** 32 - 2 ** 25:
+                logger.warning(
+                    "[Brillouin] over 4 GiB: the OME-TIFF will be a BigTIFF, which "
+                    "ImageJ's own reader does not open (Fiji reads it through "
+                    "Bio-Formats). Tick ROI to crop the sensor, raise the binning, "
+                    "or save as OME-Zarr."
+                )
 
         if modes.get("raman", False):
             wavelengths = self._build_raman_wavelengths(raman_params)
