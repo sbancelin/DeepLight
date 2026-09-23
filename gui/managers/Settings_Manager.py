@@ -4,6 +4,7 @@ import os
 from PySide6.QtCore import QObject
 
 from ...config import hardware_settings_path
+from ..widgets.Log_Widget import logger
 
 
 class SettingsManager(QObject):
@@ -91,6 +92,27 @@ class SettingsManager(QObject):
         for laser_name, settings in dict(doc.get("laser_settings", {}) or {}).items():
             self.update_laser_settings(laser_name, **dict(settings or {}))
         self.spectro_settings = dict(doc.get("spectro", {}) or {})
+
+        # Saying so is the point: a saved value silently overriding a built-in
+        # default is exactly what makes a calibration behave differently on two
+        # machines, or on two branches, with the same code. Silent when the file
+        # does not exist, which is every launch that has never saved anything.
+        if not doc:
+            return
+        restored = []
+        for section, label in (("axis_settings", "axes"), ("laser_settings", "lasers")):
+            names = sorted(dict(doc.get(section, {}) or {}).keys())
+            if names:
+                restored.append(f"{label}: {', '.join(names)}")
+        if doc.get("spectro"):
+            restored.append("spectro: " + ", ".join(
+                f"{k}={v}" for k, v in sorted(dict(doc["spectro"]).items())
+            ))
+        if restored:
+            logger.notice(
+                f"[Settings] saved values in force, from {hardware_settings_path()} "
+                f"-- {' | '.join(restored)}"
+            )
 
     def save_section(self, section: str, data: dict):
         """Persist one named section, leaving the others in the file untouched."""
