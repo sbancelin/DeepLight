@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 import ctypes
 from pathlib import Path
@@ -72,6 +73,45 @@ PicamPixelFormat_Monochrome32Bit = 2
 #: caller that names no camera still opens the Brillouin one it always had.
 KURO_MODEL_IDS = (1901, 1902, 1903)
 
+#: PICam model ids of the LANSIS family (picam.h: LansisA261BR, LansisA261BRX,
+#: LansisD424B, LansisD424BX, LansisD424BX_2) -- the Raman detector's
+#: preference, so the two cameras on the bench find their own even unnamed.
+LANSIS_MODEL_IDS = (2702, 2704, 2712, 2713, 2714)
+
+
+# ----------------------------------------------------------------------
+# One PICam library session per process
+# ----------------------------------------------------------------------
+#
+# Picam_InitializeLibrary() is process-wide, and a second call fails with
+# PicamError_LibraryAlreadyInitialized (5). With the Kuro and the LANSIS both
+# open, each manager initialising on connect and uninitialising on disconnect
+# meant the second camera could never connect, and closing either one pulled
+# the library out from under the other. The session is reference-counted
+# instead: the first camera in initialises, the last one out uninitialises. A
+# single camera behaves exactly as before.
+
+_PICAM_SESSION_LOCK = threading.Lock()
+_PICAM_SESSION_USERS = 0
+
+
+def _picam_session_enter(lib, check) -> None:
+    global _PICAM_SESSION_USERS
+    with _PICAM_SESSION_LOCK:
+        if _PICAM_SESSION_USERS == 0:
+            check(lib.Picam_InitializeLibrary(), "Picam_InitializeLibrary")
+        _PICAM_SESSION_USERS += 1
+
+
+def _picam_session_leave(lib) -> None:
+    global _PICAM_SESSION_USERS
+    with _PICAM_SESSION_LOCK:
+        if _PICAM_SESSION_USERS <= 0:
+            return
+        _PICAM_SESSION_USERS -= 1
+        if _PICAM_SESSION_USERS == 0:
+            lib.Picam_UninitializeLibrary()
+
 
 class PiCamManager(CameraBackendBase):
     """
@@ -111,6 +151,7 @@ class PiCamManager(CameraBackendBase):
 
         self.lib = None
         self.camera = PicamHandle()
+        self.opened_camera = {}
 
         self._dll_dir_handle = None
         self._last_shape = (1200, 1200)
@@ -308,10 +349,18 @@ class PiCamManager(CameraBackendBase):
             return
 
         logger.info(f"[PICam] dll_path={self.dll_path}")
-        
-        self._load_library()
-        self._check(self.lib.Picam_InitializeLibrary(), "Picam_InitializeLibrary")
 
+        self._load_library()
+        _picam_session_enter(self.lib, self._check)
+        try:
+            self._open_camera()
+        except Exception:
+            # Leave the session on failure: holding it would keep the library
+            # initialised by nobody, and the next connect would count wrong.
+            _picam_session_leave(self.lib)
+            raise
+
+    def _open_camera(self):
         self._discover_cameras()
 
         id_array = POINTER(PicamCameraID)()
@@ -366,6 +415,9 @@ class PiCamManager(CameraBackendBase):
                 "Picam_OpenCamera",
             )
 
+            # Which camera this is, for the record beside its data: with two
+            # PI cameras on the bench, "a PICam camera" is not enough.
+            self.opened_camera = {"model": model, "sensor": sensor, "serial": serial}
             self.connected = True
             logger.info(f"[PICam] Connected using {self.dll_path}")
 
@@ -384,7 +436,7 @@ class PiCamManager(CameraBackendBase):
             self.lib.Picam_CloseCamera(self.camera)
         finally:
             try:
-                self.lib.Picam_UninitializeLibrary()
+                _picam_session_leave(self.lib)
             finally:
                 self.connected = False
                 self.camera = PicamHandle()
