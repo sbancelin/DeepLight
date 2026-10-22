@@ -52,12 +52,24 @@ def test_a_camera_backend_satisfies_its_contract(qapp):
     assert frame.ndim in (2, 3) and frame.size > 0
 
 
-def test_the_raman_camera_is_the_same_kind_of_object_as_the_widefield_one(qapp):
-    """One camera contract for the whole application: swapping the Raman
-    detector is writing a CameraBackendBase, nothing more."""
-    from DeepLight.gui.managers.Raman_Spectrometer import create_raman_camera
+def test_the_raman_detector_is_a_camera_that_also_delivers_spectra(qapp):
+    """One camera contract for the whole application: the Raman detector is a
+    CameraBackendBase, plus a spectrum -- swapping it is writing one subclass."""
+    from DeepLight.gui.managers.Raman_Detector import (
+        create_raman_detector,
+        validate_raman_detector_contract,
+    )
 
-    assert isinstance(create_raman_camera("mock"), CameraBackendBase)
+    detector = create_raman_detector("mock")
+    assert isinstance(detector, CameraBackendBase)
+    validate_raman_detector_contract(detector)
+
+    detector.configure_spectrum(exposure_ms=1.0)
+    spectrum = detector.acquire_spectrum()
+    assert spectrum.ndim == 1 and spectrum.size == detector.spectral_pixels
+
+    with pytest.raises(TypeError):
+        validate_raman_detector_contract(CameraBackendBase())
 
 
 def test_a_detector_manager_satisfies_its_contract(qapp):

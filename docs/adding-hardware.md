@@ -15,6 +15,7 @@ editing the application. Each device family has the same three pieces:
 | Camera | `CameraBackendBase` | `MockCameraBackend` | — |
 | Detector | `DetectorManagerBase` | `MockDetectorManager` | `validate_detector_contract` |
 | Spectrograph | `SpectrographBackendBase` | `MockSpectrograph` | `validate_spectrograph_contract` |
+| Raman detector | `RamanDetectorBase` (a `CameraBackendBase`) | `MockRamanDetector` | `validate_raman_detector_contract` |
 | Shutter | `ShutterBase` | `MockShutter` | `validate_shutter_contract` |
 | Power actuator | `PowerActuatorBase` | `MockPowerActuator` | `validate_power_actuator_contract` |
 | Waveplate rotator | `WaveplateRotatorBase` | `MockWaveplateRotator` | `validate_waveplate_rotator_contract` |

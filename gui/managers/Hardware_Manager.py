@@ -2935,6 +2935,12 @@ class HardwareManager(QObject):
         # acquire_brillouin_image_raw(), déjà protégé.
         self._brillouin_cam_lock = RLock()
 
+        # Chaîne Raman (spectrographe + détecteur), créée à la première
+        # utilisation. _raman_error garde la raison d'un échec de création, pour
+        # la redire au lieu de retenter à chaque clic.
+        self._raman = None
+        self._raman_error = None
+
         self._laser_manager = None
 
         if self.backend_name == "nidaq":
@@ -3419,6 +3425,46 @@ class HardwareManager(QObject):
             return None
         return self._brillouin_snap(params)
 
+    # ---- Raman ------------------------------------------------------------
+
+    def raman_spectrometer(self):
+        """The Raman chain, built on first use; None if it cannot be built.
+
+        The mock backend always gets the simulated spectrograph and detector.
+        The real one gets what the configuration names (raman.spectrograph,
+        raman.camera), which stay "mock" until the bench is set up -- so the
+        Raman tab works, simulated, on any machine. Nothing is opened here:
+        the instruments connect on the first spectrum or move.
+        """
+        if self._raman is not None:
+            return self._raman
+        if self._raman_error is not None:
+            return None
+
+        from .Raman_Detector import MockRamanDetector, create_raman_detector
+        from .Raman_Spectrometer import RamanSpectrometer
+        from .Spectrograph_Manager import MockSpectrograph, create_spectrograph
+
+        try:
+            if self.backend_name == "mock":
+                spectrograph, detector = MockSpectrograph(), MockRamanDetector()
+            else:
+                spectrograph, detector = create_spectrograph(), create_raman_detector()
+            self._raman = RamanSpectrometer(spectrograph, detector)
+        except Exception as e:
+            self._raman_error = str(e)
+            logger.error(f"[HardwareManager] Raman spectrometer unavailable: {e}")
+            return None
+
+        logger.info(
+            f"[HardwareManager] Raman: {type(self._raman.spectrograph).__name__} + "
+            f"{type(self._raman.detector).__name__}"
+        )
+        return self._raman
+
+    def raman_unavailable_reason(self) -> str | None:
+        return self._raman_error
+
     def close(self):
         try:
             if self._camera_controller is not None:
@@ -3437,6 +3483,12 @@ class HardwareManager(QObject):
                 self._brillouin_camera.disconnect()
         except Exception as e:
             logger.debug(f"[Hardware] disconnecting the Brillouin camera failed: {e}")
+
+        try:
+            if self._raman is not None:
+                self._raman.disconnect()
+        except Exception as e:
+            logger.debug(f"[Hardware] disconnecting the Raman spectrometer failed: {e}")
 
         try:
             if self._laser_manager is not None:

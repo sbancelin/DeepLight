@@ -160,42 +160,30 @@ dll_path = ''
 
 # --- Brillouin arm ---------------------------------------------------------
 [spectro]
-# Serial number of the Kuro. PICam drives every Princeton Instruments camera,
-# so once the Raman LANSIS shares the bench the two must be told apart by
-# serial -- otherwise whichever PICam discovers first is opened. Leave empty
-# when the Kuro is the only PI camera plugged in.
+# Serial number of the Kuro. Optional: PICam drives the Raman LANSIS too, but
+# each camera prefers its own model family, so the two find themselves without
+# serials. Set one only to pick between two cameras of the same model.
 brillouin_camera_serial = ""
 
 
-# --- Raman spectrometer (Princeton Instruments IsoPlane 320 + camera) ------
+# --- Raman spectrometer (Princeton Instruments IsoPlane 320 + LANSIS) ------
+# Which instruments, and how to reach them. Everything set at the bench --
+# detector rows, wavelength calibration, excitation -- lives in the Settings of
+# the Spectro tab instead.
 [raman]
 # "mock" runs the whole Raman path in software; "isoplane320" drives the real
-# spectrograph over its serial port.
+# spectrograph (pending the manufacturer's SDK: see Spectrograph_Manager).
 spectrograph = "mock"
 spectrograph_port = "COM13"
 spectrograph_baudrate = 9600
 spectrograph_timeout_s = 20.0      # a grating turret takes seconds to move
 
-# Detector: "mock" synthesises a spectrum, "picam" drives the real camera
-# through PICam -- the same library already used for the Kuro.
+# Detector: "mock" synthesises spectra, "picam" drives the LANSIS through
+# PICam -- the library already used for the Kuro.
 camera = "mock"
-# Serial number of the Teledyne Princeton Instruments LANSIS-261X. Required as
-# soon as the Kuro is plugged in too (see spectro.brillouin_camera_serial).
+# Serial number of the LANSIS. Optional: without it the first LANSIS PICam
+# finds is opened, and the Kuro is never mistaken for it.
 camera_serial = ""
-
-# Optics, used to label the wavelength axis.
-focal_length_mm = 320.0            # IsoPlane 320
-groove_density_per_mm = 600.0      # grating currently installed
-camera_pixel_size_um = 20.0        # detector pixel pitch along the dispersion
-
-# Rows of the sensor summed to form the spectrum, centred on the slit image.
-# 0 = sum the full height.
-bin_rows = 0
-
-# Measured wavelength calibration, highest order first, evaluated on the pixel
-# index: [a, b, c] means lambda = a*i^2 + b*i + c. Leave empty to fall back on
-# the optical model, which labels the axis but is not a calibration.
-calibration_poly = []
 
 
 # --- Where acquisitions are written ---------------------------------------
