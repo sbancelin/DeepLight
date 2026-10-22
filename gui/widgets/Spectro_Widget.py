@@ -162,6 +162,8 @@ class SpectroWidget(QWidget):
     sigBrillouinRoiChanged = Signal(dict)
     sigBrillouinReconnectRequested = Signal()
     sigBrillouinSaveRequested = Signal()
+    sigRamanGratingRequested = Signal(int)      # turret position
+    sigRamanCenterRequested = Signal(float)     # nm
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -189,8 +191,9 @@ class SpectroWidget(QWidget):
         # Etat Raman
         # =========================
         self.raman_enabled = True
-        self.raman_x = np.linspace(500.0, 900.0, 1024)
+        self.raman_x = np.arange(1024, dtype=float)
         self.raman_y = np.zeros_like(self.raman_x, dtype=float)
+        self.raman_axis_unit = "pixel"
         self.raman_autoscale_enabled = True
         self.raman_grid_enabled = True
 
@@ -431,16 +434,22 @@ class SpectroWidget(QWidget):
         raman_section_layout.setContentsMargins(0, 0, 0, 0)
         raman_section_layout.setSpacing(6)
 
-        # ---- Ligne 2 : bandeau compact
+        # ---- Ligne 2 : bandeau compact, deux rangées comme le Brillouin
         raman_controls_frame = QFrame()
         raman_controls_frame.setStyleSheet(_PANEL_FRAME_STYLE)
-        raman_controls_layout = QHBoxLayout(raman_controls_frame)
-        raman_controls_layout.setContentsMargins(8, 6, 8, 6)
+        raman_controls_outer = QVBoxLayout(raman_controls_frame)
+        raman_controls_outer.setContentsMargins(8, 6, 8, 6)
+        raman_controls_outer.setSpacing(4)
+
+        # Rangée 1 : acquisition
+        raman_controls_layout = QHBoxLayout()
+        raman_controls_layout.setContentsMargins(0, 0, 0, 0)
         raman_controls_layout.setSpacing(6)
+        raman_controls_outer.addLayout(raman_controls_layout)
 
         self.button_raman_snap = QPushButton("Snap")
         self.button_raman_snap.setStyleSheet(_BUTTON_STYLE)
-        self.button_raman_snap.setFixedWidth(64)
+        self.button_raman_snap.setFixedWidth(58)
         raman_controls_layout.addWidget(self.button_raman_snap)
 
         self.button_raman_live = QPushButton("Live")
@@ -454,20 +463,14 @@ class SpectroWidget(QWidget):
         self.button_raman_stop.setFixedWidth(52)
         raman_controls_layout.addWidget(self.button_raman_stop)
 
-        self.label_raman_status = QLabel("Idle")
-        self.label_raman_status.setStyleSheet(_STATUS_VALUE_STYLE)
-        self.label_raman_status.setMinimumWidth(42)
-        raman_controls_layout.addWidget(self.label_raman_status)
-
-        exposure_label = QLabel("Exposure")
-        raman_controls_layout.addWidget(exposure_label)
+        raman_controls_layout.addWidget(QLabel("Exposure"))
 
         self.spin_raman_exposure_ms = QDoubleSpinBox()
         self.spin_raman_exposure_ms.setDecimals(3)
         self.spin_raman_exposure_ms.setRange(0.001, 1_000_000.0)
         self.spin_raman_exposure_ms.setValue(100.0)
         self.spin_raman_exposure_ms.setSingleStep(1.0)
-        self.spin_raman_exposure_ms.setFixedWidth(78)
+        self.spin_raman_exposure_ms.setFixedWidth(86)
         _apply_spinbox_palette(self.spin_raman_exposure_ms)
         raman_controls_layout.addWidget(self.spin_raman_exposure_ms)
 
@@ -476,6 +479,7 @@ class SpectroWidget(QWidget):
         raman_controls_layout.addWidget(exposure_unit_label)
 
         averages_label = QLabel("Avg")
+        averages_label.setToolTip("Exposures averaged into each spectrum")
         raman_controls_layout.addWidget(averages_label)
 
         self.spin_raman_averages = QDoubleSpinBox()
@@ -487,46 +491,65 @@ class SpectroWidget(QWidget):
         _apply_spinbox_palette(self.spin_raman_averages)
         raman_controls_layout.addWidget(self.spin_raman_averages)
 
-        center_label = QLabel("Center")
-        raman_controls_layout.addWidget(center_label)
+        self.label_raman_status = QLabel("Idle")
+        self.label_raman_status.setStyleSheet(_STATUS_VALUE_STYLE)
+        self.label_raman_status.setMinimumWidth(42)
+        raman_controls_layout.addWidget(self.label_raman_status)
+
+        raman_controls_layout.addStretch(1)
+
+        # Rangée 2 : spectrographe. Le centre n'est envoyé que sur "Go" (ou
+        # Entrée) : un tour de molette ne doit pas faire tourner le réseau à
+        # chaque cran.
+        raman_spectro_layout = QHBoxLayout()
+        raman_spectro_layout.setContentsMargins(0, 0, 0, 0)
+        raman_spectro_layout.setSpacing(6)
+        raman_controls_outer.addLayout(raman_spectro_layout)
+
+        raman_spectro_layout.addWidget(QLabel("Grating"))
+
+        self.combo_raman_grating = QComboBox()
+        self.combo_raman_grating.setToolTip("Turret position: turning it takes a few seconds")
+        self.combo_raman_grating.setMinimumWidth(110)
+        _apply_combo_style(self.combo_raman_grating)
+        raman_spectro_layout.addWidget(self.combo_raman_grating)
+
+        raman_spectro_layout.addWidget(QLabel("Center"))
 
         self.spin_raman_center_nm = QDoubleSpinBox()
         self.spin_raman_center_nm.setDecimals(3)
         self.spin_raman_center_nm.setRange(0.0, 100000.0)
-        self.spin_raman_center_nm.setValue(700.0)
+        self.spin_raman_center_nm.setValue(870.0)
         self.spin_raman_center_nm.setSingleStep(1.0)
-        self.spin_raman_center_nm.setFixedWidth(78)
+        self.spin_raman_center_nm.setFixedWidth(86)
+        self.spin_raman_center_nm.setKeyboardTracking(False)
         _apply_spinbox_palette(self.spin_raman_center_nm)
-        raman_controls_layout.addWidget(self.spin_raman_center_nm)
+        raman_spectro_layout.addWidget(self.spin_raman_center_nm)
 
         center_unit_label = QLabel("(nm)")
         center_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
-        raman_controls_layout.addWidget(center_unit_label)
+        raman_spectro_layout.addWidget(center_unit_label)
 
-        span_label = QLabel("Span")
-        raman_controls_layout.addWidget(span_label)
+        self.button_raman_center_go = QPushButton("Go")
+        self.button_raman_center_go.setStyleSheet(_BUTTON_STYLE)
+        self.button_raman_center_go.setFixedWidth(40)
+        self.button_raman_center_go.setToolTip("Rotate the grating to centre this wavelength")
+        raman_spectro_layout.addWidget(self.button_raman_center_go)
 
-        self.spin_raman_span_nm = QDoubleSpinBox()
-        self.spin_raman_span_nm.setDecimals(3)
-        self.spin_raman_span_nm.setRange(0.001, 100000.0)
-        self.spin_raman_span_nm.setValue(100.0)
-        self.spin_raman_span_nm.setSingleStep(1.0)
-        self.spin_raman_span_nm.setFixedWidth(78)
-        _apply_spinbox_palette(self.spin_raman_span_nm)
-        raman_controls_layout.addWidget(self.spin_raman_span_nm)
+        # Ce que l'axe des spectres représente : pixels bruts, ou nm quand une
+        # calibration correspond au réglage courant.
+        self.label_raman_axis = QLabel("axis: detector pixels")
+        self.label_raman_axis.setStyleSheet(_STATUS_VALUE_STYLE)
+        raman_spectro_layout.addWidget(self.label_raman_axis)
 
-        span_unit_label = QLabel("(nm)")
-        span_unit_label.setStyleSheet(_STATUS_VALUE_STYLE)
-        raman_controls_layout.addWidget(span_unit_label)
-
-        raman_controls_layout.addStretch(1)
+        raman_spectro_layout.addStretch(1)
         raman_section_layout.addWidget(raman_controls_frame)
 
         # ---- Graphe Raman
         self.raman_plot_widget = pg.PlotWidget()
         self.raman_plot_item = self.raman_plot_widget.getPlotItem()
-        self.raman_plot_item.setLabel("left", "Intensity (a.u.)")
-        self.raman_plot_item.setLabel("bottom", "Wavelength (nm)")
+        self.raman_plot_item.setLabel("left", "Intensity (counts)")
+        self.raman_plot_item.setLabel("bottom", "Detector pixel")
         self.raman_plot_item.showGrid(True, True)
         self.raman_plot_item.enableAutoRange()
 
@@ -539,7 +562,7 @@ class SpectroWidget(QWidget):
         self.raman_plot_item.setYRange(0.0, 1.0, padding=0)
 
         self.raman_placeholder_text = pg.TextItem(
-            text="en cours de construction",
+            text="No spectrum yet",
             color=(140, 140, 140),
             anchor=(0.5, 0.5)
         )
@@ -553,7 +576,7 @@ class SpectroWidget(QWidget):
         raman_footer_layout.setContentsMargins(0, 0, 0, 0)
         raman_footer_layout.setSpacing(8)
 
-        self.label_raman_point_status = QLabel("λ: -, I: -")
+        self.label_raman_point_status = QLabel("-")
         self.label_raman_point_status.setStyleSheet("color: #aaa; padding: 2px;")
         self.label_raman_point_status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.label_raman_point_status.setMinimumWidth(260)
@@ -605,6 +628,9 @@ class SpectroWidget(QWidget):
         self.cb_raman_grid.toggled.connect(self._on_raman_grid_toggled)
         self.button_raman_set_levels.clicked.connect(self._on_raman_set_levels_clicked)
         self.button_raman_reset_levels.clicked.connect(self._on_raman_reset_levels_clicked)
+        self.combo_raman_grating.activated.connect(self._on_raman_grating_activated)
+        self.button_raman_center_go.clicked.connect(self._on_raman_center_go)
+        self.spin_raman_center_nm.lineEdit().returnPressed.connect(self._on_raman_center_go)
 
         try:
             self.brillouin_image_view.getView().scene().sigMouseMoved.connect(self._on_mouse_moved_brillouin)
@@ -649,6 +675,11 @@ class SpectroWidget(QWidget):
         self.button_raman_live.setEnabled(not bool(running))
         self.button_raman_stop.setEnabled(True)
 
+        # Le réglage du spectrographe est figé pendant une carte : l'axe
+        # enregistré au départ doit rester vrai pour chaque point.
+        self._raman_mapping_running = bool(running)
+        self._update_raman_spectrograph_controls()
+
     def get_brillouin_parameters(self):
         roi = self._get_validated_roi_dict()
 
@@ -670,12 +701,74 @@ class SpectroWidget(QWidget):
         }
 
     def get_raman_parameters(self):
+        """Acquisition parameters. The grating and the centre are not here:
+        they are the spectrograph's state, set by moving it, not per spectrum."""
         return {
             "exposure_ms": self.spin_raman_exposure_ms.value(),
             "averages": int(self.spin_raman_averages.value()),
-            "center_nm": self.spin_raman_center_nm.value(),
-            "span_nm": self.spin_raman_span_nm.value(),
         }
+
+    def set_raman_spectrograph(self, info: dict):
+        """Fill the grating list and show the setting the spectrograph reports.
+
+        `info` is {"setting": {...}, "gratings": [...], "axis": {...}}, as the
+        spectro manager emits it after connecting or moving.
+        """
+        info = dict(info or {})
+        setting = dict(info.get("setting") or {})
+        gratings = list(info.get("gratings") or [])
+
+        self.combo_raman_grating.blockSignals(True)
+        try:
+            self.combo_raman_grating.clear()
+            for grating in gratings:
+                index = int(grating.get("index", 0))
+                grooves = grating.get("grooves_per_mm")
+                label = f"{index}: {grooves:g} l/mm" if grooves else f"{index}"
+                blaze = grating.get("blaze")
+                if blaze:
+                    label += f"  ({blaze})"
+                self.combo_raman_grating.addItem(label, index)
+            current = setting.get("grating")
+            if current is not None:
+                position = self.combo_raman_grating.findData(int(current))
+                if position >= 0:
+                    self.combo_raman_grating.setCurrentIndex(position)
+        finally:
+            self.combo_raman_grating.blockSignals(False)
+
+        center = setting.get("center_nm")
+        if center is not None:
+            self.spin_raman_center_nm.blockSignals(True)
+            self.spin_raman_center_nm.setValue(float(center))
+            self.spin_raman_center_nm.blockSignals(False)
+
+        axis = dict(info.get("axis") or {})
+        if axis:
+            self._set_raman_axis_label(axis.get("unit", "pixel"), axis.get("note", ""))
+
+    def set_raman_spectrograph_busy(self, busy: bool):
+        self._raman_spectrograph_busy = bool(busy)
+        self._update_raman_spectrograph_controls()
+        if busy:
+            self.set_raman_status("Moving...")
+
+    def _update_raman_spectrograph_controls(self):
+        enabled = not (getattr(self, "_raman_spectrograph_busy", False)
+                       or getattr(self, "_raman_mapping_running", False))
+        for widget in (self.combo_raman_grating, self.spin_raman_center_nm,
+                       self.button_raman_center_go):
+            widget.setEnabled(enabled)
+
+    def _set_raman_axis_label(self, unit: str, note: str = ""):
+        self.raman_axis_unit = str(unit or "pixel")
+        if self.raman_axis_unit == "nm":
+            self.label_raman_axis.setText("axis: wavelength (calibrated)")
+            self.raman_plot_item.setLabel("bottom", "Wavelength (nm)")
+        else:
+            self.label_raman_axis.setText("axis: detector pixels")
+            self.raman_plot_item.setLabel("bottom", "Detector pixel")
+        self.label_raman_axis.setToolTip(str(note or ""))
 
     def set_brillouin_status(self, text):
         self.label_brillouin_status.setText(str(text))
@@ -741,12 +834,16 @@ class SpectroWidget(QWidget):
             self.brillouin_grid_enabled
         )
 
-    def set_raman_spectrum(self, wavelengths_nm, intensities, show_placeholder=False):
-        x = np.asarray(wavelengths_nm, dtype=float)
+    def set_raman_spectrum(self, axis, intensities, unit="pixel", note="", show_placeholder=False):
+        """Plot one spectrum against its own axis -- pixels or nm, as it came."""
+        x = np.asarray(axis, dtype=float)
         y = np.asarray(intensities, dtype=float)
 
         if x.ndim != 1 or y.ndim != 1 or x.size != y.size or x.size == 0:
             return
+
+        if str(unit) != self.raman_axis_unit:
+            self._set_raman_axis_label(unit, note)
 
         self.raman_x = x
         self.raman_y = y
@@ -759,7 +856,8 @@ class SpectroWidget(QWidget):
         self._center_raman_placeholder()
 
     def clear_raman_spectrum(self, show_placeholder=True):
-        self.raman_x = np.linspace(500.0, 900.0, 1024)
+        # The axis is kept: it still says what the next spectrum will be on.
+        self.raman_x = np.asarray(self.raman_x, dtype=float)
         self.raman_y = np.zeros_like(self.raman_x, dtype=float)
         self.raman_curve.setData(self.raman_x, self.raman_y)
         self.raman_placeholder_text.setVisible(bool(show_placeholder))
@@ -1108,15 +1206,26 @@ class SpectroWidget(QWidget):
             x = float(mouse_point.x())
 
             if self.raman_x is None or self.raman_y is None or len(self.raman_x) == 0:
-                self.label_raman_point_status.setText("λ: -, I: -")
+                self.label_raman_point_status.setText("-")
                 return
 
             idx = int(np.argmin(np.abs(self.raman_x - x)))
             if 0 <= idx < len(self.raman_x):
-                lam = float(self.raman_x[idx])
                 intensity = float(self.raman_y[idx])
-                self.label_raman_point_status.setText(f"λ: {lam:8.3f} nm  I: {intensity:10.3f}")
+                if self.raman_axis_unit == "nm":
+                    position = f"λ: {float(self.raman_x[idx]):8.3f} nm  (pixel {idx})"
+                else:
+                    position = f"pixel: {idx}"
+                self.label_raman_point_status.setText(f"{position}  I: {intensity:10.1f}")
             else:
-                self.label_raman_point_status.setText("λ: -, I: -")
+                self.label_raman_point_status.setText("-")
         except Exception:
-            self.label_raman_point_status.setText("λ: -, I: -")
+            self.label_raman_point_status.setText("-")
+
+    def _on_raman_grating_activated(self, position: int):
+        index = self.combo_raman_grating.itemData(position)
+        if index is not None:
+            self.sigRamanGratingRequested.emit(int(index))
+
+    def _on_raman_center_go(self):
+        self.sigRamanCenterRequested.emit(float(self.spin_raman_center_nm.value()))

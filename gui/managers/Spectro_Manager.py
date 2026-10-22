@@ -1,6 +1,7 @@
+import threading
 import time
 import numpy as np
-from PySide6.QtCore import QObject, Signal, QTimer, QThread, Slot
+from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal, QTimer, QThread, Slot
 
 from ..widgets.Log_Widget import logger
 
@@ -46,6 +47,94 @@ class _BrillouinLiveWorker(QObject):
     def stop(self):
         self._running = False
 
+
+class _RamanWorker(QObject):
+    """Raman spectra off the GUI thread: one (snap) or until stopped (live).
+
+    A Raman exposure lasts seconds, sometimes minutes; on the GUI thread the
+    window would freeze for that long. Exposure and averages may change
+    between two spectra without restarting the loop.
+    """
+
+    sigSpectrum = Signal(object)        # RamanSpectrum
+    sigFailed = Signal(str)
+    sigFinished = Signal()
+
+    def __init__(self, raman, params=None, single_shot: bool = False):
+        super().__init__()
+        self._raman = raman
+        self._params = dict(params or {})
+        self._params_lock = threading.Lock()
+        self._single_shot = bool(single_shot)
+        self._running = False
+
+    def update_params(self, params: dict):
+        with self._params_lock:
+            self._params.update(dict(params or {}))
+
+    def stop(self):
+        self._running = False
+
+    @Slot()
+    def run(self):
+        self._running = True
+        try:
+            while self._running:
+                with self._params_lock:
+                    params = dict(self._params)
+                spectrum = self._raman.acquire_spectrum(
+                    float(params.get("exposure_ms", 100.0) or 100.0),
+                    int(params.get("averages", 1) or 1),
+                )
+                # Stopped during the exposure: a live view that was told to stop
+                # does not paint one more spectrum. A snap always delivers.
+                if not self._running and not self._single_shot:
+                    break
+                self.sigSpectrum.emit(spectrum)
+                if self._single_shot:
+                    break
+        except Exception as e:
+            self.sigFailed.emit(str(e))
+        finally:
+            self._running = False
+            self.sigFinished.emit()
+
+
+class _RamanSpectrographWorker(QObject):
+    """One spectrograph job off the GUI thread: connect, turn the turret, recentre.
+
+    With neither a grating nor a centre it only connects and reads the
+    setting back -- what the Raman panel needs to fill its grating list.
+    """
+
+    sigDone = Signal(object)            # {"setting": ..., "gratings": [...], "axis": ...}
+    sigFailed = Signal(str)
+    sigFinished = Signal()
+
+    def __init__(self, raman, grating: int | None = None, center_nm: float | None = None):
+        super().__init__()
+        self._raman = raman
+        self._grating = grating
+        self._center_nm = center_nm
+
+    @Slot()
+    def run(self):
+        try:
+            if self._grating is not None:
+                self._raman.set_grating(int(self._grating))
+            if self._center_nm is not None:
+                self._raman.set_center_wavelength_nm(float(self._center_nm))
+            self.sigDone.emit({
+                "setting": self._raman.setting(),
+                "gratings": self._raman.gratings(),
+                "axis": self._raman.spectral_axis().to_metadata(),
+            })
+        except Exception as e:
+            self.sigFailed.emit(str(e))
+        finally:
+            self.sigFinished.emit()
+
+
 class _SpectroMappingWorker(QObject):
     sigImageUpdate = Signal(object)
     sigSpectrumUpdate = Signal(object)
@@ -67,6 +156,7 @@ class _SpectroMappingWorker(QObject):
         pixel_list,
         dataset,
         mapping_started_t0,
+        raman=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -80,9 +170,9 @@ class _SpectroMappingWorker(QObject):
         self.pixel_list = list(pixel_list or [])
         self.dataset = dataset
         self.mapping_started_t0 = mapping_started_t0
+        self.raman = raman
         self._running = False
         self._BRILLOUIN_SHAPE = (1200, 1200)
-        self._RAMAN_POINTS = 1024
 
         # throttling des updates UI (l'émission de chaque image 1200x1200
         # float32 à chaque pixel charge inutilement le thread GUI)
@@ -167,11 +257,6 @@ class _SpectroMappingWorker(QObject):
         if image is None:
             return None
         return np.asarray(image, dtype=np.float32)
-
-    def _build_raman_wavelengths(self, raman_params):
-        center = float(raman_params.get("center_nm", 700.0) or 700.0)
-        span = max(1e-6, float(raman_params.get("span_nm", 100.0) or 100.0))
-        return np.linspace(center - 0.5 * span, center + 0.5 * span, self._RAMAN_POINTS)
 
     def _parse_binning_factor(self, params) -> int:
         text = str((params or {}).get("binning", "1x1"))
@@ -269,40 +354,6 @@ class _SpectroMappingWorker(QObject):
         h = int(roi["height"])
         return image[y0:y0 + h, x0:x0 + w]
 
-    def _mock_raman_spectrum(self, x_idx, y_idx, z_idx, t_index, params, wavelengths):
-        center = float(params.get("center_nm", 700.0) or 700.0)
-        span = max(1e-6, float(params.get("span_nm", 100.0) or 100.0))
-        exposure_ms = float(params.get("exposure_ms", 100.0) or 100.0)
-        averages = max(1, int(params.get("averages", 1) or 1))
-
-        x = np.asarray(wavelengths, dtype=np.float32)
-
-        p1 = center - 0.18 * span + 0.015 * span * np.sin(0.20 * x_idx + 0.07 * t_index)
-        p2 = center + 0.08 * span + 0.020 * span * np.cos(0.17 * y_idx + 0.05 * t_index)
-        p3 = center + 0.24 * span + 0.010 * span * np.sin(0.31 * z_idx + 0.03 * t_index)
-
-        s1 = 0.025 * span
-        s2 = 0.040 * span
-        s3 = 0.030 * span
-
-        g1 = 1.00 * np.exp(-0.5 * ((x - p1) / max(s1, 1e-6)) ** 2)
-        g2 = 0.65 * np.exp(-0.5 * ((x - p2) / max(s2, 1e-6)) ** 2)
-        g3 = 0.40 * np.exp(-0.5 * ((x - p3) / max(s3, 1e-6)) ** 2)
-
-        baseline = 0.08 + 0.04 * np.sin((x - center) / max(span, 1e-6) * 2.5 * np.pi)
-        amp = max(50.0, 0.9 * exposure_ms * np.sqrt(averages))
-
-        spectrum = amp * (g1 + g2 + g3 + baseline)
-
-        rng = np.random.default_rng(seed=(2000003 + 53 * x_idx + 101 * y_idx + 211 * z_idx + 13 * t_index))
-        noise_sigma = max(0.5, 0.035 * amp / np.sqrt(averages))
-        spectrum = np.clip(
-            spectrum + rng.normal(loc=0.0, scale=noise_sigma, size=x.shape),
-            0.0,
-            None,
-        )
-        return spectrum.astype(np.float32, copy=False)
-
     @Slot()
     def run(self):
         self._running = True
@@ -324,12 +375,17 @@ class _SpectroMappingWorker(QObject):
             repeat_delay_s = max(0.0, float(self.scan_parameters.get("repeat_delay_s", 0.0) or 0.0))
             settle_ms = float(self.scan_parameters.get("settle_ms", 0.0) or 0.0)
             exposure_ms = float(self.scan_parameters.get("exposure_ms", 0.0) or 0.0)
+            raman_exposure_ms = float(self.raman_params.get("exposure_ms", 100.0) or 100.0)
+            raman_averages = max(1, int(self.raman_params.get("averages", 1) or 1))
             pixel_done = 0
 
             if "brillouin_images" in self.dataset:
                 prepare_fn = getattr(self.hardware, "prepare_brillouin_for_scan", None)
                 if prepare_fn is not None:
                     prepare_fn(self.brillouin_params)
+
+            if "raman_spectra" in self.dataset and self.raman is None:
+                raise RuntimeError("Raman mode is on but no Raman spectrometer is available.")
 
             for info in self.pixel_list:
                 if not self._running:
@@ -405,12 +461,17 @@ class _SpectroMappingWorker(QObject):
                         self.sigImageUpdate.emit(image)
 
                 if "raman_spectra" in self.dataset:
-                    wavelengths = self.dataset["raman_wavelengths"]
-                    spectrum = self._mock_raman_spectrum(
-                        x_idx=x, y_idx=y, z_idx=z, t_index=lin,
-                        params=self.raman_params, wavelengths=wavelengths
-                    )
-                    self.dataset["raman_spectra"][t, z, y, x] = spectrum
+                    spectrum = self.raman.acquire_spectrum(raman_exposure_ms, raman_averages)
+                    if spectrum.values.size != self.dataset["raman_spectra"].shape[-1]:
+                        # The detector geometry changed mid-map (rows or
+                        # binning edited in Settings): stop rather than file
+                        # spectra that no longer match the recorded axis.
+                        raise RuntimeError(
+                            f"Raman spectrum of {spectrum.values.size} values, expected "
+                            f"{self.dataset['raman_spectra'].shape[-1]}: the detector "
+                            "settings changed during the acquisition."
+                        )
+                    self.dataset["raman_spectra"][t, z, y, x] = spectrum.values
 
                     now = time.perf_counter()
                     if is_last_pixel or now - self._last_spec_emit_t >= self._ui_period_s:
@@ -484,18 +545,21 @@ class _SpectroMappingWorker(QObject):
 
 class SpectroManager(QObject):
     """
-    Mock spectro manager, V2.
+    Spectro manager: Brillouin and Raman, single shots, live views and maps.
 
     Roles:
     - Brillouin snap / live
-    - Raman snap / live
+    - Raman snap / live, and the spectrograph's grating and centre
     - XYZ serpentine mapping driven from SpectroPanelWidget
     - production of a reconstruction-friendly dataset
     - API compatible with what MainWindow already calls
+
+    Everything that waits on an instrument -- an exposure, a turret -- runs
+    in a worker thread, so the window keeps answering.
     """
 
     sigImageUpdate = Signal(object)                     # np.ndarray 2D
-    sigSpectrumUpdate = Signal(object)                  # np.ndarray 1D
+    sigSpectrumUpdate = Signal(object)                  # RamanSpectrum
     sigStatusMessage = Signal(str)
     sigProgress = Signal(int, int)
     sigEta = Signal(float, float)
@@ -503,9 +567,10 @@ class SpectroManager(QObject):
     sigFailed = Signal(str)
     sigBrillouinLiveRunningChanged = Signal(bool)
     sigRamanLiveRunningChanged = Signal(bool)
+    sigRamanSpectrographChanged = Signal(object)        # {"setting", "gratings", "axis"}
+    sigRamanSpectrographBusy = Signal(bool)
 
     _BRILLOUIN_SHAPE = (1200, 1200)
-    _RAMAN_POINTS = 1024
 
     def __init__(self, hardware_manager=None, positioner_manager=None, parent=None):
         super().__init__(parent)
@@ -543,12 +608,101 @@ class SpectroManager(QObject):
         self._brillouin_live_thread = None
         self._brillouin_live_worker = None
 
-        # --- live Raman
+        # --- Raman : live, snap et mouvements du spectrographe, chacun dans un
+        # worker. Les threads restent référencés ici jusqu'à leur fin réelle
+        # (cf. _start_worker) : une pose Raman peut durer bien plus longtemps
+        # qu'un wait() raisonnable, et détruire un QThread qui tourne encore
+        # fait planter Qt.
         self._raman_live_running = False
-        self._raman_live_params = {}
-        self._raman_live_counter = 0
-        self.raman_live_timer = QTimer(self)
-        self.raman_live_timer.timeout.connect(self._on_raman_live_timeout)
+        self._raman_live_worker = None
+        self._raman_snap_running = False
+        self._raman_spectrograph_busy = False
+        self._threads = {}               # QThread -> (worker, on_finished)
+
+    # ==========================================================
+    # Threads de travail
+    # ==========================================================
+    def _start_worker(self, worker: QObject, on_finished=None) -> QThread:
+        """Run `worker.run` in its own thread, kept alive until it is done.
+
+        The thread quits when the worker says it has finished, and both are
+        released only then -- never by a timed wait that gives up on a long
+        exposure and drops a thread that is still running.
+        """
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # Direct: quit() is thread-safe, and queued to the GUI thread it would
+        # never run while that thread waits on this one (see shutdown()).
+        worker.sigFinished.connect(thread.quit, Qt.DirectConnection)
+        # A bound slot of this manager, not a closure: Qt then queues the call
+        # to the GUI thread. A closure would run in the finishing thread itself.
+        thread.finished.connect(self._on_worker_thread_finished)
+        self._threads[thread] = (worker, on_finished)
+        thread.start()
+        return thread
+
+    @Slot()
+    def _on_worker_thread_finished(self):
+        thread = self.sender()
+        worker, on_finished = self._threads.pop(thread, (None, None))
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+        if on_finished is not None:
+            on_finished()
+
+    def has_running_workers(self) -> bool:
+        return bool(self._threads)
+
+    def shutdown(self, timeout_s: float = 120.0):
+        """Stop everything and wait for the worker threads to end. At exit only.
+
+        An exposure in progress cannot be cut short, so this can block for the
+        rest of it; destroying a QThread that is still running instead takes
+        the whole application down. The timeout only guards against a camera
+        that never answers.
+        """
+        deadline = time.monotonic() + float(timeout_s)
+
+        def remaining_ms() -> int:
+            return max(0, int((deadline - time.monotonic()) * 1000))
+
+        self.stop_all_live()
+
+        mapping_thread = self._mapping_thread
+        if self.running or mapping_thread is not None:
+            if self._mapping_worker is not None:
+                self._mapping_worker.stop()
+            if mapping_thread is not None:
+                mapping_thread.quit()
+                if not mapping_thread.wait(remaining_ms()):
+                    logger.warning("[Spectro] the mapping thread did not end in time")
+            self._mapping_worker = None
+            self._mapping_thread = None
+            self.running = False
+
+        for thread in list(self._threads):
+            if not thread.wait(remaining_ms()):
+                logger.warning("[Spectro] a Raman worker did not end in time")
+        # Their finished() cleanups were queued to this thread: run them now.
+        QCoreApplication.sendPostedEvents()
+        QCoreApplication.processEvents()
+
+    def _raman(self):
+        """The Raman chain, or an error saying why there is none."""
+        raman = None
+        getter = getattr(self.hardware, "raman_spectrometer", None)
+        if callable(getter):
+            raman = getter()
+        if raman is None:
+            reason_fn = getattr(self.hardware, "raman_unavailable_reason", None)
+            reason = reason_fn() if callable(reason_fn) else None
+            raise RuntimeError(
+                "Raman spectrometer unavailable" + (f": {reason}" if reason else "")
+            )
+        return raman
 
     # ==========================================================
     # API publique demandée par MainWindow
@@ -736,13 +890,22 @@ class SpectroManager(QObject):
 
         self.pixel_list = self._build_serpentine_grid(px, py, pz, n_repeats=pt)
         self.current_pixel_index = 0
-        self.dataset = self._create_dataset(
-            self._scan_parameters,
-            self._modes,
-            self._brillouin_params,
-            self._raman_params,
-            self._save_parameters,
-        )
+
+        raman = None
+        try:
+            if bool(self._modes.get("raman", False)):
+                raman = self._raman()
+            self.dataset = self._create_dataset(
+                self._scan_parameters,
+                self._modes,
+                self._brillouin_params,
+                self._raman_params,
+                self._save_parameters,
+                raman=raman,
+            )
+        except Exception as e:
+            self.sigFailed.emit(f"Spectro acquisition not started: {e}")
+            return
 
         real_pixels = len(self.pixel_list)
         now = time.perf_counter()
@@ -766,6 +929,7 @@ class SpectroManager(QObject):
             pixel_list=self.pixel_list,
             dataset=self.dataset,
             mapping_started_t0=self._mapping_started_t0,
+            raman=raman,
         )
         self._mapping_worker.moveToThread(self._mapping_thread)
 
@@ -888,46 +1052,127 @@ class SpectroManager(QObject):
     # Snap / Live Raman
     # --------------------------
     def snap_raman(self, params=None):
+        """One spectrum, acquired off the GUI thread."""
+        if self.running or self._raman_live_running or self._raman_snap_running:
+            return
         try:
-            params = dict(params or {})
-            wavelengths = self._build_raman_wavelengths(params)
-            spectrum = self._mock_raman_spectrum(
-                x_idx=0,
-                y_idx=0,
-                z_idx=0,
-                t_index=int(time.time() * 10) % 100000,
-                params=params,
-                wavelengths=wavelengths,
-            )
-            # pour que MainWindow puisse relire les wavelengths même hors mapping
-            self.dataset = self.dataset or {}
-            self.dataset["raman_wavelengths"] = wavelengths
-            self.sigSpectrumUpdate.emit(spectrum)
-            self.sigStatusMessage.emit("Raman snap done")
+            raman = self._raman()
         except Exception as e:
             self.sigFailed.emit(f"Raman snap failed: {e}")
+            return
+
+        worker = _RamanWorker(raman, params, single_shot=True)
+        worker.sigSpectrum.connect(self.sigSpectrumUpdate)
+        worker.sigFailed.connect(lambda message: self.sigFailed.emit(f"Raman snap failed: {message}"))
+
+        def _done():
+            self._raman_snap_running = False
+            self.sigStatusMessage.emit("Raman snap done")
+
+        self._raman_snap_running = True
+        self.sigStatusMessage.emit("Raman snap...")
+        self._start_worker(worker, on_finished=_done)
 
     def start_live_raman(self, params=None):
-        if self._raman_live_running:
+        if self.running or self._raman_live_running:
+            return
+        try:
+            raman = self._raman()
+        except Exception as e:
+            self.sigFailed.emit(f"Raman live failed: {e}")
+            self.sigRamanLiveRunningChanged.emit(False)
             return
 
-        self._raman_live_params = dict(params or {})
-        self._raman_live_counter = 0
+        worker = _RamanWorker(raman, params, single_shot=False)
+        worker.sigSpectrum.connect(self._on_raman_live_spectrum)
+        worker.sigFailed.connect(self._on_raman_live_failed)
+        self._raman_live_worker = worker
         self._raman_live_running = True
-
-        interval_ms = self._compute_raman_live_interval_ms(self._raman_live_params)
-        self.raman_live_timer.start(interval_ms)
         self.sigRamanLiveRunningChanged.emit(True)
         self.sigStatusMessage.emit("Raman live started")
+        self._start_worker(worker)
 
     def stop_live_raman(self):
+        """Stop asking for spectra. The exposure in progress, if any, still
+        completes in its thread -- it cannot be cut short -- but its result
+        is not painted."""
         if not self._raman_live_running:
             return
-
-        self.raman_live_timer.stop()
         self._raman_live_running = False
+        worker, self._raman_live_worker = self._raman_live_worker, None
+        if worker is not None:
+            worker.stop()
+            try:
+                worker.sigSpectrum.disconnect(self._on_raman_live_spectrum)
+            except (RuntimeError, TypeError):
+                pass
         self.sigRamanLiveRunningChanged.emit(False)
         self.sigStatusMessage.emit("Raman live stopped")
+
+    def update_raman_live_params(self, params: dict):
+        """Exposure or averages changed: the next live spectrum uses them."""
+        if self._raman_live_worker is not None:
+            self._raman_live_worker.update_params(params)
+
+    @Slot(object)
+    def _on_raman_live_spectrum(self, spectrum):
+        # Only the current live worker paints: after a stop and a quick
+        # restart, the previous one may still deliver its last exposure.
+        if self._raman_live_running and self.sender() is self._raman_live_worker:
+            self.sigSpectrumUpdate.emit(spectrum)
+
+    @Slot(str)
+    def _on_raman_live_failed(self, message: str):
+        if self.sender() is not self._raman_live_worker:
+            # A worker already stopped, failing on its way out: worth a line
+            # in the log, but it must not switch off the live view now running.
+            logger.warning(f"[Spectro] stopped Raman live worker failed: {message}")
+            return
+        self._raman_live_running = False
+        self._raman_live_worker = None
+        self.sigRamanLiveRunningChanged.emit(False)
+        self.sigFailed.emit(f"Raman live failed: {message}")
+
+    # --------------------------
+    # Spectrographe Raman
+    # --------------------------
+    def refresh_raman_spectrograph(self):
+        """Connect if needed and report the gratings and the current setting."""
+        self.move_raman_spectrograph()
+
+    def move_raman_spectrograph(self, grating: int | None = None, center_nm: float | None = None):
+        """Turn the turret and/or recentre, off the GUI thread.
+
+        Refused during a map: the spectral axis recorded at its start must stay
+        true for every point. A live view may run meanwhile; its next spectrum
+        simply waits for the move.
+        """
+        moving = grating is not None or center_nm is not None
+        if moving and self.running:
+            self.sigFailed.emit("The spectrograph cannot move during a spectro acquisition.")
+            return
+        if self._raman_spectrograph_busy:
+            self.sigStatusMessage.emit("Spectrograph busy, request ignored.")
+            return
+        try:
+            raman = self._raman()
+        except Exception as e:
+            self.sigFailed.emit(str(e))
+            return
+
+        worker = _RamanSpectrographWorker(raman, grating=grating, center_nm=center_nm)
+        worker.sigDone.connect(self.sigRamanSpectrographChanged)
+        worker.sigFailed.connect(lambda message: self.sigFailed.emit(f"Spectrograph: {message}"))
+
+        def _done():
+            self._raman_spectrograph_busy = False
+            self.sigRamanSpectrographBusy.emit(False)
+
+        self._raman_spectrograph_busy = True
+        self.sigRamanSpectrographBusy.emit(True)
+        if moving:
+            self.sigStatusMessage.emit("Spectrograph moving...")
+        self._start_worker(worker, on_finished=_done)
 
     # ==========================================================
     # Timers live
@@ -935,25 +1180,6 @@ class SpectroManager(QObject):
     def _on_brillouin_live_timeout(self):
         # ancien chemin timer synchrone non utilisé
         pass
-
-    def _on_raman_live_timeout(self):
-        try:
-            wavelengths = self._build_raman_wavelengths(self._raman_live_params)
-            spectrum = self._mock_raman_spectrum(
-                x_idx=0,
-                y_idx=0,
-                z_idx=0,
-                t_index=self._raman_live_counter,
-                params=self._raman_live_params,
-                wavelengths=wavelengths,
-            )
-            self._raman_live_counter += 1
-            self.dataset = self.dataset or {}
-            self.dataset["raman_wavelengths"] = wavelengths
-            self.sigSpectrumUpdate.emit(spectrum)
-        except Exception as e:
-            self.stop_live_raman()
-            self.sigFailed.emit(f"Raman live failed: {e}")
 
     # ==========================================================
     # Grid / ordre serpentin
@@ -995,6 +1221,7 @@ class SpectroManager(QObject):
         brillouin_params,
         raman_params,
         save_params,
+        raman=None,
     ):
         px = max(1, int(scan_parameters.get("pixels_x", 1) or 1))
         py = max(1, int(scan_parameters.get("pixels_y", 1) or 1))
@@ -1093,171 +1320,34 @@ class SpectroManager(QObject):
                 )
 
         if modes.get("raman", False):
-            wavelengths = self._build_raman_wavelengths(raman_params)
-            dataset["raman_wavelengths"] = wavelengths.astype(np.float32, copy=False)
-            dataset["raman_spectra"] = np.zeros((pt, pz, py, px, wavelengths.size), dtype=np.float32)
+            if raman is None:
+                raise RuntimeError("Raman mode is on but no Raman spectrometer is available.")
+
+            # The axis and the whole spectrograph/detector state are read once,
+            # here: moves are refused during a map, so they hold for every point.
+            # The detector is set up for the map first, so its record shows the
+            # map's exposure, not the one the live view left behind.
+            raman.configure(float(raman_params.get("exposure_ms", 100.0) or 100.0))
+            axis = raman.spectral_axis()
+            n_spectral = int(axis.values.size)
+            dataset["raman_axis"] = np.asarray(axis.values, dtype=np.float64)
+            dataset["raman_axis_unit"] = axis.unit
+            dataset["raman_spectra"] = np.zeros((pt, pz, py, px, n_spectral), dtype=np.float32)
+
+            state = raman.state()
+            excitation_nm = float(raman_params.get("excitation_nm", 0.0) or 0.0)
+            state["excitation_nm"] = excitation_nm if excitation_nm > 0.0 else None
+            state["exposure_ms"] = float(raman_params.get("exposure_ms", 0.0) or 0.0)
+            state["averages"] = max(1, int(raman_params.get("averages", 1) or 1))
+            dataset["metadata"]["raman"] = state
+
+            nbytes = int(dataset["raman_spectra"].nbytes)
+            logger.notice(
+                f"[Raman] {pt * pz * py * px} point(s) x {n_spectral} spectral pixels, "
+                f"axis in {axis.unit} ({axis.note}), {nbytes / 2**20:.1f} MiB"
+            )
 
         return dataset
-
-    # ==========================================================
-    # Boucle mapping
-    # ==========================================================
-    def _schedule_next_pixel(self, delay_ms: int):
-        if not self.running:
-            return
-        self.mapping_timer.start(max(0, int(delay_ms)))
-
-    def _stop_mapping_internal(self, emit_finished: bool, status_text: str):
-        if not self.running and self.mapping_timer.isActive():
-            self.mapping_timer.stop()
-
-        was_running = self.running
-        self.running = False
-        self.mapping_timer.stop()
-
-        if was_running:
-            self.sigStatusMessage.emit(status_text)
-
-        if emit_finished and self.dataset is not None:
-            try:
-                if "brillouin_images" in self.dataset and self.current_pixel_index > 0:
-                    last_idx = min(self.current_pixel_index - 1, len(self.pixel_list) - 1)
-                    info = self.pixel_list[last_idx]
-                    t = int(info.get("t_index", 0))
-                    z = int(info["z_index"])
-                    y = int(info["y_index"])
-                    x = int(info["x_index"])
-                    self.sigImageUpdate.emit(self.dataset["brillouin_images"][t, z, y, x])
-
-                if "raman_spectra" in self.dataset and self.current_pixel_index > 0:
-                    last_idx = min(self.current_pixel_index - 1, len(self.pixel_list) - 1)
-                    info = self.pixel_list[last_idx]
-                    t = int(info.get("t_index", 0))
-                    z = int(info["z_index"])
-                    y = int(info["y_index"])
-                    x = int(info["x_index"])
-                    self.sigSpectrumUpdate.emit(self.dataset["raman_spectra"][t, z, y, x])
-            except Exception:
-                pass
-
-            self.sigFinished.emit(self.dataset)
-
-    def _acquire_next_pixel(self):
-        if not self.running:
-            return
-
-        if self.current_pixel_index >= len(self.pixel_list):
-            self._stop_mapping_internal(
-                emit_finished=True,
-                status_text="Spectro acquisition finished",
-            )
-            return
-
-        try:
-            info = self.pixel_list[self.current_pixel_index]
-            x = int(info["x_index"])
-            y = int(info["y_index"])
-            z = int(info["z_index"])
-
-            if info.get("is_backlash", False):
-                pos_um = self.dataset["positions_um"][z, y, x]
-                backlash_x_um = float(self._scan_parameters.get("backlash_x_um", 0.0) or 0.0)
-                backlash_x_forward_um = float(self._scan_parameters.get("backlash_x_forward_um", 0.0) or 0.0)
-                offset = backlash_x_um if y % 2 == 1 else backlash_x_forward_um
-                x_overshoot = float(pos_um[0]) + offset
-                self._move_stage_to_pixel_blocking(x_overshoot, float(pos_um[1]), float(pos_um[2]))
-                self.current_pixel_index += 1
-                self._schedule_next_pixel(delay_ms=0)
-                return
-
-            lin = int(info["linear_index"])
-
-            real_total = sum(1 for p in self.pixel_list if not p.get("is_backlash", False))
-
-            pos_um = self.dataset["positions_um"][z, y, x]
-            x_um = float(pos_um[0])
-            y_um = float(pos_um[1])
-            z_um = float(pos_um[2])
-
-            # -------------------------------------------------
-            # Déplacement réel point par point
-            # -------------------------------------------------
-            self._move_stage_to_pixel_blocking(x_um, y_um, z_um)
-
-            settle_ms = float(self._scan_parameters.get("settle_ms", 0.0) or 0.0)
-            if settle_ms > 0:
-                time.sleep(settle_ms / 1000.0)
-
-            acq_t0 = time.perf_counter()
-
-            self.sigStatusMessage.emit(
-                f"Spectro {lin + 1}/{real_total} | X={x + 1}/{self._scan_parameters.get('pixels_x', 1)} "
-                f"Y={y + 1}/{self._scan_parameters.get('pixels_y', 1)} "
-                f"Z={z + 1}/{self._scan_parameters.get('pixels_z', 1)}"
-            )
-
-            # ---- en mock on ne bouge pas encore le hardware, mais on remplit
-            #      la logique dataset comme si le move était réel
-            self.dataset["linear_index_map"][z, y, x] = lin
-            self.dataset["acquisition_order_indices"][lin] = (z, y, x)
-            self.dataset["acquisition_order_positions_um"][lin] = (x_um, y_um, z_um)
-            self.dataset["positions"][lin] = (x_um, y_um, z_um)
-            self.dataset["timestamps_s"][lin] = (
-                time.perf_counter() - self._mapping_started_t0
-                if self._mapping_started_t0 is not None else np.nan
-            )
-
-            # ---- Brillouin
-            if "brillouin_images" in self.dataset:
-                image = self._try_acquire_brillouin_from_hardware(self._brillouin_params)
-                if image is None:
-                    image = self._mock_brillouin_image(
-                        x_idx=x,
-                        y_idx=y,
-                        z_idx=z,
-                        t_index=lin,
-                        params=self._brillouin_params,
-                    )
-
-                self.dataset["brillouin_images"][z, y, x] = image
-                self.sigImageUpdate.emit(image)
-
-            # ---- Raman
-            if "raman_spectra" in self.dataset:
-                wavelengths = self.dataset["raman_wavelengths"]
-                spectrum = self._mock_raman_spectrum(
-                    x_idx=x,
-                    y_idx=y,
-                    z_idx=z,
-                    t_index=lin,
-                    params=self._raman_params,
-                    wavelengths=wavelengths,
-                )
-                self.dataset["raman_spectra"][z, y, x] = spectrum
-                self.sigSpectrumUpdate.emit(spectrum)
-
-            self.dataset["pixel_valid"][z, y, x] = True
-
-            self.current_pixel_index += 1
-            self.sigProgress.emit(lin + 1, real_total)
-
-            # cadence point par point :
-            # move -> settle -> acquisition
-            # si l'acquisition mock est plus rapide que exposure_ms,
-            # on complète le temps restant ici.
-            exposure_ms = float(self._scan_parameters.get("exposure_ms", 0.0) or 0.0)
-            elapsed_acq_s = time.perf_counter() - acq_t0
-            remaining_s = max(0.0, exposure_ms / 1000.0 - elapsed_acq_s)
-
-            if remaining_s > 0:
-                time.sleep(remaining_s)
-
-            self._schedule_next_pixel(delay_ms=0)
-
-        except Exception as e:
-            self.running = False
-            self.mapping_timer.stop()
-            self.sigFailed.emit(f"Spectro mapping failed: {e}")
 
     # ==========================================================
     # Générateurs mock
@@ -1315,11 +1405,6 @@ class SpectroManager(QObject):
             "full_height": full_h,
         }
     
-    def _build_raman_wavelengths(self, raman_params):
-        center = float(raman_params.get("center_nm", 700.0) or 700.0)
-        span = max(1e-6, float(raman_params.get("span_nm", 100.0) or 100.0))
-        return np.linspace(center - 0.5 * span, center + 0.5 * span, self._RAMAN_POINTS)
-
     def _compute_brillouin_live_interval_ms(self, params):
         fps = float(params.get("fps", 10.0) or 10.0)
         exposure_ms = float(params.get("exposure_ms", 10.0) or 10.0)
@@ -1328,11 +1413,6 @@ class SpectroManager(QObject):
             frame_ms = 1000.0 / fps
             return max(1, int(round(max(frame_ms, exposure_ms))))
         return max(1, int(round(exposure_ms)))
-
-    def _compute_raman_live_interval_ms(self, params):
-        exposure_ms = float(params.get("exposure_ms", 100.0) or 100.0)
-        averages = max(1, int(params.get("averages", 1) or 1))
-        return max(1, int(round(exposure_ms * averages)))
 
     def _mock_brillouin_image(self, x_idx, y_idx, z_idx, t_index, params):
         full_h, full_w = self._get_binned_full_shape(params)
@@ -1384,35 +1464,3 @@ class SpectroManager(QObject):
         h = int(roi["height"])
 
         return image[y0:y0 + h, x0:x0 + w]
-
-    def _mock_raman_spectrum(self, x_idx, y_idx, z_idx, t_index, params, wavelengths):
-        center = float(params.get("center_nm", 700.0) or 700.0)
-        span = max(1e-6, float(params.get("span_nm", 100.0) or 100.0))
-        exposure_ms = float(params.get("exposure_ms", 100.0) or 100.0)
-        averages = max(1, int(params.get("averages", 1) or 1))
-
-        x = np.asarray(wavelengths, dtype=np.float32)
-
-        p1 = center - 0.18 * span + 0.015 * span * np.sin(0.20 * x_idx + 0.07 * t_index)
-        p2 = center + 0.08 * span + 0.020 * span * np.cos(0.17 * y_idx + 0.05 * t_index)
-        p3 = center + 0.24 * span + 0.010 * span * np.sin(0.31 * z_idx + 0.03 * t_index)
-
-        s1 = 0.025 * span
-        s2 = 0.040 * span
-        s3 = 0.030 * span
-
-        g1 = 1.00 * np.exp(-0.5 * ((x - p1) / max(s1, 1e-6)) ** 2)
-        g2 = 0.65 * np.exp(-0.5 * ((x - p2) / max(s2, 1e-6)) ** 2)
-        g3 = 0.40 * np.exp(-0.5 * ((x - p3) / max(s3, 1e-6)) ** 2)
-
-        baseline = 0.08 + 0.04 * np.sin((x - center) / max(span, 1e-6) * 2.5 * np.pi)
-        amp = max(50.0, 0.9 * exposure_ms * np.sqrt(averages))
-
-        spectrum = amp * (g1 + g2 + g3 + baseline)
-
-        rng = np.random.default_rng(seed=(2000003 + 53 * x_idx + 101 * y_idx + 211 * z_idx + 13 * t_index))
-        noise_sigma = max(0.5, 0.035 * amp / np.sqrt(averages))
-        spectrum = spectrum + rng.normal(loc=0.0, scale=noise_sigma, size=x.shape)
-
-        spectrum = np.clip(spectrum, 0.0, None)
-        return spectrum.astype(np.float32, copy=False)

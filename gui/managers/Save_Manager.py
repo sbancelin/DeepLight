@@ -804,16 +804,30 @@ class SaveManager:
                 )
                 raw.attrs["Brillouin_type"] = "Raw_data"
                 raw.attrs["Dimensions"] = "T, Z, Y, X, camera_y, camera_x"
+                # No "Frequency" abscissa: the Brillouin frequency of each
+                # camera column comes from the analysis, not the acquisition.
+                # (It used to be filled with the *Raman* wavelengths whenever
+                # the two lengths happened to match -- another axis entirely.)
 
-                wavelengths = np.asarray(
-                    dataset.get("raman_wavelengths", []), dtype=np.float32
+            if "raman_spectra" in dataset:
+                # Raman beside the Brillouin tree, not inside it: HDF5-BLS has
+                # no vocabulary for it, and a reader of the standard should
+                # find exactly the standard under /Brillouin.
+                raman = h5.create_group("Raman")
+                spectra = np.asarray(dataset["raman_spectra"], dtype=np.float32)
+                if spectra.ndim == 4:
+                    spectra = spectra[np.newaxis]
+                data = raman.create_dataset(
+                    "spectra", data=spectra, compression="gzip", compression_opts=4
                 )
-                if wavelengths.size == arr.shape[-1]:
-                    # Abscissa_<dim_start>_<dim_end>: the spectral axis is the
-                    # last dimension of the raw data, hence 5 to 5.
-                    axis = measure.create_dataset("Frequency", data=wavelengths)
-                    axis.attrs["Brillouin_type"] = "Abscissa_5_5"
-                    axis.attrs["Unit"] = "nm"
+                data.attrs["Dimensions"] = "T, Z, Y, X, spectral"
+                axis_block = self._raman_axis_block(dataset)
+                axis = raman.create_dataset(
+                    "axis", data=np.asarray(axis_block.get("values", []), dtype=np.float64)
+                )
+                axis.attrs["Unit"] = str(axis_block.get("unit", "pixel"))
+                axis.attrs["Note"] = str(axis_block.get("note", ""))
+                self._write_h5_attrs(raman, "RAMAN", dict((dataset.get("metadata") or {}).get("raman") or {}))
 
             positions = self._positions_array(dataset)
             if positions.size:
@@ -856,6 +870,60 @@ class SaveManager:
                 group.attrs[name] = json.dumps(value, default=str)
 
     @staticmethod
+    def _raman_axis_block(dataset: dict) -> dict:
+        """Unit and value of every spectral plane of a Raman map ({} without one).
+
+        Detector pixels unless a calibration applied when the map started; the
+        note says which, and why.
+        """
+        if "raman_spectra" not in dataset:
+            return {}
+        n_pixels = int(np.asarray(dataset["raman_spectra"]).shape[-1])
+        values = dataset.get("raman_axis")
+        unit = str(dataset.get("raman_axis_unit", "pixel") or "pixel")
+        if values is None:
+            values, unit = np.arange(n_pixels, dtype=np.float64), "pixel"
+        state = dict((dataset.get("metadata") or {}).get("raman") or {})
+        note = str(dict(state.get("axis") or {}).get("note", "") or "")
+        return {
+            "unit": unit,
+            "n_pixels": n_pixels,
+            "note": note,
+            "values": [float(v) for v in np.asarray(values, dtype=np.float64)],
+        }
+
+    @staticmethod
+    def _spectro_steps_um(metadata_block: dict) -> tuple:
+        """(x, y, z) step of a spectro map in µm, None where it is unknown or zero."""
+        params = dict((metadata_block or {}).get("acquisition_parameters") or {})
+
+        def step(key):
+            try:
+                value = float(params.get(key) or 0.0)
+            except (TypeError, ValueError):
+                return None
+            return value if value > 0.0 else None
+
+        return step("step_x_um"), step("step_y_um"), step("step_z_um")
+
+    @staticmethod
+    def _write_raman_axis_csv(path: str, axis_block: dict) -> None:
+        """One line per spectral plane: its index and its value.
+
+        Also a valid calibration file for Spectral_Calibration, should the
+        axis of one map ever be needed to label another.
+        """
+        unit = axis_block.get("unit", "pixel")
+        column = "wavelength_nm" if unit == "nm" else "pixel"
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(f"# unit = {unit}\n")
+            if axis_block.get("note"):
+                fh.write(f"# note = {axis_block['note']}\n")
+            fh.write(f"index,{column}\n")
+            for i, value in enumerate(axis_block.get("values") or []):
+                fh.write(f"{i},{value:.6f}\n" if unit == "nm" else f"{i},{int(round(value))}\n")
+
+    @staticmethod
     def _positions_array(dataset: dict) -> np.ndarray:
         """Stage position of each acquired point, in acquisition order.
 
@@ -888,15 +956,19 @@ class SaveManager:
                 metadata.json
                 positions.csv
                 brillouin.ome.tif   (when present)
-                raman.ome.tif       (when present)
+                raman.ome.tif       (when present: TCZYX, Z = spectral plane)
+                raman_axis.csv      (when Raman is present: value of each plane)
 
         OME-ZARR:
             <root>/
                 metadata.json
                 positions.csv
                 brillouin.zarr      (when present)
-                raman.zarr          (when present)
-                raman_wavelengths.npy (when Raman is present)
+                raman.zarr          (when present: t, spectral, z, y, x)
+                raman_axis.csv      (when Raman is present)
+
+        HDF5-BLS: one .h5, Brillouin under /Brillouin as the standard has it,
+        Raman under /Raman beside it.
         """
         os.makedirs(folder, exist_ok=True)
         fmt = self._norm_fmt(fmt)
@@ -939,10 +1011,10 @@ class SaveManager:
             "brillouin_roi": dict(metadata_block.get("brillouin_roi", {}) or {}),
             "raman_parameters": dict(metadata_block.get("raman_parameters", {}) or {}),
             "save_parameters": dict(metadata_block.get("save_parameters", {}) or {}),
-            "raman_wavelengths_nm": (
-                np.asarray(dataset.get("raman_wavelengths", []), dtype=np.float32).tolist()
-                if "raman_wavelengths" in dataset else []
-            ),
+            # Spectrograph setting, detector rows and binning, calibration and
+            # excitation, as they were for the whole map.
+            "raman": dict(metadata_block.get("raman", {}) or {}),
+            "raman_axis": self._raman_axis_block(dataset),
             "data_files": {},
             "axis_interpretation": {
                 "brillouin_ome_tiff": {
@@ -955,11 +1027,12 @@ class SaveManager:
                     "X": "camera image x",
                 },
                 "raman_ome_tiff": {
-                    "axes": "ZYXS",
-                    "Z": "mapping z index",
+                    "axes": "TCZYX",
+                    "T": "repetition index",
+                    "C": "mapping z index",
+                    "Z": "spectral index: detector pixel, or wavelength via raman_axis.csv",
                     "Y": "mapping y index",
                     "X": "mapping x index",
-                    "S": "spectral samples",
                 },
             },
         }
@@ -1041,16 +1114,15 @@ class SaveManager:
                     ],
                 }]
                 root.attrs["comment"] = comment or ""
-                root.attrs["raman_wavelengths_nm"] = (
-                    np.asarray(dataset.get("raman_wavelengths", []), dtype=np.float32).tolist()
-                    if "raman_wavelengths" in dataset else []
-                )
 
             metadata["data_files"]["brillouin"] = out_name
 
         # -------------------------
-        # Raman
-        # dataset["raman_spectra"] attendu en (Z, Y, X, L)
+        # Raman : un spectre par point de la carte.
+        # dataset["raman_spectra"] en (T, Z, Y, X, L), L = pixels spectraux.
+        # Écrit en cube image : XY = la zone balayée, et l'axe spectral en
+        # pile, pour qu'une carte s'ouvre comme une série d'images -- une
+        # par pixel spectral -- dans Fiji comme dans napari.
         # -------------------------
         if "raman_spectra" in dataset:
             arr = np.asarray(dataset["raman_spectra"], dtype=np.float32)
@@ -1058,38 +1130,67 @@ class SaveManager:
             if arr.ndim == 4:
                 arr = arr[np.newaxis]
 
+            step_x, step_y, step_z = self._spectro_steps_um(metadata_block)
+            axis_block = metadata["raman_axis"]
+
+            # Beside the cube in every format: the value of each spectral plane.
+            axis_csv = "raman_axis.csv"
+            self._write_raman_axis_csv(os.path.join(root_path, axis_csv), axis_block)
+            metadata["data_files"]["raman_axis"] = axis_csv
+
             if fmt == "OME-TIFF":
+                # (T, Z, Y, X, L) -> (T, C = mapping z, Z = spectral, Y, X).
+                # OME has no spectral axis; Z is the one a viewer scrolls
+                # through as a stack, which is what a hyperspectral map is.
+                cube = np.ascontiguousarray(np.moveaxis(arr, 4, 2))
                 out_name = "raman.ome.tif"
-                self._warn_if_bigtiff("Spectro", arr.nbytes)
+                ome = {"axes": "TCZYX"}
+                if step_x:
+                    ome.update({"PhysicalSizeX": float(step_x), "PhysicalSizeXUnit": "µm"})
+                if step_y:
+                    ome.update({"PhysicalSizeY": float(step_y), "PhysicalSizeYUnit": "µm"})
+                self._warn_if_bigtiff("Spectro", cube.nbytes)
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
-                    arr,
+                    cube,
                     photometric="minisblack",
-                    metadata={"axes": "TZYXS"},
+                    metadata=ome,
                 )
             else:
+                # NGFF 0.4: time first, then one custom-typed axis, then space.
+                # The spectral axis is that custom axis -- named for what it is,
+                # rather than passed off as a spatial z.
+                cube = np.ascontiguousarray(np.moveaxis(arr, 4, 1))   # (T, L, Z, Y, X)
                 out_name = "raman.zarr"
                 zarr_path = os.path.join(root_path, out_name)
                 root = zarr.open_group(zarr_path, mode="w")
                 root.create_dataset(
                     "0",
-                    data=arr,
-                    shape=arr.shape,
-                    chunks=(1, 1, 1, 1, min(1024, arr.shape[-1])),
+                    data=cube,
+                    shape=cube.shape,
+                    chunks=(1, cube.shape[1], 1, min(32, cube.shape[3]), min(32, cube.shape[4])),
                     dtype=np.float32,
                     overwrite=True,
                 )
                 root.attrs["multiscales"] = [{
                     "version": "0.4",
-                    "datasets": [{"path": "0"}],
+                    "datasets": [{
+                        "path": "0",
+                        "coordinateTransformations": [{
+                            "type": "scale",
+                            "scale": [1.0, 1.0, float(step_z or 1.0),
+                                      float(step_y or 1.0), float(step_x or 1.0)],
+                        }],
+                    }],
                     "axes": [
                         {"name": "t", "type": "time"},
-                        {"name": "z", "type": "space"},
-                        {"name": "y", "type": "space"},
-                        {"name": "x", "type": "space"},
-                        {"name": "lambda", "type": "spectral"},
+                        {"name": "spectral", "type": "spectral"},
+                        {"name": "z", "type": "space", "unit": "micrometer"},
+                        {"name": "y", "type": "space", "unit": "micrometer"},
+                        {"name": "x", "type": "space", "unit": "micrometer"},
                     ],
                 }]
+                root.attrs["raman_axis"] = axis_block
                 root.attrs["comment"] = comment or ""
 
             metadata["data_files"]["raman"] = out_name

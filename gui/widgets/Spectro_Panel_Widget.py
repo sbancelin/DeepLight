@@ -20,6 +20,13 @@ SPECTRO_SETTINGS_DEFAULTS = {
     "line_offset_x_um": -1.2,
     "origin_overshoot_um": 10.0,
     "stage_speed_mm_s": 4.0,
+    # Raman. Excitation 0 = not stated: it is only recorded, never used for a
+    # computation. Rows 0/0 = the full sensor height. No calibration = spectra
+    # on raw detector pixels, the axis that cannot be wrong.
+    "raman_excitation_nm": 0.0,
+    "raman_row_start": 0,
+    "raman_row_count": 0,
+    "raman_calibration": None,
 }
 
 
@@ -139,6 +146,7 @@ class SpectroPanelWidget(QWidget):
     sigAcquireClicked = Signal()
     sigStopClicked = Signal()
     settleTimeChanged = Signal(float)            # settle_ms
+    sigRamanSettingsChanged = Signal(dict)       # see get_raman_settings()
 
     _BRILLOUIN_IMG_H = 1200
     _BRILLOUIN_IMG_W = 1200
@@ -163,7 +171,21 @@ class SpectroPanelWidget(QWidget):
         self._origin_overshoot_um = SPECTRO_SETTINGS_DEFAULTS["origin_overshoot_um"]
         self._brillouin_exposure_ms = 100.0
         self._raman_exposure_ms = 100.0
+        self._raman_averages = 1
+        self._raman_spectral_pixels = self._RAMAN_POINTS   # until the detector says
         self._stage_speed_mm_s = SPECTRO_SETTINGS_DEFAULTS["stage_speed_mm_s"]
+
+        # Raman (Settings) : enregistré avec la carte ; la calibration est la
+        # forme to_dict() d'une SpectralCalibration, None = pixels bruts.
+        self._raman_excitation_nm = SPECTRO_SETTINGS_DEFAULTS["raman_excitation_nm"]
+        self._raman_row_start = SPECTRO_SETTINGS_DEFAULTS["raman_row_start"]
+        self._raman_row_count = SPECTRO_SETTINGS_DEFAULTS["raman_row_count"]
+        self._raman_calibration = SPECTRO_SETTINGS_DEFAULTS["raman_calibration"]
+
+        #: Callable(path) -> SpectralCalibration, provided by the window: only
+        #: the spectrometer knows the pixel count and the current setting a
+        #: calibration file must be checked against.
+        self.raman_calibration_loader = None
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
@@ -491,6 +513,10 @@ class SpectroPanelWidget(QWidget):
         self._line_offset_x_um = float(saved.get("line_offset_x_um", self._line_offset_x_um))
         self._origin_overshoot_um = float(saved.get("origin_overshoot_um", self._origin_overshoot_um))
         self._stage_speed_mm_s = float(saved.get("stage_speed_mm_s", self._stage_speed_mm_s))
+        self._raman_excitation_nm = float(saved.get("raman_excitation_nm", self._raman_excitation_nm) or 0.0)
+        self._raman_row_start = int(saved.get("raman_row_start", self._raman_row_start) or 0)
+        self._raman_row_count = int(saved.get("raman_row_count", self._raman_row_count) or 0)
+        self._raman_calibration = saved.get("raman_calibration", self._raman_calibration) or None
         self._update_derived_values()
 
     def _export_settings(self) -> dict:
@@ -499,7 +525,33 @@ class SpectroPanelWidget(QWidget):
             "line_offset_x_um": float(self._line_offset_x_um),
             "origin_overshoot_um": float(self._origin_overshoot_um),
             "stage_speed_mm_s": float(self._stage_speed_mm_s),
+            "raman_excitation_nm": float(self._raman_excitation_nm),
+            "raman_row_start": int(self._raman_row_start),
+            "raman_row_count": int(self._raman_row_count),
+            "raman_calibration": self._raman_calibration,
         }
+
+    def get_raman_settings(self) -> dict:
+        """What the Raman chain and the dataset need from Settings."""
+        return {
+            "excitation_nm": float(self._raman_excitation_nm),
+            "row_start": int(self._raman_row_start),
+            "row_count": int(self._raman_row_count),
+            "calibration": self._raman_calibration,
+        }
+
+    @staticmethod
+    def _describe_calibration(calibration: dict | None) -> str:
+        if not calibration:
+            return "none -- spectra on raw detector pixels"
+        wavelengths = list(calibration.get("wavelengths_nm") or [])
+        span = (f", {min(wavelengths):.2f}-{max(wavelengths):.2f} nm"
+                if wavelengths else "")
+        grating = calibration.get("grating")
+        center = calibration.get("center_nm")
+        setting = (f"grating {grating}, centre {float(center):.3f} nm"
+                   if grating is not None and center is not None else "setting unknown")
+        return f"{calibration.get('source') or 'table'}: {setting}, {len(wavelengths)} px{span}"
 
     def open_settings_dialog(self):
         from .Dialogs import SettingsDialog
@@ -550,6 +602,87 @@ class SpectroPanelWidget(QWidget):
         row4.addWidget(speed_edit)
         dialog.add_layout(row4)
 
+        # ---- Raman -----------------------------------------------------
+        raman_title = QLabel("Raman")
+        raman_title.setStyleSheet("font-weight: bold; padding-top: 6px;")
+        dialog.add_widget(raman_title)
+
+        row5 = QHBoxLayout()
+        row5.addWidget(QLabel("Excitation wavelength (nm):"))
+        excitation_edit = QLineEdit(str(self._raman_excitation_nm))
+        excitation_edit.setToolTip(
+            "Recorded with every Raman dataset, so the Raman shift can be\n"
+            "computed at analysis time. Not used for any computation here.\n"
+            "0 = not stated."
+        )
+        row5.addWidget(excitation_edit)
+        dialog.add_layout(row5)
+
+        row6 = QHBoxLayout()
+        row6.addWidget(QLabel("Detector rows binned: first"))
+        row_start_edit = QLineEdit(str(self._raman_row_start))
+        row6.addWidget(row_start_edit)
+        row6.addWidget(QLabel("count"))
+        row_count_edit = QLineEdit(str(self._raman_row_count))
+        row_count_edit.setToolTip(
+            "Band of sensor rows, along the slit, summed into each spectrum\n"
+            "(on the chip when the camera allows it). Count 0 = full height.\n"
+            "Narrowing it to the slit image keeps the read noise of the\n"
+            "unlit rows out of the spectrum."
+        )
+        row6.addWidget(row_count_edit)
+        dialog.add_layout(row6)
+
+        # La calibration chargée reste en attente jusqu'à OK / Save value,
+        # comme les autres champs du popup.
+        pending = {"calibration": self._raman_calibration}
+
+        row7 = QHBoxLayout()
+        row7.addWidget(QLabel("Wavelength calibration:"))
+        calibration_label = QLabel(self._describe_calibration(pending["calibration"]))
+        calibration_label.setWordWrap(True)
+        calibration_label.setStyleSheet("color: #b0b0b0;")
+        calibration_label.setToolTip(
+            "Pixel-to-wavelength table measured in LightField (IntelliCal) or\n"
+            "WinSpec. Applied only at the grating and centre wavelength it was\n"
+            "measured at; anywhere else spectra stay on raw detector pixels.\n"
+            "Text file: one wavelength per line, or columns with a header\n"
+            "naming the wavelength column. Optional '# grating = 2' and\n"
+            "'# center_nm = 785.0' lines state the setting it belongs to;\n"
+            "without them, the current setting is assumed."
+        )
+        row7.addWidget(calibration_label, stretch=1)
+        load_button = QPushButton("Load...")
+        clear_button = QPushButton("Clear")
+        row7.addWidget(load_button)
+        row7.addWidget(clear_button)
+        dialog.add_layout(row7)
+
+        def _load_calibration():
+            if self.raman_calibration_loader is None:
+                QMessageBox.warning(dialog, "Calibration", "No Raman spectrometer to check the file against.")
+                return
+            path, _ = QFileDialog.getOpenFileName(
+                dialog, "Load a wavelength calibration", "",
+                "Text tables (*.txt *.csv *.dat *.tsv);;All files (*)",
+            )
+            if not path:
+                return
+            try:
+                calibration = self.raman_calibration_loader(path)
+            except Exception as e:
+                QMessageBox.warning(dialog, "Calibration refused", f"{os.path.basename(path)}:\n{e}")
+                return
+            pending["calibration"] = calibration.to_dict()
+            calibration_label.setText(self._describe_calibration(pending["calibration"]))
+
+        def _clear_calibration():
+            pending["calibration"] = None
+            calibration_label.setText(self._describe_calibration(None))
+
+        load_button.clicked.connect(_load_calibration)
+        clear_button.clicked.connect(_clear_calibration)
+
         def _on_accepted():
             try:
                 self._settle_ms = max(0.0, float(settle_edit.text().replace(",", ".")))
@@ -567,8 +700,22 @@ class SpectroPanelWidget(QWidget):
                 self._stage_speed_mm_s = max(0.001, float(speed_edit.text().replace(",", ".")))
             except Exception:
                 pass
+            try:
+                self._raman_excitation_nm = max(0.0, float(excitation_edit.text().replace(",", ".")))
+            except Exception:
+                pass
+            try:
+                self._raman_row_start = max(0, int(float(row_start_edit.text().replace(",", "."))))
+            except Exception:
+                pass
+            try:
+                self._raman_row_count = max(0, int(float(row_count_edit.text().replace(",", "."))))
+            except Exception:
+                pass
+            self._raman_calibration = pending["calibration"]
             self._update_derived_values()
             self.settleTimeChanged.emit(float(self._settle_ms))
+            self.sigRamanSettingsChanged.emit(self.get_raman_settings())
 
         dialog.accepted.connect(_on_accepted)
 
@@ -584,14 +731,24 @@ class SpectroPanelWidget(QWidget):
             self._line_offset_x_um = SPECTRO_SETTINGS_DEFAULTS["line_offset_x_um"]
             self._origin_overshoot_um = SPECTRO_SETTINGS_DEFAULTS["origin_overshoot_um"]
             self._stage_speed_mm_s = SPECTRO_SETTINGS_DEFAULTS["stage_speed_mm_s"]
+            self._raman_excitation_nm = SPECTRO_SETTINGS_DEFAULTS["raman_excitation_nm"]
+            self._raman_row_start = SPECTRO_SETTINGS_DEFAULTS["raman_row_start"]
+            self._raman_row_count = SPECTRO_SETTINGS_DEFAULTS["raman_row_count"]
+            self._raman_calibration = SPECTRO_SETTINGS_DEFAULTS["raman_calibration"]
+            pending["calibration"] = self._raman_calibration
 
             settle_edit.setText(str(self._settle_ms))
             line_offset_edit.setText(str(self._line_offset_x_um))
             origin_overshoot_edit.setText(str(self._origin_overshoot_um))
             speed_edit.setText(str(self._stage_speed_mm_s))
+            excitation_edit.setText(str(self._raman_excitation_nm))
+            row_start_edit.setText(str(self._raman_row_start))
+            row_count_edit.setText(str(self._raman_row_count))
+            calibration_label.setText(self._describe_calibration(None))
 
             self._update_derived_values()
             self.settleTimeChanged.emit(float(self._settle_ms))
+            self.sigRamanSettingsChanged.emit(self.get_raman_settings())
 
             if self.settings_manager is not None:
                 self.settings_manager.update_spectro_settings(**self._export_settings())
@@ -675,14 +832,17 @@ class SpectroPanelWidget(QWidget):
         total_t_s = (pix_t - 1) * step_t_s if pix_t > 1 else 0.0
         self.total_t_edit.setText(f"{total_t_s:.1f}")
 
-        # Exposition : on prend le max des modes actifs
+        # Exposition par point : les deux modes s'enchaînent à chaque point
+        # (Brillouin puis Raman), donc leurs durées s'additionnent ; un spectre
+        # Raman dure exposition x moyennes.
+        raman_ms = self._raman_exposure_ms * max(1, int(self._raman_averages))
         exposure_ms = 0.0
         if self.button_brillouin.isChecked():
-            exposure_ms = max(exposure_ms, self._brillouin_exposure_ms)
+            exposure_ms += self._brillouin_exposure_ms
         if self.button_raman.isChecked():
-            exposure_ms = max(exposure_ms, self._raman_exposure_ms)
+            exposure_ms += raman_ms
         if not self.button_brillouin.isChecked() and not self.button_raman.isChecked():
-            exposure_ms = max(self._brillouin_exposure_ms, self._raman_exposure_ms)
+            exposure_ms = max(self._brillouin_exposure_ms, raman_ms)
 
         n_xy = pix_x * pix_y
         step_x = self._compute_step(size_x, pix_x)
@@ -722,7 +882,7 @@ class SpectroPanelWidget(QWidget):
 
         if self.button_raman.isChecked():
             has_any_mode = True
-            total_bytes += self._RAMAN_POINTS * self._RAMAN_BYTES_PER_POINT * n_pix
+            total_bytes += self._raman_spectral_pixels * self._RAMAN_BYTES_PER_POINT * n_pix
 
         if not has_any_mode:
             self.estimated_size_edit.setText("—")
@@ -794,6 +954,15 @@ class SpectroPanelWidget(QWidget):
 
     def set_brillouin_exposure_ms(self, ms: float):
         self._brillouin_exposure_ms = max(0.0, float(ms))
+        self._update_derived_values()
+
+    def set_raman_averages(self, averages: float):
+        self._raman_averages = max(1, int(averages))
+        self._update_derived_values()
+
+    def set_raman_spectral_pixels(self, n_pixels: int):
+        """Spectrum length, once the detector has said it: sizes the estimate."""
+        self._raman_spectral_pixels = max(1, int(n_pixels))
         self._update_derived_values()
 
     def set_raman_exposure_ms(self, ms: float):

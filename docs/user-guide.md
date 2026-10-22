@@ -230,13 +230,50 @@ exposure. **Dark** and **Flat** acquire correction references — for the dark y
 block the light yourself, and the dialog says so.
 
 The *Spectro* tab drives the Brillouin arm (a Princeton Instruments camera) and
-the Raman arm (an IsoPlane 320 and its camera). **Dark** there closes the
-shutter itself and puts it back as it found it. The EMCCD's dark current grows
-with exposure, and a Brillouin exposure is long, so it matters more here than
-elsewhere.
+the Raman arm (an IsoPlane 320 spectrograph and a LANSIS camera). **Dark** there
+closes the shutter itself and puts it back as it found it. The EMCCD's dark
+current grows with exposure, and a Brillouin exposure is long, so it matters
+more here than elsewhere.
 
-Both run against a software mock until the hardware is present, selected per
-instrument in the configuration file.
+### Raman
+
+**Snap** takes one spectrum, **Live** repeats until stopped; both run off the
+window's thread, so a long exposure never freezes it. Exposure and **Avg** (the
+number of exposures averaged into each spectrum) can be changed while live.
+**Grating** turns the turret, and **Center** + **Go** (or Enter) rotates the
+grating to centre a wavelength — only on Go, so scrolling the field does not
+move the spectrograph at every step. Both are locked during a map.
+
+The live plot is a preview: nothing is processed, fitted or corrected.
+
+**The spectral axis.** By default spectra are on raw detector pixels. A
+wavelength calibration, measured in LightField against its IntelliCal lamps (or
+in WinSpec), is loaded in **Settings → Raman → Wavelength calibration**: a text
+file with one wavelength per pixel, or columns with a header naming the
+wavelength column. It is applied only at the grating and centre it was measured
+at — stated in the file as `# grating = 2` and `# center_nm = 785.0`, otherwise
+taken as the current setting when it is loaded. Move either and spectra go back
+to pixels, and the banner says so: a wavelength axis from another setting would
+be wrong without looking wrong.
+
+The same Settings section holds the band of sensor rows summed into a spectrum
+(on the camera's chip where it allows it; 0 = full height) and the excitation
+wavelength, which is only recorded with the data. **Save value** keeps all of it,
+calibration included, for the next launch; **Reset origin** returns to raw
+pixels and the full height.
+
+**The dataset.** A map stores one spectrum per point. In OME-TIFF it is a cube:
+the scanned field in X and Y, and one plane per spectral pixel along Z, so Fiji
+opens it as an image stack. `raman_axis.csv` beside it gives the value of every
+plane (pixel or nm), and `metadata.json` records the spectrograph setting, the
+detector rows and binning, the calibration and the excitation. OME-Zarr names the
+spectral axis for what it is; HDF5 keeps the cube under `/Raman`.
+
+LightField and DeepLight cannot hold the instruments at the same time: close
+LightField after calibrating, before starting DeepLight.
+
+Every instrument runs against a software mock until the hardware is present,
+selected per instrument in the configuration file.
 
 ---
 

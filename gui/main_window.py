@@ -26,6 +26,7 @@ from .managers.Scan_manager import ScanManager
 from .managers.Scan_Types import image_rows_by_axis
 from .managers.Snapshot import render_snapshot
 from .managers.Settings_Manager import SettingsManager
+from .managers.Spectral_Calibration import SpectralCalibration
 from .managers.Stitching_Manager import StitchingManager
 from .managers.Spectro_Manager import SpectroManager
 from .managers.Laser_Manager import LaserManager
@@ -162,7 +163,6 @@ class MainWindow(QMainWindow):
         # --- Spectro UI throttling ---
         self._pending_brillouin_image = None
         self._pending_raman_spectrum = None
-        self._pending_raman_wavelengths = None
 
         self._spectro_brillouin_ui_timer = QTimer(self)
         self._spectro_brillouin_ui_timer.setInterval(500)
@@ -334,7 +334,6 @@ class MainWindow(QMainWindow):
     def _clear_spectro_ui_buffers(self):
         self._pending_brillouin_image = None
         self._pending_raman_spectrum = None
-        self._pending_raman_wavelengths = None
     
     def _connect_spectro_controls(self):
         sp = self.ui.spectro_panel_widget
@@ -371,14 +370,32 @@ class MainWindow(QMainWindow):
         sw.combo_brillouin_binning.currentIndexChanged.connect(self._on_brillouin_acq_params_changed)
         sw.spin_brillouin_exposure_ms.valueChanged.connect(sp.set_brillouin_exposure_ms)
 
-        # --- Raman mock controls ---
+        # --- Raman controls ---
         sw.button_raman_snap.clicked.connect(self._on_raman_snap_clicked)
         sw.button_raman_live.clicked.connect(self._on_raman_live_clicked)
         sw.button_raman_stop.clicked.connect(self._on_spectro_stop_clicked)
         sw.spin_raman_exposure_ms.valueChanged.connect(sp.set_raman_exposure_ms)
+        sw.spin_raman_averages.valueChanged.connect(sp.set_raman_averages)
+        sw.spin_raman_exposure_ms.valueChanged.connect(self._on_raman_acq_params_changed)
+        sw.spin_raman_averages.valueChanged.connect(self._on_raman_acq_params_changed)
+        sw.sigRamanGratingRequested.connect(lambda index: sm.move_raman_spectrograph(grating=index))
+        sw.sigRamanCenterRequested.connect(lambda nm: sm.move_raman_spectrograph(center_nm=nm))
+        sm.sigRamanSpectrographChanged.connect(self._on_raman_spectrograph_changed)
+        sm.sigRamanSpectrographBusy.connect(sw.set_raman_spectrograph_busy)
+
+        # Settings du tab spectro : bande de lignes et calibration vont à la
+        # chaîne Raman ; un fichier de calibration est vérifié par elle, seule
+        # à connaître le nombre de pixels et le réglage courant.
+        sp.sigRamanSettingsChanged.connect(self._apply_raman_settings)
+        sp.raman_calibration_loader = self._load_raman_calibration
+        self._apply_raman_settings(sp.get_raman_settings())
 
     @Slot(bool, bool)
     def _on_spectro_mode_changed(self, brillouin: bool, raman: bool):
+        if bool(raman):
+            # Connects in a worker and fills the grating list and the centre.
+            self.spectro_manager.refresh_raman_spectrograph()
+
         if not bool(brillouin):
             return
 
@@ -447,6 +464,8 @@ class MainWindow(QMainWindow):
 
             brillouin_params = self.ui.spectro_widget.get_brillouin_parameters()
             raman_params = self.ui.spectro_widget.get_raman_parameters()
+            # Recorded with the map, never computed with: see Settings.
+            raman_params["excitation_nm"] = self.ui.spectro_panel_widget.get_raman_settings()["excitation_nm"]
 
             self._clear_spectro_ui_buffers()
 
@@ -466,14 +485,19 @@ class MainWindow(QMainWindow):
                 save_params=save_params,
             )
 
-            try:
-                self.ui.global_progress_widget.start_task("Spectro")
-            except Exception as e:
-                logger.debug(f"[MainWindow] ignored exception: {e}")
+            # start_mapping reports a refusal through sigFailed, which has
+            # already reset the panels and closed the shutter by now: the
+            # progress bar must not be started for a run that never began.
+            if self.spectro_manager.is_running():
+                try:
+                    self.ui.global_progress_widget.start_task("Spectro")
+                except Exception as e:
+                    logger.debug(f"[MainWindow] ignored exception: {e}")
         except Exception as e:
             self._on_spectro_status_changed(f"Spectro start failed: {e}")
             self.ui.spectro_panel_widget.set_running(False)
             self.ui.spectro_widget.set_running(False)
+            self._close_shutter_after_spectro()
 
     @Slot()
     def _on_spectro_stop_clicked(self):
@@ -635,6 +659,55 @@ class MainWindow(QMainWindow):
             logger.error(f"[Spectro] Raman live failed: {e}")
             self._on_spectro_status_changed("Error")
 
+    @Slot()
+    def _on_raman_acq_params_changed(self, *_args):
+        """Exposure or averages edited: the live view picks them up at its next spectrum."""
+        if self.spectro_manager.is_raman_live_running():
+            self.spectro_manager.update_raman_live_params(self.ui.spectro_widget.get_raman_parameters())
+
+    @Slot(object)
+    def _on_raman_spectrograph_changed(self, info):
+        info = dict(info or {})
+        self.ui.spectro_widget.set_raman_spectrograph(info)
+        axis = dict(info.get("axis") or {})
+        if axis.get("n_pixels"):
+            self.ui.spectro_panel_widget.set_raman_spectral_pixels(int(axis["n_pixels"]))
+        setting = dict(info.get("setting") or {})
+        if setting:
+            self.ui.spectro_widget.set_raman_status(
+                f"grating {setting.get('grating')}, {float(setting.get('center_nm', 0.0)):.2f} nm"
+            )
+
+    @Slot(dict)
+    def _apply_raman_settings(self, settings: dict):
+        """Detector rows and calibration from the spectro Settings, to the Raman chain."""
+        raman = self.hardware.raman_spectrometer()
+        if raman is None:
+            return
+        settings = dict(settings or {})
+        raman.set_detector_rows(int(settings.get("row_start", 0) or 0),
+                                int(settings.get("row_count", 0) or 0))
+
+        calibration = None
+        if settings.get("calibration"):
+            try:
+                calibration = SpectralCalibration.from_dict(settings["calibration"])
+            except Exception as e:
+                logger.warning(f"[Raman] saved calibration ignored ({e}); spectra on detector pixels")
+        raman.set_calibration(calibration)
+
+        # The axis may have changed (a calibration now applies, or no longer):
+        # the Raman banner says so, without waiting for the next spectrum.
+        if self.ui.spectro_panel_widget.get_modes().get("raman", False):
+            self.spectro_manager.refresh_raman_spectrograph()
+
+    def _load_raman_calibration(self, path: str):
+        """Read and check a calibration file; installed only when Settings are accepted."""
+        raman = self.hardware.raman_spectrometer()
+        if raman is None:
+            raise RuntimeError(self.hardware.raman_unavailable_reason() or "no Raman spectrometer")
+        return raman.load_calibration(path)
+
     @Slot(str)
     def _on_spectro_status_changed(self, text: str):
         modes = self.ui.spectro_panel_widget.get_modes()
@@ -664,29 +737,23 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_spectro_spectrum_update(self, spectrum):
-        try:
-            wavelengths = self.spectro_manager.dataset.get("raman_wavelengths", None)
-            if wavelengths is None:
-                return
-
-            self._pending_raman_spectrum = np.asarray(spectrum, dtype=np.float32)
-            self._pending_raman_wavelengths = np.asarray(wavelengths, dtype=np.float32)
-        except Exception as e:
-            self._on_spectro_status_changed(f"Spectrum buffer failed: {e}")
+        # A RamanSpectrum carries its own axis: nothing to look up elsewhere.
+        # Only the latest is kept; the UI timer paints it at its own pace.
+        self._pending_raman_spectrum = spectrum
 
     @Slot()
     def _flush_pending_raman_spectrum(self):
-        if self._pending_raman_spectrum is None or self._pending_raman_wavelengths is None:
+        spectrum, self._pending_raman_spectrum = self._pending_raman_spectrum, None
+        if spectrum is None:
             return
 
         try:
-            spectrum = self._pending_raman_spectrum
-            wavelengths = self._pending_raman_wavelengths
-
-            self._pending_raman_spectrum = None
-            self._pending_raman_wavelengths = None
-
-            self.ui.spectro_widget.set_raman_spectrum(wavelengths, spectrum)
+            self.ui.spectro_widget.set_raman_spectrum(
+                spectrum.axis.values,
+                spectrum.values,
+                unit=spectrum.axis.unit,
+                note=spectrum.axis.note,
+            )
         except Exception as e:
             self._on_spectro_status_changed(f"Raman display failed: {e}")
 
@@ -1098,7 +1165,9 @@ class MainWindow(QMainWindow):
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
-            self.spectro_manager.stop_all_live()
+            # Stops the live views and any map, and waits for their threads:
+            # an exposure in progress has to end before its thread can go.
+            self.spectro_manager.shutdown()
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
