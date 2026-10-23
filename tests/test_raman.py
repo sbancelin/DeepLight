@@ -91,3 +91,23 @@ def test_a_raman_map_is_saved_as_an_xy_stack_along_the_spectrum(tmp_path):
 
     with open(os.path.join(root, "metadata.json"), encoding="utf-8") as fh:
         assert json.load(fh)["raman_axis"]["unit"] == "nm"
+
+
+def test_an_exposure_stopped_midway_ends_at_once_and_returns_nothing():
+    """Stop cuts a long exposure short, and the partial spectrum is discarded:
+    its duration is unknown, so its counts would compare to nothing."""
+    import threading
+    import time
+
+    from DeepLight.gui.managers.Raman_Detector import AcquisitionAborted, MockRamanDetector
+    from DeepLight.gui.managers.Raman_Spectrometer import RamanSpectrometer
+    from DeepLight.gui.managers.Spectrograph_Manager import MockSpectrograph
+
+    raman = RamanSpectrometer(MockSpectrograph(), MockRamanDetector())
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+
+    started = time.monotonic()
+    with pytest.raises(AcquisitionAborted):
+        raman.acquire_spectrum(exposure_ms=4000.0, averages=3, cancel=cancel)
+    assert time.monotonic() - started < 1.0

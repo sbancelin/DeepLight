@@ -27,7 +27,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..widgets.Log_Widget import logger
-from .Raman_Detector import RamanDetectorBase, validate_raman_detector_contract
+from .Raman_Detector import (
+    AcquisitionAborted,
+    RamanDetectorBase,
+    validate_raman_detector_contract,
+)
 from .Spectral_Calibration import (
     SpectralAxis,
     SpectralCalibration,
@@ -189,8 +193,16 @@ class RamanSpectrometer:
                 self.detector.configure_spectrum(exposure_ms, *self._rows)
                 self._configured = wanted
 
-    def acquire_spectrum(self, exposure_ms: float, averages: int = 1) -> RamanSpectrum:
-        """`averages` exposures, averaged: counts per exposure, comparable across settings."""
+    def acquire_spectrum(self, exposure_ms: float, averages: int = 1, cancel=None) -> RamanSpectrum:
+        """`averages` exposures, averaged: counts per exposure, comparable across settings.
+
+        `cancel` (a threading.Event) cuts the acquisition short from any thread:
+        AcquisitionAborted is raised and nothing is returned -- not even the
+        exposures already averaged, which would be a spectrum of fewer
+        exposures than asked for. Any other failure drops the detector's
+        connection, so the next spectrum starts from a freshly opened camera
+        rather than one left mid-acquisition.
+        """
         exposure_ms = max(0.0, float(exposure_ms))
         averages = max(1, int(averages))
 
@@ -198,9 +210,22 @@ class RamanSpectrometer:
             self.configure(exposure_ms)
 
             total = None
-            for _ in range(averages):
-                frame = np.asarray(self.detector.acquire_spectrum(), dtype=np.float64)
-                total = frame if total is None else total + frame
+            try:
+                for _ in range(averages):
+                    if cancel is not None and cancel.is_set():
+                        raise AcquisitionAborted("stopped between two exposures")
+                    frame = np.asarray(self.detector.acquire_spectrum(cancel=cancel), dtype=np.float64)
+                    total = frame if total is None else total + frame
+            except AcquisitionAborted:
+                raise
+            except Exception:
+                try:
+                    self.detector.disconnect()
+                except Exception as e:
+                    logger.debug(f"[Raman] detector would not close after a failure: {e}")
+                self._configured = None
+                logger.warning("[Raman] acquisition failed; the detector will be re-opened on the next one.")
+                raise
             values = (total / averages).astype(np.float32)
 
             axis = self.spectral_axis()

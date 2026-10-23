@@ -285,15 +285,34 @@ class SaveManager:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, default=str)
 
+    @staticmethod
+    def _points_acquired(dataset: dict) -> tuple[int, int]:
+        """(points acquired, points planned) of a spectro map.
+
+        Points are acquired in order, so the first `acquired` rows of the
+        acquisition order are exactly the ones that hold data. A map stopped
+        part way -- or whose last point was cut short -- has fewer.
+        """
+        valid = dataset.get("pixel_valid")
+        order = dataset.get("acquisition_order_indices")
+        planned = len(order) if order is not None else 0
+        if valid is None:
+            return planned, planned
+        return int(np.count_nonzero(np.asarray(valid))), int(np.asarray(valid).size)
+
     def _write_positions_csv(self, path: str, dataset: dict) -> None:
         order = np.asarray(dataset.get("acquisition_order_indices", []), dtype=np.int32)
         pos_um = np.asarray(dataset.get("acquisition_order_positions_um", []), dtype=np.float32)
+        acquired, _planned = self._points_acquired(dataset)
 
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["linear_index", "t_index", "z_index", "y_index", "x_index", "x_um", "y_um", "z_um"])
 
-            n = min(len(order), len(pos_um))
+            # Only the points that hold data: the rows past them were allocated
+            # for the whole map and, in a map stopped part way, are zeros that
+            # would read as points at the origin.
+            n = min(len(order), len(pos_um), acquired)
             for i in range(n):
                 row_idx = order[i]
                 if len(row_idx) == 4:
@@ -991,6 +1010,7 @@ class SaveManager:
         os.makedirs(root_path, exist_ok=True)
 
         metadata_block = dict(dataset.get("metadata", {}) or {})
+        points_acquired, points_planned = self._points_acquired(dataset)
 
         metadata = {
             # The spectro grid has its own geometry below, so the provenance
@@ -999,6 +1019,13 @@ class SaveManager:
             "created": self._now_iso(),
             "comment": comment or "",
             "format_version": str(dataset.get("version", "spectro_mock")),
+            # A map stopped part way is saved as far as it went. The points it
+            # never reached -- including one whose exposure was cut short --
+            # hold zeros in the data files; positions.csv lists only the
+            # acquired ones, in acquisition order.
+            "points_acquired": points_acquired,
+            "points_planned": points_planned,
+            "complete": points_acquired == points_planned,
             "grid_shape": list(dataset.get("grid_shape", ())),
             "axis_order": list(dataset.get("axis_order", ())),
             "serpentine": bool(dataset.get("serpentine", False)),

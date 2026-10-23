@@ -25,6 +25,7 @@ name in create_raman_detector(); nothing above this module changes.
 
 from __future__ import annotations
 
+import ctypes
 import time
 from ctypes import POINTER, byref
 
@@ -33,6 +34,15 @@ import numpy as np
 from ...config import CONFIG
 from ..widgets.Log_Widget import logger
 from .Camera_Manager import CameraBackendBase
+
+
+class AcquisitionAborted(Exception):
+    """An exposure was cut short on request.
+
+    Not an error: the caller asked for it. The partial exposure is discarded,
+    never returned -- its duration is unknown, so its counts would not be
+    comparable to anything.
+    """
 
 
 class RamanDetectorBase(CameraBackendBase):
@@ -57,8 +67,14 @@ class RamanDetectorBase(CameraBackendBase):
         """Exposure and the band of rows summed into a spectrum."""
         raise NotImplementedError
 
-    def acquire_spectrum(self) -> np.ndarray:
-        """One exposure, as a 1D float32 array of spectral_pixels values."""
+    def acquire_spectrum(self, cancel=None) -> np.ndarray:
+        """One exposure, as a 1D float32 array of spectral_pixels values.
+
+        `cancel` is a threading.Event owned by the caller. Setting it, from any
+        thread, cuts the exposure short and raises AcquisitionAborted. The
+        detector watches it from the thread that acquires: nothing else ever
+        talks to the camera, so no driver call is made across threads.
+        """
         raise NotImplementedError
 
     # ---- state ---------------------------------------------------------
@@ -160,10 +176,15 @@ class MockRamanDetector(RamanDetectorBase):
         fraction = profile[start:start + count].sum() / profile.sum()
         return signal * fraction
 
-    def acquire_spectrum(self) -> np.ndarray:
+    def acquire_spectrum(self, cancel=None) -> np.ndarray:
         if not self.connected:
             self.connect()
-        time.sleep(min(self._exposure_ms / 1000.0, self._MAX_SIMULATED_WAIT_S))
+        wait_s = min(self._exposure_ms / 1000.0, self._MAX_SIMULATED_WAIT_S)
+        if cancel is not None:
+            if cancel.wait(wait_s):
+                raise AcquisitionAborted("exposure cut short")
+        else:
+            time.sleep(wait_s)
 
         expected = self._scene_counts_per_s() * (self._exposure_ms / 1000.0)
         shot = self._rng.normal(0.0, np.sqrt(np.clip(expected, 1.0, None)))
@@ -207,9 +228,12 @@ def _picam_raman_class():
     from .PiCam_Manager import (
         LANSIS_MODEL_IDS,
         PiCamManager,
+        PicamAvailableData,
         PicamHandle,
         PicamRoi,
         PicamRois,
+        PicamParameter_FrameSize,
+        pi64s,
         piflt,
         piint,
     )
@@ -217,19 +241,46 @@ def _picam_raman_class():
     #: picam.h: PicamParameter_SensorTemperatureReading = PI_V(FloatingPoint, None, 15)
     #: = (PicamConstraintType_None << 24) + (PicamValueType_FloatingPoint << 16) + 15.
     sensor_temperature_reading = (1 << 24) + (2 << 16) + 15
+    #: picam.h: PicamParameter_ReadoutCount = PI_V(LargeInteger, Range, 40)
+    #: = (PicamConstraintType_Range << 24) + (PicamValueType_LargeInteger << 16) + 40.
+    readout_count_parameter = (2 << 24) + (6 << 16) + 40
+    #: picam.h: PicamError_TimeOutOccurred.
+    error_time_out = 32
     #: picam.h: PicamParameter_Rois = PI_V(Rois, Rois, 37); the value already used by PiCamManager.
     from .PiCam_Manager import PicamParameter_Rois as parameter_rois
+
+    class PicamAcquisitionStatus(ctypes.Structure):
+        # picam.h: { pibln running; PicamAcquisitionErrorsMask errors; piflt readout_rate; }
+        _fields_ = [("running", ctypes.c_int), ("errors", ctypes.c_int), ("readout_rate", piflt)]
+
 
     class PiCamRamanDetector(PiCamManager, RamanDetectorBase):
         """A Princeton Instruments camera behind the spectrograph, through PICam.
 
         UNVERIFIED AGAINST HARDWARE. Built on the PICam calls DeepLight already
-        uses for the Kuro, with one addition: the ROI spans the full width and
-        the chosen band of rows, and bins those rows on the chip (y_binning =
-        row count). Should the camera refuse that binning, the ROI is applied
-        unbinned and the rows are summed here instead -- slower and noisier,
-        but a spectrum either way, and the log says which.
+        uses for the Kuro, with two differences.
+
+        The ROI spans the full width and the chosen band of rows, and bins those
+        rows on the chip (y_binning = row count). Should the camera refuse that
+        binning, the ROI is applied unbinned and the rows are summed here
+        instead -- slower and noisier, but a spectrum either way, and the log
+        says which.
+
+        A spectrum is acquired through PICam's asynchronous API rather than
+        Picam_Acquire(), which the manual gives no way to interrupt (Programmer's
+        Manual, Issue 13, section 6.4). Picam_StartAcquisition, then
+        Picam_WaitForAcquisitionUpdate in short slices; a cancel request is
+        turned into Picam_StopAcquisition by this same thread, and the wait goes
+        on until the camera reports it is no longer running, as section 6.4.5
+        requires. Every PICam call stays on the acquiring thread: the manual
+        does not say Picam_StopAcquisition may be called from another one.
         """
+
+        #: Granularity of the wait, hence of a Stop: a request is seen within this.
+        POLL_MS = 200
+        #: How long the camera may take to confirm it has stopped before it is
+        #: treated as wedged and dropped (the manual gives no figure).
+        STOP_CONFIRM_S = 10.0
 
         def __init__(self, serial_number: str | None = None):
             PiCamManager.__init__(
@@ -304,6 +355,17 @@ def _picam_raman_class():
             )
             del rois
 
+            # The asynchronous API takes the number of readouts from this
+            # parameter, where Picam_Acquire took it as an argument. Committed
+            # with the rest by apply_parameters().
+            self._bind_async_api()
+            self._check(
+                self.lib.Picam_SetParameterLargeIntegerValue(
+                    self.camera, piint(readout_count_parameter), pi64s(1)
+                ),
+                "Picam_SetParameterLargeIntegerValue(ReadoutCount)",
+            )
+
             rows_out = 1 if self._onchip_binning else int(count)
             self._last_shape = (rows_out, int(sensor_w))
             self._last_binning = 1
@@ -313,13 +375,103 @@ def _picam_raman_class():
                 f"-> {rows_out}x{sensor_w}"
             )
 
-        def acquire_spectrum(self) -> np.ndarray:
+        def _bind_async_api(self):
+            """Declare the asynchronous acquisition calls once per library handle."""
+            lib = self.lib
+            if not isinstance(lib, ctypes.CDLL) or getattr(lib, "_deeplight_async_bound", False):
+                return
+            lib.Picam_StartAcquisition.argtypes = [PicamHandle]
+            lib.Picam_StartAcquisition.restype = piint
+            lib.Picam_StopAcquisition.argtypes = [PicamHandle]
+            lib.Picam_StopAcquisition.restype = piint
+            lib.Picam_WaitForAcquisitionUpdate.argtypes = [
+                PicamHandle, piint, POINTER(PicamAvailableData), POINTER(PicamAcquisitionStatus),
+            ]
+            lib.Picam_WaitForAcquisitionUpdate.restype = piint
+            lib.Picam_SetParameterLargeIntegerValue.argtypes = [PicamHandle, piint, pi64s]
+            lib.Picam_SetParameterLargeIntegerValue.restype = piint
+            lib._deeplight_async_bound = True
+
+        def _acquire_raw(self, cancel) -> bytes:
+            """One readout, interruptible. Returns the frame's bytes.
+
+            Raises AcquisitionAborted when `cancel` was set during the exposure,
+            RuntimeError when the camera reports an error, does not complete in
+            time, or does not confirm a stop.
+            """
+            self._bind_async_api()
+            lib, camera = self.lib, self.camera
+
+            frame_size = self._cached_frame_size_bytes or self._get_integer_parameter(PicamParameter_FrameSize)
+            self._cached_frame_size_bytes = frame_size
+            if frame_size <= 0:
+                raise RuntimeError("PICam returned an invalid frame size")
+
+            # Same margin Picam_Acquire was given: five exposures plus 2 s.
+            exposure_ms = float((self._spectrum_params or {}).get("exposure_ms", 10.0) or 10.0)
+            give_up_at = time.monotonic() + (exposure_ms * 5.0 + 2000.0) / 1000.0
+
+            available = PicamAvailableData()
+            status = PicamAcquisitionStatus()
+            data = None
+            stop_reason = None              # None, "cancel" or "timeout"
+            stop_deadline = None
+
+            self._check(lib.Picam_StartAcquisition(camera), "Picam_StartAcquisition")
+            while True:
+                now = time.monotonic()
+                if stop_reason is None and (
+                        (cancel is not None and cancel.is_set()) or now > give_up_at):
+                    stop_reason = "cancel" if (cancel is not None and cancel.is_set()) else "timeout"
+                    # A request, honoured "sometime in the future" (section 6.4.3).
+                    lib.Picam_StopAcquisition(camera)
+                    stop_deadline = now + self.STOP_CONFIRM_S
+
+                err = int(lib.Picam_WaitForAcquisitionUpdate(
+                    camera, piint(self.POLL_MS), byref(available), byref(status)))
+
+                if err == error_time_out:
+                    # Nothing new within the slice; the acquisition goes on and
+                    # `available`/`status` are not valid (section 6.4.5).
+                    if stop_deadline is not None and time.monotonic() > stop_deadline:
+                        raise RuntimeError("the camera did not confirm the end of the acquisition")
+                    continue
+                if err != 0:
+                    if stop_reason is None:
+                        lib.Picam_StopAcquisition(camera)
+                    raise RuntimeError(f"Picam_WaitForAcquisitionUpdate failed with PicamError={err}")
+
+                # Valid only until the next wait: copied now, and only for an
+                # exposure nobody asked to stop.
+                if int(available.readout_count) > 0 and data is None and stop_reason is None:
+                    data = ctypes.string_at(available.initial_readout, frame_size)
+
+                if not int(status.running):
+                    break
+
+            if stop_reason == "cancel":
+                raise AcquisitionAborted("exposure cut short")
+            if stop_reason == "timeout":
+                raise RuntimeError(f"the exposure did not complete within {exposure_ms * 5 / 1000 + 2:.0f} s")
+            if int(status.errors):
+                raise RuntimeError(f"PICam reported acquisition errors (mask 0x{int(status.errors):02x})")
+            if data is None:
+                raise RuntimeError("the acquisition ended without delivering a readout")
+            return data
+
+        def acquire_spectrum(self, cancel=None) -> np.ndarray:
             if self._spectrum_params is None:
                 raise RuntimeError("configure_spectrum() must be called before acquire_spectrum().")
-            frame = np.asarray(self.snap(self._spectrum_params), dtype=np.float32)
-            if frame.ndim == 2:
-                frame = frame.sum(axis=0)
-            return frame.astype(np.float32, copy=False)
+            if self._applied_params != self._spectrum_params:
+                self.apply_parameters(self._spectrum_params)
+
+            raw = self._acquire_raw(cancel)
+            h, w = self._last_shape
+            pixels = np.frombuffer(raw, dtype=self._last_dtype)
+            if pixels.size < h * w:
+                raise RuntimeError(f"PICam frame too small: got {pixels.size} px, expected {h * w}")
+            frame = pixels[:h * w].reshape((h, w)).astype(np.float32)
+            return frame.sum(axis=0).astype(np.float32, copy=False)
 
         # ---- state -----------------------------------------------------
         def sensor_temperature_c(self) -> float | None:

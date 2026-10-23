@@ -4,6 +4,7 @@ import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal, QTimer, QThread, Slot
 
 from ..widgets.Log_Widget import logger
+from .Raman_Detector import AcquisitionAborted
 
 class _BrillouinLiveWorker(QObject):
     sigFrameReady = Signal(object)
@@ -67,13 +68,20 @@ class _RamanWorker(QObject):
         self._params_lock = threading.Lock()
         self._single_shot = bool(single_shot)
         self._running = False
+        # This worker's own cancel token: set by stop() from the GUI thread,
+        # watched by the detector from this one. Never cleared, so a stop
+        # cannot be lost to a race with the start of the next exposure.
+        self._cancel = threading.Event()
+        self.aborted = False
 
     def update_params(self, params: dict):
         with self._params_lock:
             self._params.update(dict(params or {}))
 
     def stop(self):
+        """Stop now: the exposure in progress is cut short and discarded."""
         self._running = False
+        self._cancel.set()
 
     @Slot()
     def run(self):
@@ -85,14 +93,16 @@ class _RamanWorker(QObject):
                 spectrum = self._raman.acquire_spectrum(
                     float(params.get("exposure_ms", 100.0) or 100.0),
                     int(params.get("averages", 1) or 1),
+                    cancel=self._cancel,
                 )
-                # Stopped during the exposure: a live view that was told to stop
-                # does not paint one more spectrum. A snap always delivers.
-                if not self._running and not self._single_shot:
+                if not self._running:
                     break
                 self.sigSpectrum.emit(spectrum)
                 if self._single_shot:
                     break
+        except AcquisitionAborted:
+            # Asked for: not a failure, and nothing to show.
+            self.aborted = True
         except Exception as e:
             self.sigFailed.emit(str(e))
         finally:
@@ -173,6 +183,9 @@ class _SpectroMappingWorker(QObject):
         self.raman = raman
         self._running = False
         self._BRILLOUIN_SHAPE = (1200, 1200)
+        # Coupe une pose Raman en cours (cf. _RamanWorker). Le Brillouin n'y
+        # est pas branché : son acquisition reste celle validée au banc.
+        self._cancel = threading.Event()
 
         # throttling des updates UI (l'émission de chaque image 1200x1200
         # float32 à chaque pixel charge inutilement le thread GUI)
@@ -182,6 +195,7 @@ class _SpectroMappingWorker(QObject):
 
     def stop(self):
         self._running = False
+        self._cancel.set()
 
     def _wait_axis_rel_target(self, axis: str, target_rel: float, timeout_s: float = 30.0):
         pm = self.positioner_manager
@@ -461,7 +475,15 @@ class _SpectroMappingWorker(QObject):
                         self.sigImageUpdate.emit(image)
 
                 if "raman_spectra" in self.dataset:
-                    spectrum = self.raman.acquire_spectrum(raman_exposure_ms, raman_averages)
+                    try:
+                        spectrum = self.raman.acquire_spectrum(
+                            raman_exposure_ms, raman_averages, cancel=self._cancel
+                        )
+                    except AcquisitionAborted:
+                        # Stopped mid-exposure: this point is not acquired
+                        # (pixel_valid stays False), the map ends here and is
+                        # kept as far as it went.
+                        break
                     if spectrum.values.size != self.dataset["raman_spectra"].shape[-1]:
                         # The detector geometry changed mid-map (rows or
                         # binning edited in Settings): stop rather than file
@@ -498,7 +520,16 @@ class _SpectroMappingWorker(QObject):
             self.sigFinished.emit(self.dataset)
 
         except Exception as e:
-            self.sigFailed.emit(f"Spectro mapping failed: {e}")
+            if self._cancel.is_set():
+                # Stop was asked for: whatever it interrupted -- a stage move
+                # cut short, a positioner stopped mid-way -- is its consequence,
+                # not a failure. The map is kept as far as it went, exactly as
+                # when Stop lands between two points; reporting a failure here
+                # used to discard every point already acquired.
+                logger.info(f"[Spectro] map stopped during a step ({e}); kept as far as it went")
+                self.sigFinished.emit(self.dataset)
+            else:
+                self.sigFailed.emit(f"Spectro mapping failed: {e}")
 
         finally:
             origin = (self.dataset or {}).get("origin_um")
@@ -616,6 +647,7 @@ class SpectroManager(QObject):
         self._raman_live_running = False
         self._raman_live_worker = None
         self._raman_snap_running = False
+        self._raman_snap_worker = None
         self._raman_spectrograph_busy = False
         self._threads = {}               # QThread -> (worker, on_finished)
 
@@ -686,6 +718,15 @@ class SpectroManager(QObject):
         for thread in list(self._threads):
             if not thread.wait(remaining_ms()):
                 logger.warning("[Spectro] a Raman worker did not end in time")
+
+        # Any other thread of ours still running: a mapping thread whose
+        # reference stop_mapping() dropped after its 3 s wait, its worker still
+        # in the return to origin. Destroying it running ended the process
+        # abnormally; waiting for it ends it cleanly.
+        for thread in self.findChildren(QThread):
+            if thread.isRunning() and not thread.wait(remaining_ms()):
+                logger.warning("[Spectro] a spectro thread did not end in time")
+
         # Their finished() cleanups were queued to this thread: run them now.
         QCoreApplication.sendPostedEvents()
         QCoreApplication.processEvents()
@@ -776,6 +817,7 @@ class SpectroManager(QObject):
     def stop_all_live(self):
         self.stop_live_brillouin()
         self.stop_live_raman()
+        self.stop_raman_snap()
 
     def _try_acquire_brillouin_from_hardware(self, params):
         """
@@ -941,6 +983,13 @@ class SpectroManager(QObject):
         self._mapping_worker.sigEta.connect(self.sigEta)
         self._mapping_worker.sigFinished.connect(self._on_mapping_worker_finished)
         self._mapping_worker.sigFailed.connect(self._on_mapping_worker_failed)
+        # The thread ends when its worker does, directly. stop_mapping() gives
+        # up waiting after 3 s and drops its references while the worker may
+        # still be returning the stage to origin; the slots above then find no
+        # thread to quit, and the idle thread outlived the window -- Python
+        # exited with code 127 after every stopped map.
+        self._mapping_worker.sigFinished.connect(self._mapping_thread.quit, Qt.DirectConnection)
+        self._mapping_worker.sigFailed.connect(self._mapping_thread.quit, Qt.DirectConnection)
 
         self._mapping_thread.start()
 
@@ -1067,11 +1116,19 @@ class SpectroManager(QObject):
 
         def _done():
             self._raman_snap_running = False
-            self.sigStatusMessage.emit("Raman snap done")
+            self._raman_snap_worker = None
+            self.sigStatusMessage.emit("Raman snap stopped" if worker.aborted else "Raman snap done")
 
         self._raman_snap_running = True
+        self._raman_snap_worker = worker
         self.sigStatusMessage.emit("Raman snap...")
         self._start_worker(worker, on_finished=_done)
+
+    def stop_raman_snap(self):
+        """Cut a snap in progress short; its spectrum is discarded."""
+        worker = getattr(self, "_raman_snap_worker", None)
+        if worker is not None:
+            worker.stop()
 
     def start_live_raman(self, params=None):
         if self.running or self._raman_live_running:
@@ -1093,9 +1150,9 @@ class SpectroManager(QObject):
         self._start_worker(worker)
 
     def stop_live_raman(self):
-        """Stop asking for spectra. The exposure in progress, if any, still
-        completes in its thread -- it cannot be cut short -- but its result
-        is not painted."""
+        """Stop the live view. The exposure in progress is cut short by the
+        detector and discarded; the worker's thread ends once the camera has
+        confirmed the stop."""
         if not self._raman_live_running:
             return
         self._raman_live_running = False
