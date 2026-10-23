@@ -501,6 +501,9 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_spectro_stop_clicked(self):
+        mapping = self.spectro_manager.is_running()
+        already_stopping = self.spectro_manager.is_stopping()
+
         try:
             self.spectro_manager.stop_mapping()
         except Exception as e:
@@ -511,14 +514,31 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
-        try:
-            self.positioner_manager.stop_all()
-        except Exception as e:
-            logger.debug(f"[MainWindow] ignored exception: {e}")
+        # A map brings the stage back to its starting position itself: halting
+        # the stage under it cancelled that return, which then waited 30 s for a
+        # position that never came and left the stage off its origin. So the
+        # stage is only halted when no map is driving it -- or on a second Stop
+        # while the map is on its way back, the request to leave it where it is.
+        if not mapping or already_stopping:
+            try:
+                self.positioner_manager.stop_all()
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self._clear_spectro_ui_buffers()
 
+        # The laser leaves the sample at once, whatever the stage is doing.
         self._close_shutter_after_spectro()
+
+        if mapping:
+            # The map ends on its own once the stage is back, and is saved as
+            # far as it went (_on_spectro_acquisition_finished). The panels stay
+            # "running" until then, so no new map can take the stage meanwhile.
+            self._on_spectro_status_changed(
+                "Stage halted where it is." if already_stopping
+                else "Stopping: returning the stage to its starting position..."
+            )
+            return
 
         try:
             self.ui.spectro_panel_widget.set_running(False)
@@ -828,16 +848,24 @@ class MainWindow(QMainWindow):
 
         self._close_shutter_after_spectro()
 
+        # A stopped map arrives here too, with the points it reached.
+        valid = dataset.get("pixel_valid") if isinstance(dataset, dict) else None
+        total = int(np.asarray(valid).size) if valid is not None else len(self.spectro_manager.pixel_list)
+        acquired = int(np.count_nonzero(valid)) if valid is not None else total
+        complete = acquired == total
+
         try:
-            total = len(self.spectro_manager.pixel_list)
-            self.ui.spectro_panel_widget.set_progress(total, total)
+            self.ui.spectro_panel_widget.set_progress(acquired, total)
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
-            self.ui.global_progress_widget.finish_task("Done")
+            self.ui.global_progress_widget.finish_task("Done" if complete else "Stopped")
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        if not complete:
+            logger.notice(f"[Spectro] map stopped: {acquired} of {total} points acquired, saved as such")
 
         try:
             save_params = self.ui.spectro_panel_widget.get_save_parameters()

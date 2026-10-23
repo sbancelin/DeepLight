@@ -371,6 +371,8 @@ class _SpectroMappingWorker(QObject):
     @Slot()
     def run(self):
         self._running = True
+        # Overwritten by the try/except below; announced at the very end.
+        outcome = ("failed", "Spectro mapping ended unexpectedly")
         try:
             total = len(self.pixel_list)
             # --- Compensation backlash inter-lignes (mécanisme 1/2) ---
@@ -517,7 +519,7 @@ class _SpectroMappingWorker(QObject):
                     while self._running and time.perf_counter() < t_end:
                         time.sleep(0.01)
 
-            self.sigFinished.emit(self.dataset)
+            outcome = ("finished", self.dataset)
 
         except Exception as e:
             if self._cancel.is_set():
@@ -527,11 +529,15 @@ class _SpectroMappingWorker(QObject):
                 # when Stop lands between two points; reporting a failure here
                 # used to discard every point already acquired.
                 logger.info(f"[Spectro] map stopped during a step ({e}); kept as far as it went")
-                self.sigFinished.emit(self.dataset)
+                outcome = ("finished", self.dataset)
             else:
-                self.sigFailed.emit(f"Spectro mapping failed: {e}")
+                outcome = ("failed", f"Spectro mapping failed: {e}")
 
         finally:
+            # The outcome is announced only once the stage is back (end of this
+            # block): "finished" used to go out before the return to origin, so
+            # the window reported the map done -- and accepted a new one -- while
+            # this worker was still driving the stage.
             origin = (self.dataset or {}).get("origin_um")
             if origin:
                 try:
@@ -569,10 +575,18 @@ class _SpectroMappingWorker(QObject):
                     if overshoot > 0.0 and (cur_x is None or cur_x > ox):
                         self._move_stage_to_pixel_blocking(ox - overshoot, oy, oz)
                     self._move_stage_to_pixel_blocking(ox, oy, oz)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A second Stop during the return lands here: the stage is
+                    # left where it is, as asked.
+                    logger.info(f"[Spectro] return to origin not completed ({e})")
                 finally:
                     self._running = False
+
+            kind, payload = outcome
+            if kind == "finished":
+                self.sigFinished.emit(payload)
+            else:
+                self.sigFailed.emit(payload)
 
 class SpectroManager(QObject):
     """
@@ -629,6 +643,7 @@ class SpectroManager(QObject):
 
         self._mapping_thread = None
         self._mapping_worker = None
+        self._mapping_stop_requested = False
 
         # --- live Brillouin
         self._brillouin_live_running = False
@@ -691,10 +706,11 @@ class SpectroManager(QObject):
     def shutdown(self, timeout_s: float = 120.0):
         """Stop everything and wait for the worker threads to end. At exit only.
 
-        An exposure in progress cannot be cut short, so this can block for the
-        rest of it; destroying a QThread that is still running instead takes
-        the whole application down. The timeout only guards against a camera
-        that never answers.
+        A Raman exposure is cut short; a map still returns its stage to the
+        starting position before its thread ends, and is saved as far as it
+        went when its end is processed below. Waiting is the point: destroying
+        a QThread that is still running takes the whole application down. The
+        timeout only guards against an instrument that never answers.
         """
         deadline = time.monotonic() + float(timeout_s)
 
@@ -762,57 +778,57 @@ class SpectroManager(QObject):
         return bool(self._raman_live_running)
 
     @Slot(object)
-    def _on_mapping_worker_finished(self, dataset):
-        self.dataset = dataset
-        self.running = False
+    def _release_mapping(self):
+        """Forget the map's worker and thread, once the worker has announced its end.
 
-        try:
-            if self._mapping_thread is not None:
-                self._mapping_thread.quit()
-                self._mapping_thread.wait(3000)
-        except Exception:
-            pass
-
+        No wait: the worker announces its end as the very last thing it does
+        (after the return to origin), and its thread quits on that signal by
+        itself (see start_mapping). Its deletion is left to Qt for the same
+        reason -- deleteLater() runs once the thread has actually finished.
+        """
+        thread = self._mapping_thread
         self._mapping_worker = None
         self._mapping_thread = None
+        self._mapping_stop_requested = False
+        self.running = False
+        if thread is not None:
+            thread.finished.connect(thread.deleteLater)
 
+    @Slot(object)
+    def _on_mapping_worker_finished(self, dataset):
+        self.dataset = dataset
+        self._release_mapping()
         self.sigFinished.emit(dataset)
 
     @Slot(str)
     def _on_mapping_worker_failed(self, message: str):
-        self.running = False
-
-        try:
-            if self._mapping_thread is not None:
-                self._mapping_thread.quit()
-                self._mapping_thread.wait(3000)
-        except Exception:
-            pass
-
-        self._mapping_worker = None
-        self._mapping_thread = None
-
+        self._release_mapping()
         self.sigFailed.emit(message)
-    
+
+    def is_stopping(self) -> bool:
+        """A map was asked to stop and has not finished yet (returning to origin)."""
+        return bool(self.running and getattr(self, "_mapping_stop_requested", False))
+
     def stop_mapping(self):
-        if self._mapping_worker is not None:
-            try:
-                self._mapping_worker.stop()
-            except Exception:
-                pass
+        """Ask the map to stop; it ends on its own, and announces it.
 
-        if self._mapping_thread is not None:
-            try:
-                self._mapping_thread.quit()
-                self._mapping_thread.wait(3000)
-            except Exception:
-                pass
+        Not a wait: the worker finishes the step in progress (a Raman exposure
+        is cut short), brings the stage back to its starting position, then
+        emits sigFinished with the map as far as it went, which is saved like
+        any other. Until then the map is still running -- a new one cannot be
+        started while this one is still driving the stage.
 
-        self._mapping_worker = None
-        self._mapping_thread = None
-
-        self.running = False
-        self.sigStatusMessage.emit("Spectro acquisition stopped")
+        A second call during the return to origin interrupts the return too.
+        """
+        if self._mapping_worker is None:
+            self.running = False
+            return
+        self._mapping_stop_requested = True
+        try:
+            self._mapping_worker.stop()
+        except Exception as e:
+            logger.debug(f"[Spectro] stop request not delivered: {e}")
+        self.sigStatusMessage.emit("Stopping: returning the stage to its starting position...")
 
     def stop_all_live(self):
         self.stop_live_brillouin()
@@ -954,6 +970,7 @@ class SpectroManager(QObject):
         self._last_brillouin_ui_emit_t = now - self._ui_update_period_s
         self._last_raman_ui_emit_t = now - self._ui_update_period_s
         self.running = True
+        self._mapping_stop_requested = False
         self._mapping_started_t0 = time.perf_counter()
 
         self.sigStatusMessage.emit("Spectro acquisition started")
