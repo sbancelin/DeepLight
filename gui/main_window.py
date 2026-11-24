@@ -308,10 +308,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(50, self.refresh_stitching_preview_grid)
         QTimer.singleShot(0, self.refresh_depth_compensation)
 
-        # Compensateur en linéaire au démarrage : c'est l'état dans lequel une
-        # série P-SHG a du sens, et un état connu vaut mieux que celui où la
-        # session précédente a laissé la lame. No-op si la λ/4 est absente.
-        QTimer.singleShot(200, lambda: self.ui.positioner_widget.apply_compensator("linear"))
+        # λ/4 en linéaire au démarrage : c'est l'état dans lequel une série
+        # P-SHG a du sens, et un état connu vaut mieux que celui où la session
+        # précédente a laissé la lame. No-op si la λ/4 est absente.
+        QTimer.singleShot(200, lambda: self.ui.positioner_widget.apply_polarization_state("linear"))
 
         self._visualizer_flush_timer = QTimer(self)
         self._visualizer_flush_timer.setInterval(250)
@@ -1969,9 +1969,9 @@ class MainWindow(QMainWindow):
         """How the polarisation chain is set, for the next save.
 
         The azimuths a scan visits are meaningless without the plate angle they
-        are counted from, and a series taken through a compensator left on a
-        circular position is not linear at the sample -- neither shows up in
-        the images.
+        are counted from, and a series taken with the quarter-wave plate left
+        on a circular position is not linear at the sample -- neither shows up
+        in the images.
         """
         context = {}
         try:
@@ -1982,19 +1982,11 @@ class MainWindow(QMainWindow):
             logger.debug(f"[Save] half-wave zero unavailable: {e}")
 
         try:
-            # Which of the two ways the azimuths were reached. Without it a
-            # P-SHG series cannot be re-read: the same angle means a different
-            # pair of plate positions in each mode.
-            context["mode"] = self.positioner_manager.polarization_mode()
+            state = self.positioner_manager.quarter_wave_state()
+            context["quarter_wave_state"] = state if state else "unknown"
+            context["quarter_wave_deg"] = float(self.positioner_manager.get_rel_pos("p4"))
         except Exception as e:
-            logger.debug(f"[Save] P-SHG mode unavailable: {e}")
-
-        try:
-            state = self.positioner_manager.compensator_state()
-            context["compensator"] = state if state else "unknown"
-            context["compensator_deg"] = float(self.positioner_manager.get_rel_pos("p4"))
-        except Exception as e:
-            logger.debug(f"[Save] compensator state unavailable: {e}")
+            logger.debug(f"[Save] quarter-wave state unavailable: {e}")
 
         return context
 
@@ -2053,16 +2045,6 @@ class MainWindow(QMainWindow):
     
     def start_scan_outputs(self, scan_parameters: dict, mode: str):
         """Prepare the analog/stepper plan; the real timing will come from the acquisition."""
-        # Le mode P-SHG décide de ce que fait chaque lame pendant le scan. Posé
-        # ici plutôt qu'à chaque point : les trois entrées (preview simple,
-        # preview continu, REC) passent toutes par cette méthode.
-        try:
-            self.positioner_manager.set_polarization_mode(
-                scan_parameters.get("pshg_mode", "compensator")
-            )
-        except Exception as e:
-            logger.warning(f"[Scan] could not set the P-SHG mode: {e}")
-
         self.ui.analog_out_widget.reset_buffer()
         try:
             self.ui.visu_step_widget.reset_buffer()

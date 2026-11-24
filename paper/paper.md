@@ -94,16 +94,18 @@ acquired while the actuator is still travelling.
 
 ## Polarisation
 
-The excitation azimuth is set by a half-wave plate, which rotates linear
-polarisation by twice its own angle; reaching an azimuth is therefore a single
-halving from a plate angle measured once. A quarter-wave plate acts as a
-compensator, correcting the ellipticity introduced by the dichroics and scan
-mirrors, and is parked on one of three measured positions rather than turned
-during a scan. The plate angle azimuths are counted from, the compensator state,
-and the list of azimuths actually visited are all written into the saved file:
-an azimuth is meaningless without the first, and a series acquired through a
-mis-set compensator is not linear at the sample, neither of which is visible in
-the images themselves.
+The ellipticity introduced by the dichroics and scan mirrors is corrected by a
+fixed compensator, calibrated once on the microscope, which leaves each
+motorised plate a single job. The excitation azimuth is set by a half-wave
+plate, which rotates linear polarisation by twice its own angle; reaching an
+azimuth is therefore a single halving from a plate angle measured once. A
+quarter-wave plate selects linear, right or left circular polarisation, parked
+on one of three measured positions rather than turned during a scan. The plate
+angle azimuths are counted from, the quarter-wave plate's state, and the list of
+azimuths actually visited are all written into the saved file: an azimuth is
+meaningless without the first, and a series acquired with the quarter-wave
+plate on a circular position is not linear at the sample, neither of which is
+visible in the images themselves.
 
 ## Data and provenance
 

@@ -119,16 +119,16 @@ end up in the provenance beside the data.
 
 ## A waveplate rotator
 
-Two plates sit before the objective and they do different jobs, which is worth
-knowing before replacing either.
+Two motorised plates sit before the objective and they do different jobs, which
+is worth knowing before replacing either. (The ellipticity of the optics is
+corrected by a fixed compensator, which DeepLight does not drive.)
 
 The **half-wave plate** carries the azimuth. Rotating it turns linear
 polarisation by twice its own angle, so a scan to azimuth θ drives it to θ/2.
 One number describes the mount — the plate angle at which the light comes out
 horizontal — and it is entered as *Horizontal at* in the positioner settings.
 
-The **quarter-wave plate** is a compensator. It corrects the ellipticity the
-dichroics and scan mirrors introduce, and it does not scan: it is parked on one
+The **quarter-wave plate** sets the state. It does not scan: it is parked on one
 of three measured positions (linear, CD, CG), entered in the same settings and
 reachable from the *Lin* / *CD* / *CG* buttons.
 
@@ -157,11 +157,11 @@ then return it from `create_waveplate_rotator()`.
 
 **There is no calibration table.** An earlier version listed both plate
 positions for every azimuth in ten-degree steps and interpolated between them,
-because both plates turned together. With the compensator standing still the
-azimuth is arithmetic, so there is no file to regenerate when a mount is
-remounted and no interpolation to be wrong about. If you are porting a bench
-that still works the old way, the thing to measure is the two numbers above,
-not a table.
+because both plates turned together. With a fixed compensator taking care of the
+ellipticity, the quarter-wave plate stands still and the azimuth is arithmetic,
+so there is no file to regenerate when a mount is remounted and no interpolation
+to be wrong about. If you are porting a bench that still works the old way, the
+things to measure are the numbers above, not a table.
 
 
 ## Checking your work

@@ -1,27 +1,18 @@
-"""The polarisation chain: a rotating half-wave plate and a fixed compensator.
+"""The polarisation chain: two motorised plates, each with one job.
 
-Two plates sit before the objective. What each one is for:
+The ellipticity the optics upstream introduce -- dichroics and scan mirrors are
+not neutral -- is corrected by a fixed compensator, calibrated once on this
+microscope and not driven by DeepLight. That leaves the two motorised plates
+one job each, and they never move together:
 
 * The **half-wave plate** sets the azimuth. Rotating it by an angle turns linear
   polarisation by twice that angle, so reaching an azimuth is one halving and
   nothing else. One number describes the mount: the plate angle at which the
   polarisation comes out horizontal.
 
-* The **quarter-wave plate** is a compensator. It corrects the ellipticity the
-  optics upstream introduce -- dichroics and the scan mirrors are not neutral --
-  and it does not scan. It is parked on one of three measured positions:
-  linear, right circular, left circular.
-
-That description is the "compensator" mode, and it is the default: one number
-per mount, and the azimuth is arithmetic. It assumes the chain is clean enough
-for the quarter-wave plate to be a fixed correction.
-
-When it is not, the "calibration" mode turns both plates together from a
-measured table listing, for every azimuth, where each plate has to sit (see
-Polarization_Table). It is heavier -- the table has to be re-measured whenever a
-mount is disturbed, and every azimuth between its points is an interpolation --
-but it makes no assumption about the chain. The mode is chosen in the scan
-panel's settings.
+* The **quarter-wave plate** sets the state: it is parked on one of three
+  measured positions -- linear, right circular (CD), left circular (CG) -- and
+  never scans.
 
 Adding another brand of mount means writing one WaveplateRotatorBase.
 """
@@ -30,25 +21,11 @@ from __future__ import annotations
 
 from ..widgets.Log_Widget import logger
 
-#: How a P-SHG series reaches a polarisation.
-#:
-#: "compensator" -- the half-wave plate carries the azimuth and goes to half of
-#:     it; the quarter-wave plate is parked on one measured position and does
-#:     not move. One number to measure per mount, and nothing to re-measure
-#:     when the azimuths change.
-#:
-#: "calibration" -- both plates are placed from a measured table that lists,
-#:     for each azimuth, where each plate has to sit. Heavier to maintain, but
-#:     it is the only option when the chain is not clean enough for the
-#:     compensator description to hold.
-POLARIZATION_MODES = ("compensator", "calibration")
-DEFAULT_POLARIZATION_MODE = "compensator"
-
-#: The three positions a compensator is parked on.
-COMPENSATOR_STATES = ("linear", "CD", "CG")
+#: The three positions the quarter-wave plate is parked on.
+QUARTER_WAVE_STATES = ("linear", "CD", "CG")
 
 #: Settings key holding each one, on the quarter-wave plate's axis.
-COMPENSATOR_SETTING_KEYS = {"linear": "linear_deg", "CD": "cd_deg", "CG": "cg_deg"}
+QUARTER_WAVE_SETTING_KEYS = {"linear": "linear_deg", "CD": "cd_deg", "CG": "cg_deg"}
 
 
 def half_wave_angle_for_azimuth(azimuth_deg: float, zero_deg: float = 0.0) -> float:

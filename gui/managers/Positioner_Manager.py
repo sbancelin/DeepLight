@@ -7,12 +7,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 from ..widgets.Log_Widget import logger
-from .Waveplate_Rotator import (
-    COMPENSATOR_STATES,
-    DEFAULT_POLARIZATION_MODE,
-    POLARIZATION_MODES,
-    half_wave_angle_for_azimuth,
-)
+from .Waveplate_Rotator import QUARTER_WAVE_STATES, half_wave_angle_for_azimuth
 
 
 @dataclass
@@ -58,74 +53,44 @@ class PositionerManager(QObject):
         # Position relative de la λ/2 avant un scan de polarisation, pour la
         # restaurer au retour à la base (cf. _handle_polarization_scan).
         self._polar_prescan: Optional[dict] = None
-        # Positions mesurées du compensateur (λ/4), par état. Vide tant que le
+        # Positions mesurées de la λ/4 (linéaire, CD, CG). Vide tant que le
         # panneau positionneur ne les a pas poussées.
-        self._compensator_positions: Dict[str, float] = {}
-        # Comment une série P-SHG atteint une polarisation. Poussé par la
-        # fenêtre au lancement du scan, depuis les settings du panneau de scan.
-        self._polarization_mode: str = DEFAULT_POLARIZATION_MODE
+        self._quarter_wave_positions: Dict[str, float] = {}
 
     def _handle_polarization_scan(self, target_rel: float, reason: str):
         """
         One 'Polarization' scan point = one AZIMUTH (°).
 
-        How that azimuth is reached depends on the mode:
+        Only the half-wave plate turns, by half the azimuth, since a half-wave
+        plate rotates linear polarisation by twice its own angle. The
+        quarter-wave plate is parked once on its 'linear' position at the start
+        of the run and left there: an azimuth series only means something in
+        linear polarisation. (The optics' own ellipticity is corrected by the
+        fixed compensator, which DeepLight does not drive.)
 
-        * **compensator** -- only the half-wave plate turns, by half the
-          azimuth, since a half-wave plate rotates linear polarisation by twice
-          its own angle. The quarter-wave plate is parked once on its 'linear'
-          position at the start of the run and left there: it corrects the
-          ellipticity the optics upstream introduce, which does not depend on
-          the azimuth.
-
-        * **calibration** -- both plates are placed from the measured table,
-          which says where each has to sit for this azimuth.
-
-        Whichever mode, the plates' positions before the scan are remembered so
-        they can be restored on 'return_to_base'.
+        The half-wave plate's position before the scan is remembered, and
+        restored on 'return_to_base'.
         """
         r = str(reason or "")
-        calibrated = self._polarization_mode == "calibration"
-        # En mode calibration la λ/4 bouge aussi, donc elle est à restaurer.
-        axes = ("p", "p4") if calibrated else ("p",)
 
-        # Retour à la base : restaurer les positions pré-scan.
+        # Retour à la base : restaurer la position pré-scan de la λ/2.
         if r.endswith("return_to_base"):
-            pre = self._polar_prescan
-            self._polar_prescan = None
-            if pre is not None:
-                for axis in axes:
-                    if axis in self._state and pre.get(axis) is not None:
-                        self.move_to_rel(axis, float(pre[axis]), self._POLAR_SPEED_DEG_S)
+            pre, self._polar_prescan = self._polar_prescan, None
+            if pre is not None and pre.get("p") is not None and "p" in self._state:
+                self.move_to_rel("p", float(pre["p"]), self._POLAR_SPEED_DEG_S)
             return
 
-        # Première commande du run : mémoriser l'état des lames concernées.
+        # Première commande du run : mémoriser la λ/2, poser la λ/4 en linéaire.
+        # S'en remettre à l'état où la session précédente l'a laissée serait
+        # invisible dans les images.
         if self._polar_prescan is None:
-            self._polar_prescan = {}
-            for axis in axes:
-                try:
-                    self._polar_prescan[axis] = (
-                        float(self.get_rel_pos(axis)) if axis in self._state else None
-                    )
-                except Exception:
-                    self._polar_prescan[axis] = None
-
-            # Mode compensateur : poser la λ/4 en linéaire une fois pour toutes.
-            # Une série P-SHG n'a de sens qu'en polarisation linéaire, et s'en
-            # remettre à l'endroit où la session précédente l'a laissée serait
-            # invisible dans les images.
-            if not calibrated:
-                self.move_compensator("linear")
-
-        if calibrated:
-            from .Polarization_Table import get_polarization_table
-
-            l2_deg, l4_deg = get_polarization_table().lookup(float(target_rel))
-            if "p" in self._state:
-                self.move_to_rel("p", float(l2_deg), self._POLAR_SPEED_DEG_S)
-            if "p4" in self._state:
-                self.move_to_rel("p4", float(l4_deg), self._POLAR_SPEED_DEG_S)
-            return
+            self._polar_prescan = {"p": None}
+            try:
+                if "p" in self._state:
+                    self._polar_prescan["p"] = float(self.get_rel_pos("p"))
+            except Exception:
+                pass
+            self.move_quarter_wave("linear")
 
         if "p" in self._state:
             # Le zéro de la lame (angle donnant l'horizontale) est porté par le
@@ -136,45 +101,21 @@ class PositionerManager(QObject):
                 self._POLAR_SPEED_DEG_S,
             )
 
-    # ---- mode P-SHG -----------------------------------------------------
+    # ---- λ/4 : linéaire / circulaire droite / circulaire gauche ----------
 
-    def set_polarization_mode(self, mode: str) -> str:
-        """Choose how a P-SHG series reaches its azimuths.
-
-        An unknown name falls back to the default rather than raising: this is
-        pushed from a settings field, and a typo there should not stop a run
-        from starting. It is logged, so it is not silent either.
-        """
-        mode = str(mode or "").strip().lower()
-        if mode not in POLARIZATION_MODES:
-            if mode:
-                logger.warning(
-                    f"[Positioner] unknown P-SHG mode {mode!r}; "
-                    f"using {DEFAULT_POLARIZATION_MODE!r}."
-                )
-            mode = DEFAULT_POLARIZATION_MODE
-
-        self._polarization_mode = mode
-        return mode
-
-    def polarization_mode(self) -> str:
-        return self._polarization_mode
-
-    # ---- compensateur (λ/4) --------------------------------------------
-
-    def set_compensator_positions(self, **positions):
+    def set_quarter_wave_positions(self, **positions):
         """Measured positions of the quarter-wave plate, by state name.
 
         Pushed in by the positioner panel, the way the axis limits already are.
         A state that was never measured stays absent rather than defaulting to
-        zero, so move_compensator() can decline instead of driving the plate
+        zero, so move_quarter_wave() can decline instead of driving the plate
         somewhere arbitrary.
         """
         for state, value in positions.items():
-            if state in COMPENSATOR_STATES and value is not None:
-                self._compensator_positions[state] = float(value)
+            if state in QUARTER_WAVE_STATES and value is not None:
+                self._quarter_wave_positions[state] = float(value)
 
-    def compensator_state(self) -> Optional[str]:
+    def quarter_wave_state(self) -> Optional[str]:
         """Which of the three positions the plate is currently sitting on."""
         if "p4" not in self._state:
             return None
@@ -184,27 +125,27 @@ class PositionerManager(QObject):
             return None
 
         tolerance = max(float(self.get_tolerance("p4")), 1e-6)
-        for state, value in self._compensator_positions.items():
+        for state, value in self._quarter_wave_positions.items():
             if abs(here - value) <= tolerance:
                 return state
         return None
 
-    def move_compensator(self, state: str) -> bool:
+    def move_quarter_wave(self, state: str) -> bool:
         """Park the quarter-wave plate on one of its three positions.
 
         Returns False when that position was never measured -- refusing is the
-        right answer, since a compensator at an unknown angle silently changes
-        the polarisation reaching the sample.
+        right answer, since a plate at an unknown angle silently changes the
+        polarisation reaching the sample.
         """
         state = str(state)
         if "p4" not in self._state:
             return False
 
-        target = self._compensator_positions.get(state)
+        target = self._quarter_wave_positions.get(state)
         if target is None:
             logger.warning(
-                f"[Positioner] compensator position {state!r} is not configured; "
-                f"the quarter-wave plate was left where it is."
+                f"[Positioner] quarter-wave position {state!r} is not configured; "
+                f"the plate was left where it is."
             )
             return False
 
