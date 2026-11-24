@@ -865,7 +865,7 @@ class SaveManager:
             measure.attrs["MEASURE.Serpentine"] = str(bool(metadata.get("serpentine", False)))
 
             for section in ("acquisition_parameters", "brillouin_parameters",
-                            "raman_parameters", "save_parameters", "modalities"):
+                            "raman_parameters", "save_parameters", "modalities", "bipd"):
                 self._write_h5_attrs(measure, section, metadata.get(section, {}))
 
             # Same provenance as the other formats, flattened into the attribute
@@ -1042,6 +1042,9 @@ class SaveManager:
             # excitation, as they were for the whole map.
             "raman": dict(metadata_block.get("raman", {}) or {}),
             "raman_axis": self._raman_axis_block(dataset),
+            # BIPD filter state at the start and end of the map, and every
+            # automatic re-optimisation of its liquid crystal ({} without one).
+            "bipd": dict(metadata_block.get("bipd", {}) or {}),
             "data_files": {},
             "axis_interpretation": {
                 "brillouin_ome_tiff": {

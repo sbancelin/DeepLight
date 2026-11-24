@@ -166,6 +166,18 @@ dll_path = ''
 brillouin_camera_serial = ""
 
 
+# --- Specto BIPD filter (81Watts), Brillouin arm --------------------------
+# Liquid crystal, rotator and heater that set the extinction, driven through
+# the vendor's libspecto module: pip install the wheel kept in Controle_BIPD/
+# (built for Python 3.12 only). Nothing is opened at start-up: the filter
+# connects from its panel, on the right of the Spectro tab.
+[bipd]
+# "specto" drives the real filter; "mock" simulates it.
+device = "specto"
+# Serial port, e.g. "COM4". Leave empty to let libspecto find the device.
+port = ""
+
+
 # --- Raman spectrometer (Princeton Instruments IsoPlane 320 + LANSIS) ------
 # Which instruments, and how to reach them. Everything set at the bench --
 # detector rows, wavelength calibration, excitation -- lives in the Settings of

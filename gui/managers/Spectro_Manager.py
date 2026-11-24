@@ -6,15 +6,28 @@ from PySide6.QtCore import QCoreApplication, QObject, Qt, Signal, QTimer, QThrea
 from ..widgets.Log_Widget import logger
 from .Raman_Detector import AcquisitionAborted
 
+
+def _simulated_extinction_leak(hardware) -> float:
+    """Background a simulated BIPD filter adds to simulated frames (0 if none)."""
+    leak_fn = getattr(hardware, "simulated_extinction_leak", None)
+    if not callable(leak_fn):
+        return 0.0
+    try:
+        return float(leak_fn())
+    except Exception:
+        return 0.0
+
 class _BrillouinLiveWorker(QObject):
     sigFrameReady = Signal(object)
     sigFailed = Signal(str)
     sigFinished = Signal()
 
-    def __init__(self, hardware, params=None):
+    def __init__(self, hardware, params=None, fallback=None):
+        """``fallback(params)`` gives a frame when the hardware has none (mock backend)."""
         super().__init__()
         self.hardware = hardware
         self.params = params if params is not None else {}
+        self.fallback = fallback
         self._running = False
 
     @Slot()
@@ -32,6 +45,8 @@ class _BrillouinLiveWorker(QObject):
                         raise RuntimeError("Hardware manager has no acquire_brillouin_image() method.")
 
                     image = acquire_fn(self.params)
+                    if image is None and self.fallback is not None:
+                        image = self.fallback(self.params)
                     if image is None:
                         raise RuntimeError("Hardware returned no Brillouin image.")
 
@@ -167,6 +182,7 @@ class _SpectroMappingWorker(QObject):
         dataset,
         mapping_started_t0,
         raman=None,
+        extinction_guard=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -181,6 +197,10 @@ class _SpectroMappingWorker(QObject):
         self.dataset = dataset
         self.mapping_started_t0 = mapping_started_t0
         self.raman = raman
+        # BIPD filter (Extinction.ExtinctionGuard), when one is connected: may
+        # re-optimise the extinction between two points, and records the
+        # filter's state beside the map either way.
+        self.extinction_guard = extinction_guard
         self._running = False
         self._BRILLOUIN_SHAPE = (1200, 1200)
         # Coupe une pose Raman en cours (cf. _RamanWorker). Le Brillouin n'y
@@ -353,7 +373,10 @@ class _SpectroMappingWorker(QObject):
         gain = float(params.get("gain", 0.0) or 0.0)
 
         scale = 200.0 + 2.5 * exposure_ms + 8.0 * gain
-        image = scale * (g1 + g2 + rings + gradient)
+        # A connected simulated BIPD filter lets light through when it is badly
+        # set -- the background its extinction search has to bring down.
+        leak = _simulated_extinction_leak(self.hardware)
+        image = scale * (g1 + g2 + rings + gradient + 0.05 * leak)
 
         rng = np.random.default_rng(
             seed=(1000003 + 97 * x_idx + 193 * y_idx + 389 * z_idx + 17 * t_index)
@@ -399,6 +422,9 @@ class _SpectroMappingWorker(QObject):
                 prepare_fn = getattr(self.hardware, "prepare_brillouin_for_scan", None)
                 if prepare_fn is not None:
                     prepare_fn(self.brillouin_params)
+
+            if self.extinction_guard is not None:
+                self.extinction_guard.on_status = self.sigStatusMessage.emit
 
             if "raman_spectra" in self.dataset and self.raman is None:
                 raise RuntimeError("Raman mode is on but no Raman spectrometer is available.")
@@ -464,10 +490,23 @@ class _SpectroMappingWorker(QObject):
                 is_last_pixel = (lin + 1 >= total)
 
                 if "brillouin_images" in self.dataset:
-                    image = self._try_acquire_brillouin_from_hardware(self.brillouin_params)
-                    if image is None:
-                        image = self._mock_brillouin_image(
-                            x_idx=x, y_idx=y, z_idx=z, t_index=lin, params=self.brillouin_params
+                    def acquire_brillouin(x=x, y=y, z=z, lin=lin):
+                        frame = self._try_acquire_brillouin_from_hardware(self.brillouin_params)
+                        if frame is None:
+                            frame = self._mock_brillouin_image(
+                                x_idx=x, y_idx=y, z_idx=z, t_index=lin, params=self.brillouin_params
+                            )
+                        return frame
+
+                    image = acquire_brillouin()
+                    if self.extinction_guard is not None:
+                        # Extinction drifted past the threshold: the liquid
+                        # crystal is searched again, and this point taken anew.
+                        image = self.extinction_guard.check(
+                            image,
+                            reacquire=acquire_brillouin,
+                            should_stop=self._cancel.is_set,
+                            point_index=lin,
                         )
                     self.dataset["brillouin_images"][t, z, y, x] = image
 
@@ -581,6 +620,12 @@ class _SpectroMappingWorker(QObject):
                     logger.info(f"[Spectro] return to origin not completed ({e})")
                 finally:
                     self._running = False
+
+            if self.extinction_guard is not None and self.dataset is not None:
+                try:
+                    self.dataset.setdefault("metadata", {})["bipd"] = self.extinction_guard.record()
+                except Exception as e:
+                    logger.warning(f"[Spectro] BIPD state not recorded with the map: {e}")
 
             kind, payload = outcome
             if kind == "finished":
@@ -925,6 +970,7 @@ class SpectroManager(QObject):
         brillouin_params,
         raman_params,
         save_params=None,
+        extinction_guard=None,
     ):
         if self.running:
             return
@@ -989,6 +1035,7 @@ class SpectroManager(QObject):
             dataset=self.dataset,
             mapping_started_t0=self._mapping_started_t0,
             raman=raman,
+            extinction_guard=extinction_guard if "brillouin_images" in self.dataset else None,
         )
         self._mapping_worker.moveToThread(self._mapping_thread)
 
@@ -1013,6 +1060,32 @@ class SpectroManager(QObject):
     # --------------------------
     # Snap / Live Brillouin
     # --------------------------
+    def acquire_brillouin_frame(self, params=None):
+        """One Brillouin frame, from the camera or simulated. Any thread.
+
+        For whoever needs frames outside snap / live / maps -- the BIPD
+        extinction search. Goes through the camera lock like everything else.
+        """
+        params = dict(params or {})
+        image = self._try_acquire_brillouin_from_hardware(params)
+        if image is None:
+            image = self._mock_brillouin_image(
+                x_idx=0, y_idx=0, z_idx=0,
+                t_index=int(time.time() * 10) % 100000,
+                params=params,
+            )
+        return image
+
+    def _mock_brillouin_live_frame(self, params):
+        """A simulated live frame, paced like a real exposure."""
+        exposure_s = float((params or {}).get("exposure_ms", 10.0) or 10.0) / 1000.0
+        time.sleep(min(2.0, max(0.02, exposure_s)))
+        return self._mock_brillouin_image(
+            x_idx=0, y_idx=0, z_idx=0,
+            t_index=int(time.time() * 10) % 100000,
+            params=params,
+        )
+
     def snap_brillouin(self, params=None):
         try:
             params = dict(params or {})
@@ -1047,6 +1120,9 @@ class SpectroManager(QObject):
         self._brillouin_live_worker = _BrillouinLiveWorker(
             hardware=self.hardware,
             params=self._brillouin_live_params,
+            # Backend mock: the camera has no frame to give, so the live view
+            # runs on simulated ones instead of stopping at the first.
+            fallback=self._mock_brillouin_live_frame,
         )
         self._brillouin_live_worker.moveToThread(self._brillouin_live_thread)
 
@@ -1520,7 +1596,10 @@ class SpectroManager(QObject):
         gain = float(params.get("gain", 0.0) or 0.0)
 
         scale = 200.0 + 2.5 * exposure_ms + 8.0 * gain
-        image = scale * (g1 + g2 + rings + gradient)
+        # A connected simulated BIPD filter lets light through when it is badly
+        # set -- the background its extinction search has to bring down.
+        leak = _simulated_extinction_leak(self.hardware)
+        image = scale * (g1 + g2 + rings + gradient + 0.05 * leak)
 
         rng = np.random.default_rng(
             seed=(1000003 + 97 * x_idx + 193 * y_idx + 389 * z_idx + 17 * t_index)

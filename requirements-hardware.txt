@@ -17,3 +17,11 @@
 nidaqmx      # NI acquisition card    -> Nidaq_Microscope, PMT_Digital_Manager
 pythonnet    # Thorlabs Kinesis .NET  -> _ThorlabsShutterController / _ThorlabsRotationController
 pipython     # Physik Instrumente GCS -> PI V-308 Z stage
+
+# Specto BIPD filter (81Watts) -> Bipd_Filter.SpectoBipdFilter. Not on PyPI:
+# the vendor wheel is kept in the repository, and is built for Python 3.12
+# only. Install it by hand on a 3.12 environment:
+#
+#     pip install Controle_BIPD/specto_bipd-0.1.1-cp312-cp312-win_amd64.whl
+#
+# Without it DeepLight starts as usual; the BIPD panel says so on Connect.

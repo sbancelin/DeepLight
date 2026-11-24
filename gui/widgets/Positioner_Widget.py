@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout, QLabel, QLineEdit, QMessageBox, QSizePolicy, QCheckBox, QApplication)
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout, QLabel, QLineEdit, QMessageBox, QSizePolicy, QCheckBox, QApplication, QAbstractSpinBox)
 from PySide6.QtCore import Signal, Qt, Slot, QEvent
 from PySide6.QtGui import QIcon
 from functools import partial
@@ -1016,8 +1016,11 @@ class PositionerWidget(QWidget):
         if fw is None:
             return False
 
-        # Si on édite un champ texte, on laisse les touches au champ
-        return isinstance(fw, QLineEdit)
+        # Si on édite un champ texte, on laisse les touches au champ. Un spin
+        # box en est un : c'est lui, pas son QLineEdit interne, qui a le focus,
+        # et ses flèches haut/bas changent la valeur (tension du cristal
+        # liquide BIPD, pose...) -- elles ne doivent pas déplacer la platine.
+        return isinstance(fw, (QLineEdit, QAbstractSpinBox))
 
     def _validate_axis_speed(self, axis: str, ui: dict) -> bool:
         speed = self._read_float(ui["speed"], 0.0)

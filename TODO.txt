@@ -1,2 +1,0 @@
-- ZVCoil position absolue dans widget, test valeurs extremes (0-7000), déplacement stepper
-- Z stack 

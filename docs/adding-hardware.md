@@ -19,6 +19,7 @@ editing the application. Each device family has the same three pieces:
 | Shutter | `ShutterBase` | `MockShutter` | `validate_shutter_contract` |
 | Power actuator | `PowerActuatorBase` | `MockPowerActuator` | `validate_power_actuator_contract` |
 | Waveplate rotator | `WaveplateRotatorBase` | `MockWaveplateRotator` | `validate_waveplate_rotator_contract` |
+| BIPD extinction filter | `BipdFilterBase` | `MockBipdFilter` | `validate_bipd_filter_contract` |
 
 Two worked examples follow. They are short on purpose: if adding a device takes
 more than a page, the contract is wrong.

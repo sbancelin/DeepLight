@@ -17,6 +17,7 @@ from .main_window_design import (
 )
 from .resources import icon_path
 from .managers.Acquisition_Manager import AcquisitionManager
+from .managers.Bipd_Manager import BipdManager
 from .managers.Field_Correction import FieldCorrection
 from .managers.Frame_Builder import analog_pixel_ceiling, saturated_fraction
 from .managers.Hardware_Manager import HardwareManager
@@ -117,6 +118,7 @@ class MainWindow(QMainWindow):
         self.ui.positioner_widget.set_settings_manager(self.settings_manager)
         self.ui.laser_widget.set_settings_manager(self.settings_manager)
         self.ui.spectro_panel_widget.set_settings_manager(self.settings_manager)
+        self.ui.bipd_widget.set_settings_manager(self.settings_manager)
 
         self.setDockOptions(
             QMainWindow.AnimatedDocks |
@@ -175,6 +177,16 @@ class MainWindow(QMainWindow):
         self._spectro_raman_ui_timer.start()
 
         self._connect_spectro_controls()
+
+        # Filtre BIPD (extinction du bras Brillouin) et coupe du spectre : deux
+        # panneaux à droite, affichés avec l'onglet Spectro.
+        self.bipd_manager = BipdManager(
+            hardware_manager=self.hardware,
+            frame_source=self.spectro_manager.acquire_brillouin_frame,
+            parent=self,
+        )
+        self._bipd_resume_live_params = None
+        self._connect_bipd_controls()
 
         self._rec_saving_active = False
         # Pour les notices [Acquisition] Started/Finished/Stopped manually :
@@ -390,6 +402,72 @@ class MainWindow(QMainWindow):
         sp.raman_calibration_loader = self._load_raman_calibration
         self._apply_raman_settings(sp.get_raman_settings())
 
+    def _connect_bipd_controls(self):
+        sw = self.ui.spectro_widget
+        sm = self.spectro_manager
+        bm = self.bipd_manager
+        bipd = self.ui.bipd_widget
+        cut = self.ui.spectrum_cut_widget
+
+        bipd.set_manager(bm)
+        bipd.attach_image_view(sw.brillouin_image_view)
+        cut.set_image_view(sw.brillouin_image_view)
+
+        # Every Brillouin frame (snap, live, map) feeds the cut and the border
+        # level, unthrottled: each panel paces itself. The 2 Hz of the image
+        # display would be too slow to adjust the extinction by eye.
+        sm.sigImageUpdate.connect(cut.on_frame)
+        sm.sigImageUpdate.connect(bipd.on_frame)
+        # Frames of an extinction search are shown like any other.
+        bm.sigFrame.connect(self._on_spectro_image_update)
+        bm.sigFrame.connect(cut.on_frame)
+        bm.sigFrame.connect(bipd.on_frame)
+
+        bipd.sigOptimizeRequested.connect(self._on_bipd_optimize_requested)
+        bm.sigBusy.connect(self._on_bipd_busy_changed)
+
+        self.ui.tabWidget.currentChanged.connect(self._on_main_tab_changed)
+        self._on_main_tab_changed(self.ui.tabWidget.currentIndex())
+
+    @Slot(int)
+    def _on_main_tab_changed(self, index: int):
+        """The Brillouin cut and the BIPD panel only mean something on the Spectro tab."""
+        on_spectro = self.ui.tabWidget.widget(index) is self.ui.spectro_widget
+        for panel in (self.ui.spectrum_cut_panel, self.ui.bipd_panel):
+            panel.setVisible(on_spectro)
+        self.ui.right_panel_dock._refresh_scroll_area()
+
+    @Slot()
+    def _on_bipd_optimize_requested(self):
+        """Search the liquid-crystal voltage now, with the Spectro tab's camera settings."""
+        if self.spectro_manager.is_running():
+            logger.warning(
+                "[BIPD] a map is running: it re-optimises the extinction itself "
+                "if 'Re-optimise during maps' is on"
+            )
+            return
+        params = self.ui.spectro_widget.get_brillouin_parameters()
+
+        # The live view drives the same camera; the search takes its own frames
+        # at chosen moments, so the live pauses and resumes afterwards.
+        was_live = self.spectro_manager.is_brillouin_live_running()
+        if was_live:
+            self.spectro_manager.stop_live_brillouin()
+
+        if self.bipd_manager.optimize(params, self.ui.bipd_widget.get_settings()):
+            self._bipd_resume_live_params = params if was_live else None
+        elif was_live:
+            self.spectro_manager.start_live_brillouin(params)
+
+    @Slot(bool)
+    def _on_bipd_busy_changed(self, busy: bool):
+        if busy:
+            return
+        params, self._bipd_resume_live_params = self._bipd_resume_live_params, None
+        if params is not None and not self.spectro_manager.is_running():
+            # The camera settings may have been edited meanwhile: take the current ones.
+            self.spectro_manager.start_live_brillouin(self.ui.spectro_widget.get_brillouin_parameters())
+
     @Slot(bool, bool)
     def _on_spectro_mode_changed(self, brillouin: bool, raman: bool):
         if bool(raman):
@@ -477,12 +555,22 @@ class MainWindow(QMainWindow):
 
             self._open_shutter_for_spectro()
 
+            # A connected BIPD filter is recorded with the map, and re-optimised
+            # during it if asked; None when no filter is connected.
+            extinction_guard = None
+            if modes.get("brillouin", False):
+                extinction_guard = self.bipd_manager.make_map_guard(
+                    self.ui.bipd_widget.get_settings(),
+                    enabled=self.ui.bipd_widget.auto_lc_enabled(),
+                )
+
             self.spectro_manager.start_mapping(
                 scan_parameters=acquisition_params,
                 modes=modes,
                 brillouin_params=brillouin_params,
                 raman_params=raman_params,
                 save_params=save_params,
+                extinction_guard=extinction_guard,
             )
 
             # start_mapping reports a refusal through sigFailed, which has
@@ -1189,6 +1277,13 @@ class MainWindow(QMainWindow):
 
         try:
             self._spectro_raman_ui_timer.stop()
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        try:
+            # Before the spectro threads: an extinction search takes its frames
+            # through them. Cut short, and its thread waited for.
+            self.bipd_manager.shutdown()
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 

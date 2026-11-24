@@ -2941,6 +2941,11 @@ class HardwareManager(QObject):
         self._raman = None
         self._raman_error = None
 
+        # Filtre BIPD du bras Brillouin : objet créé à la première demande,
+        # connecté seulement depuis son panneau (jamais au démarrage).
+        self._bipd = None
+        self._bipd_error = None
+
         self._laser_manager = None
 
         if self.backend_name == "nidaq":
@@ -3465,6 +3470,50 @@ class HardwareManager(QObject):
     def raman_unavailable_reason(self) -> str | None:
         return self._raman_error
 
+    # ---- BIPD filter (Brillouin extinction) -------------------------------
+
+    def bipd_filter(self):
+        """The BIPD filter, built on first use; None if it cannot be built.
+
+        The mock backend always gets the simulated filter; the real one gets
+        what the configuration names (bipd.device). Building opens nothing --
+        the vendor module is only imported when the panel connects -- so a PC
+        without it still starts.
+        """
+        if self._bipd is not None:
+            return self._bipd
+        if self._bipd_error is not None:
+            return None
+
+        from .Bipd_Filter import MockBipdFilter, create_bipd_filter
+
+        try:
+            self._bipd = MockBipdFilter() if self.backend_name == "mock" else create_bipd_filter()
+        except Exception as e:
+            self._bipd_error = str(e)
+            logger.error(f"[HardwareManager] BIPD filter unavailable: {e}")
+            return None
+        logger.info(f"[HardwareManager] BIPD filter: {type(self._bipd).__name__}")
+        return self._bipd
+
+    def bipd_unavailable_reason(self) -> str | None:
+        return self._bipd_error
+
+    def simulated_extinction_leak(self) -> float:
+        """Light a *simulated* filter lets through, for the simulated camera.
+
+        Zero for a real filter, or none: only the mock's frames depend on it,
+        so that turning the simulated liquid crystal changes what is measured.
+        """
+        bipd = self._bipd
+        leak_fn = getattr(bipd, "simulated_leak", None)
+        if bipd is None or not getattr(bipd, "connected", False) or not callable(leak_fn):
+            return 0.0
+        try:
+            return float(leak_fn())
+        except Exception:
+            return 0.0
+
     def close(self):
         try:
             if self._camera_controller is not None:
@@ -3496,7 +3545,8 @@ class HardwareManager(QObject):
         except Exception as e:
             logger.debug(f"[Hardware] closing the laser manager failed: {e}")
 
-        for dev in (self._shutter, self._xy_controller, self._z_controller, *self._rotators.values()):
+        for dev in (self._shutter, self._xy_controller, self._z_controller, self._bipd,
+                    *self._rotators.values()):
             try:
                 if dev is not None:
                     dev.close()
