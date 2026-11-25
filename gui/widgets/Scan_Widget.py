@@ -418,7 +418,7 @@ def setup_scan_settings_dialog(dialog):
                     bidir_lag_us=_read_bidir_lag(key, old),
                 )
 
-        scan_widget.axis_settings = scan_widget.axis_settings_manager.get_all_axis_settings()
+        scan_widget.axis_settings =scan_widget.axis_settings_manager.get_all_axis_settings()
         scan_widget._update_scan_duration()
         scan_widget.refresh_bidirectional_shift()
         scan_widget._on_param_changed()

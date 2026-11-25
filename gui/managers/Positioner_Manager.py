@@ -7,7 +7,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 from ..widgets.Log_Widget import logger
-from .Waveplate_Rotator import COMPENSATOR_STATES, half_wave_angle_for_azimuth
+from .Waveplate_Rotator import QUARTER_WAVE_STATES, half_wave_angle_for_azimuth
 
 
 @dataclass
@@ -53,43 +53,44 @@ class PositionerManager(QObject):
         # Position relative de la λ/2 avant un scan de polarisation, pour la
         # restaurer au retour à la base (cf. _handle_polarization_scan).
         self._polar_prescan: Optional[dict] = None
-        # Positions mesurées du compensateur (λ/4), par état. Vide tant que le
+        # Positions mesurées de la λ/4 (linéaire, CD, CG). Vide tant que le
         # panneau positionneur ne les a pas poussées.
-        self._compensator_positions: Dict[str, float] = {}
+        self._quarter_wave_positions: Dict[str, float] = {}
 
     def _handle_polarization_scan(self, target_rel: float, reason: str):
         """
         One 'Polarization' scan point = one AZIMUTH (°).
 
-        Only the half-wave plate turns, by half the azimuth: a half-wave plate
-        rotates linear polarisation by twice its own angle. The quarter-wave
-        plate is a compensator, parked once on its 'linear' position at the
-        start of the run and left there -- it corrects the ellipticity the
-        optics upstream introduce, which does not depend on the azimuth.
+        Only the half-wave plate turns, by half the azimuth, since a half-wave
+        plate rotates linear polarisation by twice its own angle. The
+        quarter-wave plate is parked once on its 'linear' position at the start
+        of the run and left there: an azimuth series only means something in
+        linear polarisation. (The optics' own ellipticity is corrected by the
+        fixed compensator, which DeepLight does not drive.)
 
-        The plate's position before the scan is remembered so it can be
+        The half-wave plate's position before the scan is remembered, and
         restored on 'return_to_base'.
         """
         r = str(reason or "")
 
         # Retour à la base : restaurer la position pré-scan de la λ/2.
         if r.endswith("return_to_base"):
-            pre = self._polar_prescan
-            self._polar_prescan = None
+            pre, self._polar_prescan = self._polar_prescan, None
             if pre is not None and pre.get("p") is not None and "p" in self._state:
                 self.move_to_rel("p", float(pre["p"]), self._POLAR_SPEED_DEG_S)
             return
 
-        # Première commande du run : mémoriser l'état, et poser le compensateur
-        # sur sa position linéaire. Une série P-SHG n'a de sens qu'en linéaire.
+        # Première commande du run : mémoriser la λ/2, poser la λ/4 en linéaire.
+        # S'en remettre à l'état où la session précédente l'a laissée serait
+        # invisible dans les images.
         if self._polar_prescan is None:
+            self._polar_prescan = {"p": None}
             try:
-                self._polar_prescan = {
-                    "p": float(self.get_rel_pos("p")) if "p" in self._state else None
-                }
+                if "p" in self._state:
+                    self._polar_prescan["p"] = float(self.get_rel_pos("p"))
             except Exception:
-                self._polar_prescan = {"p": None}
-            self.move_compensator("linear")
+                pass
+            self.move_quarter_wave("linear")
 
         if "p" in self._state:
             # Le zéro de la lame (angle donnant l'horizontale) est porté par le
@@ -100,21 +101,21 @@ class PositionerManager(QObject):
                 self._POLAR_SPEED_DEG_S,
             )
 
-    # ---- compensateur (λ/4) --------------------------------------------
+    # ---- λ/4 : linéaire / circulaire droite / circulaire gauche ----------
 
-    def set_compensator_positions(self, **positions):
+    def set_quarter_wave_positions(self, **positions):
         """Measured positions of the quarter-wave plate, by state name.
 
         Pushed in by the positioner panel, the way the axis limits already are.
         A state that was never measured stays absent rather than defaulting to
-        zero, so move_compensator() can decline instead of driving the plate
+        zero, so move_quarter_wave() can decline instead of driving the plate
         somewhere arbitrary.
         """
         for state, value in positions.items():
-            if state in COMPENSATOR_STATES and value is not None:
-                self._compensator_positions[state] = float(value)
+            if state in QUARTER_WAVE_STATES and value is not None:
+                self._quarter_wave_positions[state] = float(value)
 
-    def compensator_state(self) -> Optional[str]:
+    def quarter_wave_state(self) -> Optional[str]:
         """Which of the three positions the plate is currently sitting on."""
         if "p4" not in self._state:
             return None
@@ -124,27 +125,27 @@ class PositionerManager(QObject):
             return None
 
         tolerance = max(float(self.get_tolerance("p4")), 1e-6)
-        for state, value in self._compensator_positions.items():
+        for state, value in self._quarter_wave_positions.items():
             if abs(here - value) <= tolerance:
                 return state
         return None
 
-    def move_compensator(self, state: str) -> bool:
+    def move_quarter_wave(self, state: str) -> bool:
         """Park the quarter-wave plate on one of its three positions.
 
         Returns False when that position was never measured -- refusing is the
-        right answer, since a compensator at an unknown angle silently changes
-        the polarisation reaching the sample.
+        right answer, since a plate at an unknown angle silently changes the
+        polarisation reaching the sample.
         """
         state = str(state)
         if "p4" not in self._state:
             return False
 
-        target = self._compensator_positions.get(state)
+        target = self._quarter_wave_positions.get(state)
         if target is None:
             logger.warning(
-                f"[Positioner] compensator position {state!r} is not configured; "
-                f"the quarter-wave plate was left where it is."
+                f"[Positioner] quarter-wave position {state!r} is not configured; "
+                f"the plate was left where it is."
             )
             return False
 

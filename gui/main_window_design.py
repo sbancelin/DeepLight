@@ -35,6 +35,8 @@ from .widgets.Stitching_Widget import StitchingWidget
 from .widgets.Camera_Widget import CameraWidget
 from .widgets.Spectro_Widget import SpectroWidget
 from .widgets.Spectro_Panel_Widget import SpectroPanelWidget
+from .widgets.Bipd_Widget import BipdWidget
+from .widgets.Spectrum_Cut_Widget import SpectrumCutWidget
 from .widgets.Panel_Dock import PanelDock
 from .widgets.Collapsible_Panel import CollapsiblePanel
 from .widgets.Log_Widget import LogWidget
@@ -364,7 +366,12 @@ class MainWindowLayout:
         self.histogram_widget = HistogramWidget()
         self.frc_widget = FRCWidget()
         self.log_widget = LogWidget()
+        # Spectro tab only (MainWindow shows them with that tab).
+        self.spectrum_cut_widget = SpectrumCutWidget()
+        self.bipd_widget = BipdWidget()
 
+        self.spectrum_cut_panel = CollapsiblePanel("Brillouin Spectrum", self.spectrum_cut_widget, collapsed=False, preferred_content_height=320, parent=self.right_panel_dock.container)
+        self.bipd_panel = CollapsiblePanel("BIPD Filter", self.bipd_widget, collapsed=False, settings_callback=self.bipd_widget.open_settings_dialog, preferred_content_height=420, parent=self.right_panel_dock.container)
         self.analog_panel = CollapsiblePanel("Analog Visualizer", self.analog_out_widget, collapsed=True, preferred_content_height=400, parent=self.right_panel_dock.container)
         self.stepper_panel = CollapsiblePanel("Stepper Visualizer", self.visu_step_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.nyquist_panel = CollapsiblePanel("Nyquist", self.nyquist_widget, collapsed=True, parent=self.right_panel_dock.container)
@@ -375,6 +382,8 @@ class MainWindowLayout:
         self.frc_panel = CollapsiblePanel("FRC", self.frc_widget, collapsed=True, preferred_content_height=300, parent=self.right_panel_dock.container)
         self.log_panel = CollapsiblePanel("Logs", self.log_widget, collapsed=False, preferred_content_height=200, parent=self.right_panel_dock.container)
 
+        self.right_panel_dock.add_panel(self.spectrum_cut_panel)
+        self.right_panel_dock.add_panel(self.bipd_panel)
         self.right_panel_dock.add_panel(self.analog_panel)
         self.right_panel_dock.add_panel(self.stepper_panel)
         self.right_panel_dock.add_panel(self.nyquist_panel)

@@ -39,9 +39,13 @@ actually visited are listed in the saved file's provenance, so a plane index
 never has to be matched back to an angle by hand.
 
 **Brillouin and Raman.** A Princeton Instruments camera behind a spectrometer
-for Brillouin, and an IsoPlane 320 spectrograph for Raman. Both run against a
-software mock until the hardware is present. Brillouin datasets can be written
-in the HDF5-BLS 1.0 format used by the Brillouin community.
+for Brillouin, and an IsoPlane 320 spectrograph with a LANSIS camera for Raman:
+grating and centre wavelength control, a live spectrum, and one spectrum per
+point of a stage map, saved as an XY × spectral image cube. Spectra stay on
+detector pixels unless a wavelength calibration made at the current setting is
+loaded. Both run against a software mock until the hardware is present.
+Brillouin datasets can be written in the HDF5-BLS 1.0 format used by the
+Brillouin community.
 
 **Mosaics.** Tiled acquisition with overlap and per-tile registration, including
 stacks per tile. The extent is checked against the stage limits before the first
@@ -209,7 +213,7 @@ python -m DeepLight.examples.pshg_sweep --backend mock
 | Lasers | Spark Lasers ALCOR 920, Cobolt Flamenco 660, Coherent Mira 900, Tumecs |
 | Detectors | PMTs (analog) and photon counting (NI counters) |
 | Brillouin | Princeton Instruments camera via PICam |
-| Raman | Princeton Instruments IsoPlane 320 + PI camera |
+| Raman | Princeton Instruments IsoPlane 320 + LANSIS camera via PICam |
 | Widefield camera | OpenCV-compatible camera |
 
 Every one of these has a software mock, selected with `--backend mock` or per

@@ -5,7 +5,7 @@ import time
 import math
 import struct
 import serial
-from threading import Lock
+from threading import Lock, RLock
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, Slot, QThread, QTimer
@@ -2922,6 +2922,29 @@ class HardwareManager(QObject):
         self._camera_controller = None
         self._brillouin_camera = None
 
+        self._brillouin_correction = None
+        self._brillouin_correction_enabled = True
+        self._brillouin_geometry_warned = False
+
+        # Un seul Picam_Acquire à la fois sur la caméra Brillouin. Le live
+        # tourne dans son QThread, le mapping dans le sien, et le dark part du
+        # thread GUI : deux acquisitions qui se chevauchent sur la même poignée
+        # PICam laissent la caméra armée et inutilisable jusqu'à reconnexion.
+        # Réentrant parce que acquire_brillouin_dark() boucle sur
+        # acquire_brillouin_image_raw(), déjà protégé.
+        self._brillouin_cam_lock = RLock()
+
+        # Chaîne Raman (spectrographe + détecteur), créée à la première
+        # utilisation. _raman_error garde la raison d'un échec de création, pour
+        # la redire au lieu de retenter à chaque clic.
+        self._raman = None
+        self._raman_error = None
+
+        # Filtre BIPD du bras Brillouin : objet créé à la première demande,
+        # connecté seulement depuis son panneau (jamais au démarrage).
+        self._bipd = None
+        self._bipd_error = None
+
         self._laser_manager = None
 
         if self.backend_name == "nidaq":
@@ -3270,9 +3293,9 @@ class HardwareManager(QObject):
         if self.backend_name == "mock":
             return None
 
-        cam = self._get_brillouin_camera()
-        return cam
-    
+        with self._brillouin_cam_lock:
+            return self._get_brillouin_camera()
+
     def prepare_brillouin_for_scan(self, params: dict | None = None):
         """
         Pre-initialise the Brillouin camera and apply the parameters once before the
@@ -3280,8 +3303,8 @@ class HardwareManager(QObject):
         """
         if self.backend_name == "mock":
             return
-        cam = self._get_brillouin_camera()
-        cam.apply_parameters(params or {})
+        with self._brillouin_cam_lock:
+            self._get_brillouin_camera().apply_parameters(params or {})
 
     def acquire_brillouin_image(self, params=None):
         """
@@ -3299,8 +3322,7 @@ class HardwareManager(QObject):
 
         if self.backend_name == "nidaq":
             logger.debug("[HardwareManager] Brillouin source = PICam/Kuro")
-            cam = self._get_brillouin_camera()
-            img = cam.snap(params or {})
+            img = self._brillouin_snap(params)
             logger.debug(
                 f"[HardwareManager] Kuro image shape={getattr(img, 'shape', None)} "
                 f"dtype={getattr(img, 'dtype', None)}"
@@ -3309,6 +3331,187 @@ class HardwareManager(QObject):
 
         logger.warning("[HardwareManager] Brillouin source unavailable")
         return None
+
+    def _brillouin_snap(self, params=None):
+        """One frame off the Brillouin camera, serialised and self-healing.
+
+        A PICam acquisition that fails part way -- a timeout, or a second
+        acquisition arriving while this one is armed -- leaves the camera armed
+        and every later snap failing too, with `connected` still True so nothing
+        reconnects on its own. Dropping the connection here means the next Snap
+        or Live re-opens the camera instead of the operator having to press
+        Reconnect, or restart DeepLight.
+        """
+        with self._brillouin_cam_lock:
+            try:
+                return self._get_brillouin_camera().snap(params or {})
+            except Exception:
+                try:
+                    if self._brillouin_camera is not None:
+                        self._brillouin_camera.disconnect()
+                except Exception as e:
+                    logger.debug(f"[HardwareManager] Brillouin camera would not close: {e}")
+                logger.warning(
+                    "[HardwareManager] Brillouin acquisition failed; the camera will be "
+                    "re-opened on the next one."
+                )
+                raise
+
+    # ---- Brillouin dark / flat ----------------------------------------
+
+    def set_brillouin_correction(self, correction, enabled: bool = True):
+        """Install the dark/flat reference applied to every Brillouin image."""
+        self._brillouin_correction = correction
+        self._brillouin_correction_enabled = bool(enabled)
+        self._brillouin_geometry_warned = False
+
+    def get_brillouin_correction(self):
+        return getattr(self, "_brillouin_correction", None)
+
+    def apply_brillouin_correction(self, img):
+        """Subtract the dark from a Brillouin image, when one applies.
+
+        The EMCCD's dark current is the reason this matters here more than
+        elsewhere: it grows with exposure, and a Brillouin exposure is long.
+        """
+        correction = getattr(self, "_brillouin_correction", None)
+        if img is None or correction is None:
+            return img
+        if not getattr(self, "_brillouin_correction_enabled", True):
+            return img
+        if not correction.matches(img):
+            # Once, not once per point: a mapping calls this thousands of times,
+            # and a dark taken at another ROI or binning would otherwise bury
+            # the log -- and the panel -- under the same line.
+            if not getattr(self, "_brillouin_geometry_warned", False):
+                self._brillouin_geometry_warned = True
+                logger.warning(
+                    f"[HardwareManager] Brillouin correction ignored: the dark is "
+                    f"{correction.shape} and the images are {getattr(img, 'shape', None)}. "
+                    "Re-measure the dark at the ROI and binning in use."
+                )
+            return img
+        return correction.apply(img)
+
+    def acquire_brillouin_dark(self, params=None, count: int = 8):
+        """Average `count` images with the shutter shut, as a dark reference.
+
+        The shutter is closed here rather than left to the operator: a "dark"
+        taken with the beam on is not a dark, and it would be subtracted from
+        every image afterwards without anything looking wrong.
+        """
+        was_open = self.is_shutter_open()
+        self.set_shutter(False)
+        try:
+            # Held across the whole series: eight frames taken one at a time,
+            # with a live frame slipped in between, are eight frames of
+            # something else. The caller stops the live view anyway -- this is
+            # what makes it not matter if it forgets.
+            with self._brillouin_cam_lock:
+                frames = []
+                for _ in range(max(1, int(count))):
+                    img = self.acquire_brillouin_image_raw(params)
+                    if img is None:
+                        return None
+                    frames.append(img)
+                return average_frames(frames)
+        finally:
+            if was_open:
+                self.set_shutter(True)
+
+    def acquire_brillouin_image_raw(self, params=None):
+        """One Brillouin image with no correction applied.
+
+        What a reference has to be measured from: correcting the frames a dark
+        is built out of would fold the previous dark into the new one.
+        """
+        if self.backend_name != "nidaq":
+            return None
+        return self._brillouin_snap(params)
+
+    # ---- Raman ------------------------------------------------------------
+
+    def raman_spectrometer(self):
+        """The Raman chain, built on first use; None if it cannot be built.
+
+        The mock backend always gets the simulated spectrograph and detector.
+        The real one gets what the configuration names (raman.spectrograph,
+        raman.camera), which stay "mock" until the bench is set up -- so the
+        Raman tab works, simulated, on any machine. Nothing is opened here:
+        the instruments connect on the first spectrum or move.
+        """
+        if self._raman is not None:
+            return self._raman
+        if self._raman_error is not None:
+            return None
+
+        from .Raman_Detector import MockRamanDetector, create_raman_detector
+        from .Raman_Spectrometer import RamanSpectrometer
+        from .Spectrograph_Manager import MockSpectrograph, create_spectrograph
+
+        try:
+            if self.backend_name == "mock":
+                spectrograph, detector = MockSpectrograph(), MockRamanDetector()
+            else:
+                spectrograph, detector = create_spectrograph(), create_raman_detector()
+            self._raman = RamanSpectrometer(spectrograph, detector)
+        except Exception as e:
+            self._raman_error = str(e)
+            logger.error(f"[HardwareManager] Raman spectrometer unavailable: {e}")
+            return None
+
+        logger.info(
+            f"[HardwareManager] Raman: {type(self._raman.spectrograph).__name__} + "
+            f"{type(self._raman.detector).__name__}"
+        )
+        return self._raman
+
+    def raman_unavailable_reason(self) -> str | None:
+        return self._raman_error
+
+    # ---- BIPD filter (Brillouin extinction) -------------------------------
+
+    def bipd_filter(self):
+        """The BIPD filter, built on first use; None if it cannot be built.
+
+        The mock backend always gets the simulated filter; the real one gets
+        what the configuration names (bipd.device). Building opens nothing --
+        the vendor module is only imported when the panel connects -- so a PC
+        without it still starts.
+        """
+        if self._bipd is not None:
+            return self._bipd
+        if self._bipd_error is not None:
+            return None
+
+        from .Bipd_Filter import MockBipdFilter, create_bipd_filter
+
+        try:
+            self._bipd = MockBipdFilter() if self.backend_name == "mock" else create_bipd_filter()
+        except Exception as e:
+            self._bipd_error = str(e)
+            logger.error(f"[HardwareManager] BIPD filter unavailable: {e}")
+            return None
+        logger.info(f"[HardwareManager] BIPD filter: {type(self._bipd).__name__}")
+        return self._bipd
+
+    def bipd_unavailable_reason(self) -> str | None:
+        return self._bipd_error
+
+    def simulated_extinction_leak(self) -> float:
+        """Light a *simulated* filter lets through, for the simulated camera.
+
+        Zero for a real filter, or none: only the mock's frames depend on it,
+        so that turning the simulated liquid crystal changes what is measured.
+        """
+        bipd = self._bipd
+        leak_fn = getattr(bipd, "simulated_leak", None)
+        if bipd is None or not getattr(bipd, "connected", False) or not callable(leak_fn):
+            return 0.0
+        try:
+            return float(leak_fn())
+        except Exception:
+            return 0.0
 
     def close(self):
         try:
@@ -3330,12 +3533,19 @@ class HardwareManager(QObject):
             logger.debug(f"[Hardware] disconnecting the Brillouin camera failed: {e}")
 
         try:
+            if self._raman is not None:
+                self._raman.disconnect()
+        except Exception as e:
+            logger.debug(f"[Hardware] disconnecting the Raman spectrometer failed: {e}")
+
+        try:
             if self._laser_manager is not None:
                 self._laser_manager.close()
         except Exception as e:
             logger.debug(f"[Hardware] closing the laser manager failed: {e}")
 
-        for dev in (self._shutter, self._xy_controller, self._z_controller, *self._rotators.values()):
+        for dev in (self._shutter, self._xy_controller, self._z_controller, self._bipd,
+                    *self._rotators.values()):
             try:
                 if dev is not None:
                     dev.close()

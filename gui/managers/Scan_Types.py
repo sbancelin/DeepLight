@@ -326,11 +326,13 @@ STEPPER_AXIS_DEFAULTS = {
         "max_um": 360.0,
         "vel_max": 430.0,   # ELL14 : vitesse max fixe 430°/s (non modifiable)
         "tolerance": 0.1,
-        # Angle de la lame donnant l'horizontale -> zero_offset de l'axe.
+        # Angle de la lame donnant l'horizontale -> zero_offset de l'axe. Le
+        # scan va à azimut/2 à partir de là.
         "offset_deg": 28.97,
     },
-    # P(λ/4) : compensateur. Il ne scanne pas ; il se gare sur l'une de trois
-    # positions mesurées, qui corrigent l'ellipticité introduite en amont.
+    # P(λ/4) : l'état de polarisation. Elle ne scanne pas ; elle se gare sur
+    # l'une de trois positions mesurées : linéaire, circulaire droite, gauche.
+    # (L'ellipticité de l'optique est corrigée par le compensateur fixe.)
     "Polarization-L4": {
         "min_um": -360.0,   # rotation autorisée dans les deux sens
         "max_um": 360.0,

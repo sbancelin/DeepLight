@@ -1,165 +1,258 @@
-"""The Raman chain: a spectrograph decides the wavelengths, a camera reads them.
+"""The Raman chain: a spectrograph places the wavelengths, a detector reads them.
 
-Neither half knows about the other. This class owns the only thing that needs
-both: turning a 2D camera frame into (wavelengths, intensities) by binning the
-rows that fall on the slit image.
+Neither half knows about the other. RamanSpectrometer owns the three things
+that need both:
 
-Swapping the camera means writing one CameraBackendBase; swapping the
-spectrograph means writing one SpectrographBackendBase. Nothing here changes.
+* one lock, so a live spectrum, a snap, a mapping point and a grating move
+  never reach the instruments at the same time -- two overlapping
+  acquisitions on one camera handle leave it armed and unusable;
+* the spectrograph setting (grating, centre), cached here because DeepLight is
+  the only program moving the spectrograph while it runs (LightField must be
+  closed: both cannot hold the instruments), which spares two serial round
+  trips per spectrum during a map;
+* the spectral axis -- detector pixels by default, wavelengths when a loaded
+  calibration belongs to the current setting (see Spectral_Calibration).
+
+What comes out is a RamanSpectrum: counts per detector column, the axis they
+are labelled with, and what was done to get them. No processing beyond the
+average of repeated exposures: analysis happens elsewhere, on the raw data.
 """
 
 from __future__ import annotations
 
+import threading
+import time
+from dataclasses import dataclass
+
 import numpy as np
 
-from ...config import CONFIG
 from ..widgets.Log_Widget import logger
-from .Camera_Manager import CameraBackendBase, CameraParameters
-from .Spectrograph_Manager import (
-    create_spectrograph,
-    validate_spectrograph_contract,
+from .Raman_Detector import (
+    AcquisitionAborted,
+    RamanDetectorBase,
+    validate_raman_detector_contract,
 )
+from .Spectral_Calibration import (
+    SpectralAxis,
+    SpectralCalibration,
+    spectral_axis,
+)
+from .Spectrograph_Manager import validate_spectrograph_contract
 
 
-class MockRamanCamera(CameraBackendBase):
-    """Stand-in detector: a few Gaussian lines on a sloping background.
+@dataclass
+class RamanSpectrum:
+    """One spectrum, as acquired."""
 
-    Enough to exercise the whole Raman path, the wavelength axis and the plot
-    without the bench.
-    """
-
-    def __init__(self, width: int = 1340, height: int = 100):
-        super().__init__()
-        self.width = int(width)
-        self.height = int(height)
-        self._rng = np.random.default_rng(0)
-
-    def connect(self) -> None:
-        self.connected = True
-        logger.info("[RamanCamera] mock connected")
-
-    def disconnect(self) -> None:
-        self.connected = False
-
-    def snap(self) -> np.ndarray:
-        x = np.arange(self.width, dtype=np.float64)
-        spectrum = 200.0 + 0.05 * x
-        for centre, amp, width in ((0.28, 3000.0, 6.0),
-                                   (0.46, 1500.0, 9.0),
-                                   (0.71, 2200.0, 4.0)):
-            spectrum += amp * np.exp(-0.5 * ((x - centre * self.width) / width) ** 2)
-
-        # The slit image only lights up the middle rows, as on a real sensor.
-        rows = np.arange(self.height, dtype=np.float64)
-        profile = np.exp(-0.5 * ((rows - self.height / 2.0) / (self.height / 8.0)) ** 2)
-
-        frame = np.outer(profile, spectrum)
-        frame += self._rng.normal(0.0, 15.0, size=frame.shape)
-        return frame.astype(np.float32)
-
-
-def create_raman_camera(name: str | None = None) -> CameraBackendBase:
-    """Build the Raman detector named in the configuration.
-
-    "picam" drives the LANSIS-261X through PICam -- the very library already
-    used for the Kuro, since it covers the whole Princeton Instruments range.
-    The serial number is passed on so the two cameras cannot be confused.
-    """
-    backend = str(name or CONFIG.raman.get("camera", "mock") or "mock").strip().lower()
-
-    if backend in ("mock", "none", ""):
-        return MockRamanCamera()
-
-    if backend in ("picam", "lansis", "lansis261x"):
-        # Imported here: PICam is only needed on a machine that has the camera.
-        from .PiCam_Manager import PiCamManager
-
-        return PiCamManager(
-            serial_number=CONFIG.raman.get("camera_serial", "") or None,
-            preferred_models=(),   # no family preference: the Raman camera is named
-        )
-
-    raise ValueError(f"Unknown Raman camera '{backend}'. Expected one of: mock, picam.")
+    values: np.ndarray          # float32 counts per detector column, mean of `averages` exposures
+    axis: SpectralAxis
+    exposure_ms: float
+    averages: int
+    acquired_at: float          # time.time()
 
 
 class RamanSpectrometer:
-    """Spectrograph + camera, exposing one spectrum."""
+    """Spectrograph + detector + calibration, exposing one spectrum at a time."""
 
-    def __init__(self, spectrograph=None, camera=None):
-        self.spectrograph = spectrograph or create_spectrograph()
-        validate_spectrograph_contract(self.spectrograph)
+    def __init__(self, spectrograph, detector: RamanDetectorBase,
+                 calibration: SpectralCalibration | None = None):
+        validate_spectrograph_contract(spectrograph)
+        validate_raman_detector_contract(detector)
 
-        self.camera = camera if camera is not None else create_raman_camera()
-        self.pixel_size_um = float(CONFIG.raman.camera_pixel_size_um)
+        self.spectrograph = spectrograph
+        self.detector = detector
+
+        self._lock = threading.RLock()
+        self._calibration = calibration
+        self._rows = (0, 0)
+        self._configured = None          # (exposure_ms, rows) last sent to the detector
+        self._setting = None             # cached spectrograph setting
 
     # ---------- lifecycle ----------
     def connect(self) -> None:
-        if not self.spectrograph.connected:
-            self.spectrograph.connect()
-        if not getattr(self.camera, "connected", False):
-            self.camera.connect()
+        with self._lock:
+            if not self.spectrograph.connected:
+                self.spectrograph.connect()
+                self._setting = None
+            if not getattr(self.detector, "connected", False):
+                self.detector.connect()
+                self._configured = None
+            if self._setting is None:
+                self._refresh_setting()
 
     def disconnect(self) -> None:
-        for device in (self.camera, self.spectrograph):
+        with self._lock:
+            for device in (self.detector, self.spectrograph):
+                try:
+                    device.disconnect()
+                except Exception as e:
+                    logger.debug(f"[Raman] disconnecting {type(device).__name__} failed: {e}")
+            self._configured = None
+            self._setting = None
+
+    # ---------- spectrograph ----------
+    def _refresh_setting(self) -> dict:
+        """Read the setting back from the instrument, the one time it is needed."""
+        self._setting = dict(self.spectrograph.describe())
+        follow = getattr(self.detector, "follow_spectrograph", None)
+        if callable(follow):             # simulation only: the mock follows the mock
+            follow(self._setting.get("grooves_per_mm"), self._setting.get("center_nm"))
+        return dict(self._setting)
+
+    def gratings(self) -> list[dict]:
+        with self._lock:
+            self.connect()
+            return list(self.spectrograph.list_gratings())
+
+    def setting(self) -> dict:
+        """Grating, groove density, blaze, centre and slit, as last read."""
+        with self._lock:
+            self.connect()
+            return dict(self._setting)
+
+    def set_grating(self, index: int) -> dict:
+        """Turn the turret. Blocking: a turret takes seconds."""
+        with self._lock:
+            self.connect()
+            t0 = time.perf_counter()
+            self.spectrograph.set_grating(int(index))
+            setting = self._refresh_setting()
+            logger.notice(
+                f"[Raman] grating {setting.get('grating')} "
+                f"({setting.get('grooves_per_mm')} l/mm) in {time.perf_counter() - t0:.1f} s"
+            )
+            return setting
+
+    def set_center_wavelength_nm(self, value_nm: float) -> dict:
+        """Rotate the grating to this centre wavelength. Blocking."""
+        with self._lock:
+            self.connect()
+            self.spectrograph.set_center_wavelength_nm(float(value_nm))
+            setting = self._refresh_setting()
+            logger.notice(f"[Raman] centre wavelength {setting.get('center_nm'):.3f} nm")
+            return setting
+
+    # ---------- calibration ----------
+    @property
+    def calibration(self) -> SpectralCalibration | None:
+        return self._calibration
+
+    def set_calibration(self, calibration: SpectralCalibration | None) -> None:
+        with self._lock:
+            self._calibration = calibration
+
+    def load_calibration(self, path: str) -> SpectralCalibration:
+        """Read a calibration file for the current detector and setting.
+
+        Checked against the detector's pixel count straight away: a table made
+        for another camera or another binning is refused here, not discovered
+        later as a silently wrong axis. Returned, not installed: the caller
+        decides when it takes effect.
+        """
+        with self._lock:
+            self.connect()
+            setting = self._setting or {}
+            return SpectralCalibration.from_file(
+                path,
+                grating=setting.get("grating"),
+                center_nm=setting.get("center_nm"),
+                grooves_per_mm=setting.get("grooves_per_mm"),
+                n_pixels=int(self.detector.spectral_pixels),
+            )
+
+    def spectral_axis(self) -> SpectralAxis:
+        """The axis spectra are labelled with at the current setting."""
+        with self._lock:
+            self.connect()
+            setting = self._setting or {}
+            return spectral_axis(
+                int(self.detector.spectral_pixels),
+                self._calibration,
+                setting.get("grating"),
+                setting.get("center_nm"),
+            )
+
+    # ---------- detector ----------
+    def set_detector_rows(self, row_start: int, row_count: int) -> None:
+        """The band of sensor rows summed into a spectrum; 0 rows = full height."""
+        with self._lock:
+            self._rows = (max(0, int(row_start)), max(0, int(row_count)))
+
+    def configure(self, exposure_ms: float) -> None:
+        """Send the exposure and the row band to the detector, if they changed.
+
+        Called by acquire_spectrum(); called ahead of it when the state is about
+        to be recorded, so the record describes the acquisition to come rather
+        than whatever the live view last used.
+        """
+        exposure_ms = max(0.0, float(exposure_ms))
+        with self._lock:
+            self.connect()
+            wanted = (exposure_ms, self._rows)
+            if self._configured != wanted:
+                self.detector.configure_spectrum(exposure_ms, *self._rows)
+                self._configured = wanted
+
+    def acquire_spectrum(self, exposure_ms: float, averages: int = 1, cancel=None) -> RamanSpectrum:
+        """`averages` exposures, averaged: counts per exposure, comparable across settings.
+
+        `cancel` (a threading.Event) cuts the acquisition short from any thread:
+        AcquisitionAborted is raised and nothing is returned -- not even the
+        exposures already averaged, which would be a spectrum of fewer
+        exposures than asked for. Any other failure drops the detector's
+        connection, so the next spectrum starts from a freshly opened camera
+        rather than one left mid-acquisition.
+        """
+        exposure_ms = max(0.0, float(exposure_ms))
+        averages = max(1, int(averages))
+
+        with self._lock:
+            self.configure(exposure_ms)
+
+            total = None
             try:
-                device.disconnect()
-            except Exception as e:
-                logger.debug(f"[Raman] disconnecting {type(device).__name__} failed: {e}")
+                for _ in range(averages):
+                    if cancel is not None and cancel.is_set():
+                        raise AcquisitionAborted("stopped between two exposures")
+                    frame = np.asarray(self.detector.acquire_spectrum(cancel=cancel), dtype=np.float64)
+                    total = frame if total is None else total + frame
+            except AcquisitionAborted:
+                raise
+            except Exception:
+                try:
+                    self.detector.disconnect()
+                except Exception as e:
+                    logger.debug(f"[Raman] detector would not close after a failure: {e}")
+                self._configured = None
+                logger.warning("[Raman] acquisition failed; the detector will be re-opened on the next one.")
+                raise
+            values = (total / averages).astype(np.float32)
 
-    # ---------- settings ----------
-    def set_center_wavelength_nm(self, value_nm: float) -> None:
-        self.spectrograph.set_center_wavelength_nm(float(value_nm))
+            axis = self.spectral_axis()
+            if axis.values.size != values.size:
+                raise RuntimeError(
+                    f"the detector returned {values.size} values for an axis of "
+                    f"{axis.values.size}: the detector geometry changed under the axis"
+                )
 
-    def set_grating(self, index: int) -> None:
-        self.spectrograph.set_grating(int(index))
-
-    def set_exposure_ms(self, exposure_ms: float) -> None:
-        params = self.camera.get_parameters()
-        params.exposure_ms = float(exposure_ms)
-        self.camera.set_parameters(params)
-
-    # ---------- acquisition ----------
-    def acquire_spectrum(self, exposure_ms: float | None = None):
-        """Return (wavelengths_nm, intensities) for one exposure.
-
-        The camera frame is binned along the slit, which is the sensor's *rows*:
-        a spectrograph disperses across the columns, so summing rows is what
-        turns an image into a spectrum. A 1D camera is taken as already binned.
-        """
-        self.connect()
-
-        if exposure_ms is not None:
-            self.set_exposure_ms(exposure_ms)
-
-        frame = np.asarray(self.camera.snap(), dtype=np.float64)
-
-        if frame.ndim == 1:
-            intensities = frame
-        elif frame.ndim == 2:
-            intensities = self._bin_slit_rows(frame)
-        else:
-            raise ValueError(f"Unexpected camera frame with shape {frame.shape}")
-
-        wavelengths = self.spectrograph.wavelength_axis_nm(
-            n_pixels=intensities.size,
-            pixel_size_um=self.pixel_size_um,
+        return RamanSpectrum(
+            values=values,
+            axis=axis,
+            exposure_ms=exposure_ms,
+            averages=averages,
+            acquired_at=time.time(),
         )
-        return wavelengths, intensities
 
-    def _bin_slit_rows(self, frame: np.ndarray) -> np.ndarray:
-        """Sum the sensor rows that carry signal.
-
-        A window keeps the read noise of the unlit rows out of the spectrum;
-        raman.bin_rows = 0 means "use the whole height".
-        """
-        height = frame.shape[0]
-        bin_rows = int(CONFIG.raman.get("bin_rows", 0) or 0)
-
-        if bin_rows <= 0 or bin_rows >= height:
-            return frame.sum(axis=0)
-
-        centre = height // 2
-        half = max(1, bin_rows // 2)
-        lo = max(0, centre - half)
-        hi = min(height, centre + half)
-        return frame[lo:hi, :].sum(axis=0)
+    # ---------- record ----------
+    def state(self) -> dict:
+        """Everything about how a spectrum was taken, for the file beside it."""
+        with self._lock:
+            self.connect()
+            axis = self.spectral_axis()
+            return {
+                "spectrograph": dict(self._setting or {}),
+                "detector": dict(self.detector.describe()),
+                "calibration": None if self._calibration is None else self._calibration.describe(),
+                "axis": axis.to_metadata(),
+                "rows_requested": [int(self._rows[0]), int(self._rows[1])],
+            }

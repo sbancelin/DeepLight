@@ -17,6 +17,7 @@ from .main_window_design import (
 )
 from .resources import icon_path
 from .managers.Acquisition_Manager import AcquisitionManager
+from .managers.Bipd_Manager import BipdManager
 from .managers.Field_Correction import FieldCorrection
 from .managers.Frame_Builder import analog_pixel_ceiling, saturated_fraction
 from .managers.Hardware_Manager import HardwareManager
@@ -26,6 +27,7 @@ from .managers.Scan_manager import ScanManager
 from .managers.Scan_Types import image_rows_by_axis
 from .managers.Snapshot import render_snapshot
 from .managers.Settings_Manager import SettingsManager
+from .managers.Spectral_Calibration import SpectralCalibration
 from .managers.Stitching_Manager import StitchingManager
 from .managers.Spectro_Manager import SpectroManager
 from .managers.Laser_Manager import LaserManager
@@ -116,6 +118,7 @@ class MainWindow(QMainWindow):
         self.ui.positioner_widget.set_settings_manager(self.settings_manager)
         self.ui.laser_widget.set_settings_manager(self.settings_manager)
         self.ui.spectro_panel_widget.set_settings_manager(self.settings_manager)
+        self.ui.bipd_widget.set_settings_manager(self.settings_manager)
 
         self.setDockOptions(
             QMainWindow.AnimatedDocks |
@@ -172,7 +175,6 @@ class MainWindow(QMainWindow):
         # --- Spectro UI throttling ---
         self._pending_brillouin_image = None
         self._pending_raman_spectrum = None
-        self._pending_raman_wavelengths = None
 
         self._spectro_brillouin_ui_timer = QTimer(self)
         self._spectro_brillouin_ui_timer.setInterval(500)
@@ -185,6 +187,16 @@ class MainWindow(QMainWindow):
         self._spectro_raman_ui_timer.start()
 
         self._connect_spectro_controls()
+
+        # Filtre BIPD (extinction du bras Brillouin) et coupe du spectre : deux
+        # panneaux à droite, affichés avec l'onglet Spectro.
+        self.bipd_manager = BipdManager(
+            hardware_manager=self.hardware,
+            frame_source=self.spectro_manager.acquire_brillouin_frame,
+            parent=self,
+        )
+        self._bipd_resume_live_params = None
+        self._connect_bipd_controls()
 
         self._rec_saving_active = False
         # Pour les notices [Acquisition] Started/Finished/Stopped manually :
@@ -306,10 +318,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(50, self.refresh_stitching_preview_grid)
         QTimer.singleShot(0, self.refresh_depth_compensation)
 
-        # Compensateur en linéaire au démarrage : c'est l'état dans lequel une
-        # série P-SHG a du sens, et un état connu vaut mieux que celui où la
-        # session précédente a laissé la lame. No-op si la λ/4 est absente.
-        QTimer.singleShot(200, lambda: self.ui.positioner_widget.apply_compensator("linear"))
+        # λ/4 en linéaire au démarrage : c'est l'état dans lequel une série
+        # P-SHG a du sens, et un état connu vaut mieux que celui où la session
+        # précédente a laissé la lame. No-op si la λ/4 est absente.
+        QTimer.singleShot(200, lambda: self.ui.positioner_widget.apply_polarization_state("linear"))
 
         self._visualizer_flush_timer = QTimer(self)
         self._visualizer_flush_timer.setInterval(250)
@@ -344,7 +356,6 @@ class MainWindow(QMainWindow):
     def _clear_spectro_ui_buffers(self):
         self._pending_brillouin_image = None
         self._pending_raman_spectrum = None
-        self._pending_raman_wavelengths = None
     
     def _connect_spectro_controls(self):
         sp = self.ui.spectro_panel_widget
@@ -381,14 +392,98 @@ class MainWindow(QMainWindow):
         sw.combo_brillouin_binning.currentIndexChanged.connect(self._on_brillouin_acq_params_changed)
         sw.spin_brillouin_exposure_ms.valueChanged.connect(sp.set_brillouin_exposure_ms)
 
-        # --- Raman mock controls ---
+        # --- Raman controls ---
         sw.button_raman_snap.clicked.connect(self._on_raman_snap_clicked)
         sw.button_raman_live.clicked.connect(self._on_raman_live_clicked)
         sw.button_raman_stop.clicked.connect(self._on_spectro_stop_clicked)
         sw.spin_raman_exposure_ms.valueChanged.connect(sp.set_raman_exposure_ms)
+        sw.spin_raman_averages.valueChanged.connect(sp.set_raman_averages)
+        sw.spin_raman_exposure_ms.valueChanged.connect(self._on_raman_acq_params_changed)
+        sw.spin_raman_averages.valueChanged.connect(self._on_raman_acq_params_changed)
+        sw.sigRamanGratingRequested.connect(lambda index: sm.move_raman_spectrograph(grating=index))
+        sw.sigRamanCenterRequested.connect(lambda nm: sm.move_raman_spectrograph(center_nm=nm))
+        sm.sigRamanSpectrographChanged.connect(self._on_raman_spectrograph_changed)
+        sm.sigRamanSpectrographBusy.connect(sw.set_raman_spectrograph_busy)
+
+        # Settings du tab spectro : bande de lignes et calibration vont à la
+        # chaîne Raman ; un fichier de calibration est vérifié par elle, seule
+        # à connaître le nombre de pixels et le réglage courant.
+        sp.sigRamanSettingsChanged.connect(self._apply_raman_settings)
+        sp.raman_calibration_loader = self._load_raman_calibration
+        self._apply_raman_settings(sp.get_raman_settings())
+
+    def _connect_bipd_controls(self):
+        sw = self.ui.spectro_widget
+        sm = self.spectro_manager
+        bm = self.bipd_manager
+        bipd = self.ui.bipd_widget
+        cut = self.ui.spectrum_cut_widget
+
+        bipd.set_manager(bm)
+        bipd.attach_image_view(sw.brillouin_image_view)
+        cut.set_image_view(sw.brillouin_image_view)
+
+        # Every Brillouin frame (snap, live, map) feeds the cut and the border
+        # level, unthrottled: each panel paces itself. The 2 Hz of the image
+        # display would be too slow to adjust the extinction by eye.
+        sm.sigImageUpdate.connect(cut.on_frame)
+        sm.sigImageUpdate.connect(bipd.on_frame)
+        # Frames of an extinction search are shown like any other.
+        bm.sigFrame.connect(self._on_spectro_image_update)
+        bm.sigFrame.connect(cut.on_frame)
+        bm.sigFrame.connect(bipd.on_frame)
+
+        bipd.sigOptimizeRequested.connect(self._on_bipd_optimize_requested)
+        bm.sigBusy.connect(self._on_bipd_busy_changed)
+
+        self.ui.tabWidget.currentChanged.connect(self._on_main_tab_changed)
+        self._on_main_tab_changed(self.ui.tabWidget.currentIndex())
+
+    @Slot(int)
+    def _on_main_tab_changed(self, index: int):
+        """The Brillouin cut and the BIPD panel only mean something on the Spectro tab."""
+        on_spectro = self.ui.tabWidget.widget(index) is self.ui.spectro_widget
+        for panel in (self.ui.spectrum_cut_panel, self.ui.bipd_panel):
+            panel.setVisible(on_spectro)
+        self.ui.right_panel_dock._refresh_scroll_area()
+
+    @Slot()
+    def _on_bipd_optimize_requested(self):
+        """Search the liquid-crystal voltage now, with the Spectro tab's camera settings."""
+        if self.spectro_manager.is_running():
+            logger.warning(
+                "[BIPD] a map is running: it re-optimises the extinction itself "
+                "if 'Re-optimise during maps' is on"
+            )
+            return
+        params = self.ui.spectro_widget.get_brillouin_parameters()
+
+        # The live view drives the same camera; the search takes its own frames
+        # at chosen moments, so the live pauses and resumes afterwards.
+        was_live = self.spectro_manager.is_brillouin_live_running()
+        if was_live:
+            self.spectro_manager.stop_live_brillouin()
+
+        if self.bipd_manager.optimize(params, self.ui.bipd_widget.get_settings()):
+            self._bipd_resume_live_params = params if was_live else None
+        elif was_live:
+            self.spectro_manager.start_live_brillouin(params)
+
+    @Slot(bool)
+    def _on_bipd_busy_changed(self, busy: bool):
+        if busy:
+            return
+        params, self._bipd_resume_live_params = self._bipd_resume_live_params, None
+        if params is not None and not self.spectro_manager.is_running():
+            # The camera settings may have been edited meanwhile: take the current ones.
+            self.spectro_manager.start_live_brillouin(self.ui.spectro_widget.get_brillouin_parameters())
 
     @Slot(bool, bool)
     def _on_spectro_mode_changed(self, brillouin: bool, raman: bool):
+        if bool(raman):
+            # Connects in a worker and fills the grating list and the centre.
+            self.spectro_manager.refresh_raman_spectrograph()
+
         if not bool(brillouin):
             return
 
@@ -457,6 +552,8 @@ class MainWindow(QMainWindow):
 
             brillouin_params = self.ui.spectro_widget.get_brillouin_parameters()
             raman_params = self.ui.spectro_widget.get_raman_parameters()
+            # Recorded with the map, never computed with: see Settings.
+            raman_params["excitation_nm"] = self.ui.spectro_panel_widget.get_raman_settings()["excitation_nm"]
 
             self._clear_spectro_ui_buffers()
 
@@ -468,25 +565,43 @@ class MainWindow(QMainWindow):
 
             self._open_shutter_for_spectro()
 
+            # A connected BIPD filter is recorded with the map, and re-optimised
+            # during it if asked; None when no filter is connected.
+            extinction_guard = None
+            if modes.get("brillouin", False):
+                extinction_guard = self.bipd_manager.make_map_guard(
+                    self.ui.bipd_widget.get_settings(),
+                    enabled=self.ui.bipd_widget.auto_lc_enabled(),
+                )
+
             self.spectro_manager.start_mapping(
                 scan_parameters=acquisition_params,
                 modes=modes,
                 brillouin_params=brillouin_params,
                 raman_params=raman_params,
                 save_params=save_params,
+                extinction_guard=extinction_guard,
             )
 
-            try:
-                self.ui.global_progress_widget.start_task("Spectro")
-            except Exception as e:
-                logger.debug(f"[MainWindow] ignored exception: {e}")
+            # start_mapping reports a refusal through sigFailed, which has
+            # already reset the panels and closed the shutter by now: the
+            # progress bar must not be started for a run that never began.
+            if self.spectro_manager.is_running():
+                try:
+                    self.ui.global_progress_widget.start_task("Spectro")
+                except Exception as e:
+                    logger.debug(f"[MainWindow] ignored exception: {e}")
         except Exception as e:
             self._on_spectro_status_changed(f"Spectro start failed: {e}")
             self.ui.spectro_panel_widget.set_running(False)
             self.ui.spectro_widget.set_running(False)
+            self._close_shutter_after_spectro()
 
     @Slot()
     def _on_spectro_stop_clicked(self):
+        mapping = self.spectro_manager.is_running()
+        already_stopping = self.spectro_manager.is_stopping()
+
         try:
             self.spectro_manager.stop_mapping()
         except Exception as e:
@@ -497,14 +612,31 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
-        try:
-            self.positioner_manager.stop_all()
-        except Exception as e:
-            logger.debug(f"[MainWindow] ignored exception: {e}")
+        # A map brings the stage back to its starting position itself: halting
+        # the stage under it cancelled that return, which then waited 30 s for a
+        # position that never came and left the stage off its origin. So the
+        # stage is only halted when no map is driving it -- or on a second Stop
+        # while the map is on its way back, the request to leave it where it is.
+        if not mapping or already_stopping:
+            try:
+                self.positioner_manager.stop_all()
+            except Exception as e:
+                logger.debug(f"[MainWindow] ignored exception: {e}")
 
         self._clear_spectro_ui_buffers()
 
+        # The laser leaves the sample at once, whatever the stage is doing.
         self._close_shutter_after_spectro()
+
+        if mapping:
+            # The map ends on its own once the stage is back, and is saved as
+            # far as it went (_on_spectro_acquisition_finished). The panels stay
+            # "running" until then, so no new map can take the stage meanwhile.
+            self._on_spectro_status_changed(
+                "Stage halted where it is." if already_stopping
+                else "Stopping: returning the stage to its starting position..."
+            )
+            return
 
         try:
             self.ui.spectro_panel_widget.set_running(False)
@@ -555,6 +687,14 @@ class MainWindow(QMainWindow):
         if confirm.exec() != QMessageBox.Ok:
             return
 
+        # The live view drives the same camera from its own thread. Two
+        # overlapping acquisitions on one PICam handle leave the camera armed
+        # and unusable until it is reconnected, so the live view stops first and
+        # is put back afterwards -- rather than the operator having to know that.
+        was_live = self.spectro_manager.is_brillouin_live_running()
+        if was_live:
+            self.spectro_manager.stop_live_brillouin()
+
         folder = self.ui.save_widget.folder_line_edit.text().strip()
         if not folder:
             logger.warning("[Brillouin] set a save folder first.")
@@ -575,6 +715,7 @@ class MainWindow(QMainWindow):
 
         self.hardware.set_shutter(False)
         sw.label_brillouin_dark.setText(f"0/{self.BRILLOUIN_DARK_FRAMES}")
+        QGuiApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.ui.global_progress_widget.start_task("Brillouin dark", total=self.BRILLOUIN_DARK_FRAMES)
         except Exception as e:
@@ -717,6 +858,55 @@ class MainWindow(QMainWindow):
             logger.error(f"[Spectro] Raman live failed: {e}")
             self._on_spectro_status_changed("Error")
 
+    @Slot()
+    def _on_raman_acq_params_changed(self, *_args):
+        """Exposure or averages edited: the live view picks them up at its next spectrum."""
+        if self.spectro_manager.is_raman_live_running():
+            self.spectro_manager.update_raman_live_params(self.ui.spectro_widget.get_raman_parameters())
+
+    @Slot(object)
+    def _on_raman_spectrograph_changed(self, info):
+        info = dict(info or {})
+        self.ui.spectro_widget.set_raman_spectrograph(info)
+        axis = dict(info.get("axis") or {})
+        if axis.get("n_pixels"):
+            self.ui.spectro_panel_widget.set_raman_spectral_pixels(int(axis["n_pixels"]))
+        setting = dict(info.get("setting") or {})
+        if setting:
+            self.ui.spectro_widget.set_raman_status(
+                f"grating {setting.get('grating')}, {float(setting.get('center_nm', 0.0)):.2f} nm"
+            )
+
+    @Slot(dict)
+    def _apply_raman_settings(self, settings: dict):
+        """Detector rows and calibration from the spectro Settings, to the Raman chain."""
+        raman = self.hardware.raman_spectrometer()
+        if raman is None:
+            return
+        settings = dict(settings or {})
+        raman.set_detector_rows(int(settings.get("row_start", 0) or 0),
+                                int(settings.get("row_count", 0) or 0))
+
+        calibration = None
+        if settings.get("calibration"):
+            try:
+                calibration = SpectralCalibration.from_dict(settings["calibration"])
+            except Exception as e:
+                logger.warning(f"[Raman] saved calibration ignored ({e}); spectra on detector pixels")
+        raman.set_calibration(calibration)
+
+        # The axis may have changed (a calibration now applies, or no longer):
+        # the Raman banner says so, without waiting for the next spectrum.
+        if self.ui.spectro_panel_widget.get_modes().get("raman", False):
+            self.spectro_manager.refresh_raman_spectrograph()
+
+    def _load_raman_calibration(self, path: str):
+        """Read and check a calibration file; installed only when Settings are accepted."""
+        raman = self.hardware.raman_spectrometer()
+        if raman is None:
+            raise RuntimeError(self.hardware.raman_unavailable_reason() or "no Raman spectrometer")
+        return raman.load_calibration(path)
+
     @Slot(str)
     def _on_spectro_status_changed(self, text: str):
         modes = self.ui.spectro_panel_widget.get_modes()
@@ -746,29 +936,23 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_spectro_spectrum_update(self, spectrum):
-        try:
-            wavelengths = self.spectro_manager.dataset.get("raman_wavelengths", None)
-            if wavelengths is None:
-                return
-
-            self._pending_raman_spectrum = np.asarray(spectrum, dtype=np.float32)
-            self._pending_raman_wavelengths = np.asarray(wavelengths, dtype=np.float32)
-        except Exception as e:
-            self._on_spectro_status_changed(f"Spectrum buffer failed: {e}")
+        # A RamanSpectrum carries its own axis: nothing to look up elsewhere.
+        # Only the latest is kept; the UI timer paints it at its own pace.
+        self._pending_raman_spectrum = spectrum
 
     @Slot()
     def _flush_pending_raman_spectrum(self):
-        if self._pending_raman_spectrum is None or self._pending_raman_wavelengths is None:
+        spectrum, self._pending_raman_spectrum = self._pending_raman_spectrum, None
+        if spectrum is None:
             return
 
         try:
-            spectrum = self._pending_raman_spectrum
-            wavelengths = self._pending_raman_wavelengths
-
-            self._pending_raman_spectrum = None
-            self._pending_raman_wavelengths = None
-
-            self.ui.spectro_widget.set_raman_spectrum(wavelengths, spectrum)
+            self.ui.spectro_widget.set_raman_spectrum(
+                spectrum.axis.values,
+                spectrum.values,
+                unit=spectrum.axis.unit,
+                note=spectrum.axis.note,
+            )
         except Exception as e:
             self._on_spectro_status_changed(f"Raman display failed: {e}")
 
@@ -843,16 +1027,24 @@ class MainWindow(QMainWindow):
 
         self._close_shutter_after_spectro()
 
+        # A stopped map arrives here too, with the points it reached.
+        valid = dataset.get("pixel_valid") if isinstance(dataset, dict) else None
+        total = int(np.asarray(valid).size) if valid is not None else len(self.spectro_manager.pixel_list)
+        acquired = int(np.count_nonzero(valid)) if valid is not None else total
+        complete = acquired == total
+
         try:
-            total = len(self.spectro_manager.pixel_list)
-            self.ui.spectro_panel_widget.set_progress(total, total)
+            self.ui.spectro_panel_widget.set_progress(acquired, total)
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
-            self.ui.global_progress_widget.finish_task("Done")
+            self.ui.global_progress_widget.finish_task("Done" if complete else "Stopped")
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        if not complete:
+            logger.notice(f"[Spectro] map stopped: {acquired} of {total} points acquired, saved as such")
 
         try:
             save_params = self.ui.spectro_panel_widget.get_save_parameters()
@@ -1177,7 +1369,16 @@ class MainWindow(QMainWindow):
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
         try:
-            self.spectro_manager.stop_all_live()
+            # Before the spectro threads: an extinction search takes its frames
+            # through them. Cut short, and its thread waited for.
+            self.bipd_manager.shutdown()
+        except Exception as e:
+            logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        try:
+            # Stops the live views and any map, and waits for their threads:
+            # an exposure in progress has to end before its thread can go.
+            self.spectro_manager.shutdown()
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
 
@@ -1856,9 +2057,9 @@ class MainWindow(QMainWindow):
         """How the polarisation chain is set, for the next save.
 
         The azimuths a scan visits are meaningless without the plate angle they
-        are counted from, and a series taken through a compensator left on a
-        circular position is not linear at the sample -- neither shows up in
-        the images.
+        are counted from, and a series taken with the quarter-wave plate left
+        on a circular position is not linear at the sample -- neither shows up
+        in the images.
         """
         context = {}
         try:
@@ -1869,11 +2070,11 @@ class MainWindow(QMainWindow):
             logger.debug(f"[Save] half-wave zero unavailable: {e}")
 
         try:
-            state = self.positioner_manager.compensator_state()
-            context["compensator"] = state if state else "unknown"
-            context["compensator_deg"] = float(self.positioner_manager.get_rel_pos("p4"))
+            state = self.positioner_manager.quarter_wave_state()
+            context["quarter_wave_state"] = state if state else "unknown"
+            context["quarter_wave_deg"] = float(self.positioner_manager.get_rel_pos("p4"))
         except Exception as e:
-            logger.debug(f"[Save] compensator state unavailable: {e}")
+            logger.debug(f"[Save] quarter-wave state unavailable: {e}")
 
         return context
 

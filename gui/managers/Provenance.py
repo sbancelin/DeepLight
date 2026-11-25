@@ -193,8 +193,9 @@ def acquisition_provenance(
         "polarization_angles_deg": polarization_angles_deg(scan_params),
         # How the chain was set up, as opposed to which angles it visited. An
         # azimuth means nothing without the plate angle it was counted from,
-        # and a P-SHG series taken through a mis-set compensator is not linear
-        # at the sample -- neither is visible in the images.
+        # and a P-SHG series taken with the quarter-wave plate on a circular
+        # position is not linear at the sample -- neither is visible in the
+        # images.
         "polarization": dict(polarization or {}),
         "detectors": list((scan_params or {}).get("detector_channels", []) or []),
         # Which dark/flat reference was subtracted, if any: without it a

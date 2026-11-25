@@ -116,6 +116,14 @@ class SaveManager:
     #: extra levels outweighs what a viewer saves by not decoding it whole.
     PYRAMID_MIN_SIDE_PX = 2048
 
+    #: Past this, a classic TIFF can no longer address its own data and BigTIFF
+    #: is the only option. Same threshold tifffile uses when it decides by
+    #: itself, so a file written here and one written by imwrite() agree.
+    #: It matters which side of it a file lands on: ImageJ's own TIFF reader
+    #: does not open BigTIFF at all, and neither it nor a tiled layout is worth
+    #: imposing on a file small enough not to need them.
+    BIGTIFF_THRESHOLD_BYTES = 2 ** 32 - 2 ** 25
+
     @staticmethod
     def _pyramid_levels(height: int, width: int, arr=None):
         """Successive half-resolution copies, largest first.
@@ -131,6 +139,23 @@ class SaveManager:
             current = current[..., ::2, ::2]
             levels.append(current)
         return levels
+
+    def _warn_if_bigtiff(self, label: str, nbytes: int):
+        """Say so before a write that will silently become a BigTIFF.
+
+        tifffile changes format on its own past the 4 GB a classic TIFF can
+        address. The file stays valid and Fiji reads it through Bio-Formats, but
+        ImageJ's own TIFF reader does not open BigTIFF at all -- which looks
+        like a corrupt file rather than a format one. Cheaper to read it in the
+        log than to work it out from the file afterwards.
+        """
+        if int(nbytes) <= self.BIGTIFF_THRESHOLD_BYTES:
+            return
+        logger.warning(
+            f"[{label}] {int(nbytes) / 2**30:.1f} GiB exceeds what a classic TIFF can "
+            "address: written as BigTIFF. Fiji opens it through Bio-Formats; ImageJ's "
+            "own TIFF reader does not. Use OME-Zarr to keep the file readable everywhere."
+        )
 
     def _make_omero_metadata(self, name: str, channels: list[str]) -> dict:
         return {
@@ -260,15 +285,34 @@ class SaveManager:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, default=str)
 
+    @staticmethod
+    def _points_acquired(dataset: dict) -> tuple[int, int]:
+        """(points acquired, points planned) of a spectro map.
+
+        Points are acquired in order, so the first `acquired` rows of the
+        acquisition order are exactly the ones that hold data. A map stopped
+        part way -- or whose last point was cut short -- has fewer.
+        """
+        valid = dataset.get("pixel_valid")
+        order = dataset.get("acquisition_order_indices")
+        planned = len(order) if order is not None else 0
+        if valid is None:
+            return planned, planned
+        return int(np.count_nonzero(np.asarray(valid))), int(np.asarray(valid).size)
+
     def _write_positions_csv(self, path: str, dataset: dict) -> None:
         order = np.asarray(dataset.get("acquisition_order_indices", []), dtype=np.int32)
         pos_um = np.asarray(dataset.get("acquisition_order_positions_um", []), dtype=np.float32)
+        acquired, _planned = self._points_acquired(dataset)
 
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["linear_index", "t_index", "z_index", "y_index", "x_index", "x_um", "y_um", "z_um"])
 
-            n = min(len(order), len(pos_um))
+            # Only the points that hold data: the rows past them were allocated
+            # for the whole map and, in a map stopped part way, are zeros that
+            # would read as points at the origin.
+            n = min(len(order), len(pos_um), acquired)
             for i in range(n):
                 row_idx = order[i]
                 if len(row_idx) == 4:
@@ -466,20 +510,33 @@ class SaveManager:
 
         levels = self._pyramid_levels(arr.shape[-2], arr.shape[-1], arr)
 
+        # A pyramid is only useful with tiles, and tiles and BigTIFF are only
+        # worth their cost on a mosaic big enough to need them. Forcing both on
+        # every mosaic put small ones out of reach of ImageJ's own TIFF reader,
+        # which opens neither, and padded a 50 px mosaic out to a full 256 px
+        # tile. So: strips and a classic TIFF unless the data says otherwise.
+        pyramidal = bool(levels)
+        total_bytes = int(arr.nbytes) + sum(int(level.nbytes) for level in levels)
+        bigtiff = total_bytes > self.BIGTIFF_THRESHOLD_BYTES
+        layout = {"tile": (256, 256)} if pyramidal else {}
+
+        if bigtiff:
+            logger.info(
+                f"[Mosaic] {total_bytes / 2**30:.1f} GiB: written as BigTIFF, which "
+                "Fiji reads through Bio-Formats but ImageJ's own TIFF reader does not."
+            )
+
         with self._lock:
-            # BigTIFF unconditionally: a mosaic is exactly the thing that walks
-            # past the 4 GB the classic format can address, and finding that out
-            # is a failed write at the end of a long run.
             mosaic_metadata = {"axes": axes}
             mosaic_metadata.update(self._ome_physical_size(scan_params))
 
-            with tifffile.TiffWriter(path, bigtiff=True, ome=True) as tif:
+            with tifffile.TiffWriter(path, bigtiff=bigtiff, ome=True) as tif:
                 tif.write(
                     arr,
                     photometric="minisblack",
                     metadata=mosaic_metadata,
                     subifds=len(levels),
-                    tile=(256, 256),
+                    **layout,
                 )
                 # Halved copies, so a viewer can pan a large mosaic without
                 # decoding it whole.
@@ -488,7 +545,7 @@ class SaveManager:
                         level,
                         photometric="minisblack",
                         subfiletype=1,
-                        tile=(256, 256),
+                        **layout,
                     )
 
             self._write_sidecar(
@@ -700,6 +757,7 @@ class SaveManager:
             }
             ome_metadata.update(self._ome_physical_size(scan_params))
 
+            self._warn_if_bigtiff("REC", stack.nbytes)
             tifffile.imwrite(
                 path,
                 stack,  # (T,C,Z,Y,X)
@@ -765,16 +823,30 @@ class SaveManager:
                 )
                 raw.attrs["Brillouin_type"] = "Raw_data"
                 raw.attrs["Dimensions"] = "T, Z, Y, X, camera_y, camera_x"
+                # No "Frequency" abscissa: the Brillouin frequency of each
+                # camera column comes from the analysis, not the acquisition.
+                # (It used to be filled with the *Raman* wavelengths whenever
+                # the two lengths happened to match -- another axis entirely.)
 
-                wavelengths = np.asarray(
-                    dataset.get("raman_wavelengths", []), dtype=np.float32
+            if "raman_spectra" in dataset:
+                # Raman beside the Brillouin tree, not inside it: HDF5-BLS has
+                # no vocabulary for it, and a reader of the standard should
+                # find exactly the standard under /Brillouin.
+                raman = h5.create_group("Raman")
+                spectra = np.asarray(dataset["raman_spectra"], dtype=np.float32)
+                if spectra.ndim == 4:
+                    spectra = spectra[np.newaxis]
+                data = raman.create_dataset(
+                    "spectra", data=spectra, compression="gzip", compression_opts=4
                 )
-                if wavelengths.size == arr.shape[-1]:
-                    # Abscissa_<dim_start>_<dim_end>: the spectral axis is the
-                    # last dimension of the raw data, hence 5 to 5.
-                    axis = measure.create_dataset("Frequency", data=wavelengths)
-                    axis.attrs["Brillouin_type"] = "Abscissa_5_5"
-                    axis.attrs["Unit"] = "nm"
+                data.attrs["Dimensions"] = "T, Z, Y, X, spectral"
+                axis_block = self._raman_axis_block(dataset)
+                axis = raman.create_dataset(
+                    "axis", data=np.asarray(axis_block.get("values", []), dtype=np.float64)
+                )
+                axis.attrs["Unit"] = str(axis_block.get("unit", "pixel"))
+                axis.attrs["Note"] = str(axis_block.get("note", ""))
+                self._write_h5_attrs(raman, "RAMAN", dict((dataset.get("metadata") or {}).get("raman") or {}))
 
             positions = self._positions_array(dataset)
             if positions.size:
@@ -793,7 +865,7 @@ class SaveManager:
             measure.attrs["MEASURE.Serpentine"] = str(bool(metadata.get("serpentine", False)))
 
             for section in ("acquisition_parameters", "brillouin_parameters",
-                            "raman_parameters", "save_parameters", "modalities"):
+                            "raman_parameters", "save_parameters", "modalities", "bipd"):
                 self._write_h5_attrs(measure, section, metadata.get(section, {}))
 
             # Same provenance as the other formats, flattened into the attribute
@@ -815,6 +887,60 @@ class SaveManager:
                 group.attrs[name] = str(value)
             else:
                 group.attrs[name] = json.dumps(value, default=str)
+
+    @staticmethod
+    def _raman_axis_block(dataset: dict) -> dict:
+        """Unit and value of every spectral plane of a Raman map ({} without one).
+
+        Detector pixels unless a calibration applied when the map started; the
+        note says which, and why.
+        """
+        if "raman_spectra" not in dataset:
+            return {}
+        n_pixels = int(np.asarray(dataset["raman_spectra"]).shape[-1])
+        values = dataset.get("raman_axis")
+        unit = str(dataset.get("raman_axis_unit", "pixel") or "pixel")
+        if values is None:
+            values, unit = np.arange(n_pixels, dtype=np.float64), "pixel"
+        state = dict((dataset.get("metadata") or {}).get("raman") or {})
+        note = str(dict(state.get("axis") or {}).get("note", "") or "")
+        return {
+            "unit": unit,
+            "n_pixels": n_pixels,
+            "note": note,
+            "values": [float(v) for v in np.asarray(values, dtype=np.float64)],
+        }
+
+    @staticmethod
+    def _spectro_steps_um(metadata_block: dict) -> tuple:
+        """(x, y, z) step of a spectro map in µm, None where it is unknown or zero."""
+        params = dict((metadata_block or {}).get("acquisition_parameters") or {})
+
+        def step(key):
+            try:
+                value = float(params.get(key) or 0.0)
+            except (TypeError, ValueError):
+                return None
+            return value if value > 0.0 else None
+
+        return step("step_x_um"), step("step_y_um"), step("step_z_um")
+
+    @staticmethod
+    def _write_raman_axis_csv(path: str, axis_block: dict) -> None:
+        """One line per spectral plane: its index and its value.
+
+        Also a valid calibration file for Spectral_Calibration, should the
+        axis of one map ever be needed to label another.
+        """
+        unit = axis_block.get("unit", "pixel")
+        column = "wavelength_nm" if unit == "nm" else "pixel"
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(f"# unit = {unit}\n")
+            if axis_block.get("note"):
+                fh.write(f"# note = {axis_block['note']}\n")
+            fh.write(f"index,{column}\n")
+            for i, value in enumerate(axis_block.get("values") or []):
+                fh.write(f"{i},{value:.6f}\n" if unit == "nm" else f"{i},{int(round(value))}\n")
 
     @staticmethod
     def _positions_array(dataset: dict) -> np.ndarray:
@@ -849,15 +975,19 @@ class SaveManager:
                 metadata.json
                 positions.csv
                 brillouin.ome.tif   (when present)
-                raman.ome.tif       (when present)
+                raman.ome.tif       (when present: TCZYX, Z = spectral plane)
+                raman_axis.csv      (when Raman is present: value of each plane)
 
         OME-ZARR:
             <root>/
                 metadata.json
                 positions.csv
                 brillouin.zarr      (when present)
-                raman.zarr          (when present)
-                raman_wavelengths.npy (when Raman is present)
+                raman.zarr          (when present: t, spectral, z, y, x)
+                raman_axis.csv      (when Raman is present)
+
+        HDF5-BLS: one .h5, Brillouin under /Brillouin as the standard has it,
+        Raman under /Raman beside it.
         """
         os.makedirs(folder, exist_ok=True)
         fmt = self._norm_fmt(fmt)
@@ -880,6 +1010,7 @@ class SaveManager:
         os.makedirs(root_path, exist_ok=True)
 
         metadata_block = dict(dataset.get("metadata", {}) or {})
+        points_acquired, points_planned = self._points_acquired(dataset)
 
         metadata = {
             # The spectro grid has its own geometry below, so the provenance
@@ -888,34 +1019,50 @@ class SaveManager:
             "created": self._now_iso(),
             "comment": comment or "",
             "format_version": str(dataset.get("version", "spectro_mock")),
+            # A map stopped part way is saved as far as it went. The points it
+            # never reached -- including one whose exposure was cut short --
+            # hold zeros in the data files; positions.csv lists only the
+            # acquired ones, in acquisition order.
+            "points_acquired": points_acquired,
+            "points_planned": points_planned,
+            "complete": points_acquired == points_planned,
             "grid_shape": list(dataset.get("grid_shape", ())),
             "axis_order": list(dataset.get("axis_order", ())),
             "serpentine": bool(dataset.get("serpentine", False)),
             "modalities": dict(metadata_block.get("modalities", {}) or {}),
             "acquisition_parameters": dict(metadata_block.get("acquisition_parameters", {}) or {}),
             "brillouin_parameters": dict(metadata_block.get("brillouin_parameters", {}) or {}),
+            # The camera crop the frames were taken through: it sets the last two
+            # axes of the Brillouin array and how big the file is, so a dataset
+            # that does not state it cannot be read back without guessing.
+            "brillouin_roi": dict(metadata_block.get("brillouin_roi", {}) or {}),
             "raman_parameters": dict(metadata_block.get("raman_parameters", {}) or {}),
             "save_parameters": dict(metadata_block.get("save_parameters", {}) or {}),
-            "raman_wavelengths_nm": (
-                np.asarray(dataset.get("raman_wavelengths", []), dtype=np.float32).tolist()
-                if "raman_wavelengths" in dataset else []
-            ),
+            # Spectrograph setting, detector rows and binning, calibration and
+            # excitation, as they were for the whole map.
+            "raman": dict(metadata_block.get("raman", {}) or {}),
+            "raman_axis": self._raman_axis_block(dataset),
+            # BIPD filter state at the start and end of the map, and every
+            # automatic re-optimisation of its liquid crystal ({} without one).
+            "bipd": dict(metadata_block.get("bipd", {}) or {}),
             "data_files": {},
             "axis_interpretation": {
                 "brillouin_ome_tiff": {
-                    "axes": "TCZYX",
+                    "axes": "TZCYX",
                     "T": "repetition index (currently always 1 in spectro mock)",
-                    "C": "linear scan index within each XY serpentine plane",
-                    "Z": "mapping z index",
+                    "Z": "linear scan index within each XY serpentine plane"
+                         " (y * pixels_x + x); positions.csv gives its stage position",
+                    "C": "mapping z index",
                     "Y": "camera image y",
                     "X": "camera image x",
                 },
                 "raman_ome_tiff": {
-                    "axes": "ZYXS",
-                    "Z": "mapping z index",
+                    "axes": "TCZYX",
+                    "T": "repetition index",
+                    "C": "mapping z index",
+                    "Z": "spectral index: detector pixel, or wavelength via raman_axis.csv",
                     "Y": "mapping y index",
                     "X": "mapping x index",
-                    "S": "spectral samples",
                 },
             },
         }
@@ -935,10 +1082,10 @@ class SaveManager:
             if arr.ndim == 5:
                 arr = arr[np.newaxis]
             pt, pz, py, px, h, w = arr.shape
-            n_channels = py * px
+            n_points = py * px
 
             if fmt == "OME-TIFF":
-                stack = np.zeros((pt, n_channels, pz, h, w), dtype=np.float32)
+                stack = np.zeros((pt, n_points, pz, h, w), dtype=np.float32)
 
                 order = np.asarray(dataset.get("acquisition_order_indices", []), dtype=np.int32)
 
@@ -952,21 +1099,25 @@ class SaveManager:
                     if not (0 <= t_idx < pt and 0 <= z_idx < pz and 0 <= y_idx < py and 0 <= x_idx < px):
                         continue
 
-                    c_idx = int(y_idx * px + x_idx)
-                    stack[t_idx, c_idx, z_idx, :, :] = arr[t_idx, z_idx, y_idx, x_idx, :, :]
+                    point_idx = int(y_idx * px + x_idx)
+                    stack[t_idx, point_idx, z_idx, :, :] = arr[t_idx, z_idx, y_idx, x_idx, :, :]
 
                 out_name = "brillouin.ome.tif"
+                self._warn_if_bigtiff("Spectro", stack.nbytes)
+                # The grid point is the Z index, not a channel. The array and
+                # the page order are the same either way -- only the label
+                # changes -- but a map of 51x51 points declared as 2601
+                # channels is a file no viewer opens: Bio-Formats has to build
+                # 2601 Channel objects out of a 240 kB OME-XML, and ImageJ then
+                # has to make a 2601-channel composite out of the result. As
+                # 2601 Z slices it is an ordinary stack, and the OME-XML is
+                # 644 bytes. A reader that just takes the array back sees no
+                # difference at all.
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
                     stack,
                     photometric="minisblack",
-                    metadata={
-                        "axes": "TCZYX",
-                        "Channel": [
-                            {"Name": f"scan_idx_{i:04d}"}
-                            for i in range(n_channels)
-                        ],
-                    },
+                    metadata={"axes": "TZCYX"},
                 )
             else:
                 out_name = "brillouin.zarr"
@@ -993,16 +1144,15 @@ class SaveManager:
                     ],
                 }]
                 root.attrs["comment"] = comment or ""
-                root.attrs["raman_wavelengths_nm"] = (
-                    np.asarray(dataset.get("raman_wavelengths", []), dtype=np.float32).tolist()
-                    if "raman_wavelengths" in dataset else []
-                )
 
             metadata["data_files"]["brillouin"] = out_name
 
         # -------------------------
-        # Raman
-        # dataset["raman_spectra"] attendu en (Z, Y, X, L)
+        # Raman : un spectre par point de la carte.
+        # dataset["raman_spectra"] en (T, Z, Y, X, L), L = pixels spectraux.
+        # Écrit en cube image : XY = la zone balayée, et l'axe spectral en
+        # pile, pour qu'une carte s'ouvre comme une série d'images -- une
+        # par pixel spectral -- dans Fiji comme dans napari.
         # -------------------------
         if "raman_spectra" in dataset:
             arr = np.asarray(dataset["raman_spectra"], dtype=np.float32)
@@ -1010,37 +1160,67 @@ class SaveManager:
             if arr.ndim == 4:
                 arr = arr[np.newaxis]
 
+            step_x, step_y, step_z = self._spectro_steps_um(metadata_block)
+            axis_block = metadata["raman_axis"]
+
+            # Beside the cube in every format: the value of each spectral plane.
+            axis_csv = "raman_axis.csv"
+            self._write_raman_axis_csv(os.path.join(root_path, axis_csv), axis_block)
+            metadata["data_files"]["raman_axis"] = axis_csv
+
             if fmt == "OME-TIFF":
+                # (T, Z, Y, X, L) -> (T, C = mapping z, Z = spectral, Y, X).
+                # OME has no spectral axis; Z is the one a viewer scrolls
+                # through as a stack, which is what a hyperspectral map is.
+                cube = np.ascontiguousarray(np.moveaxis(arr, 4, 2))
                 out_name = "raman.ome.tif"
+                ome = {"axes": "TCZYX"}
+                if step_x:
+                    ome.update({"PhysicalSizeX": float(step_x), "PhysicalSizeXUnit": "µm"})
+                if step_y:
+                    ome.update({"PhysicalSizeY": float(step_y), "PhysicalSizeYUnit": "µm"})
+                self._warn_if_bigtiff("Spectro", cube.nbytes)
                 tifffile.imwrite(
                     os.path.join(root_path, out_name),
-                    arr,
+                    cube,
                     photometric="minisblack",
-                    metadata={"axes": "TZYXS"},
+                    metadata=ome,
                 )
             else:
+                # NGFF 0.4: time first, then one custom-typed axis, then space.
+                # The spectral axis is that custom axis -- named for what it is,
+                # rather than passed off as a spatial z.
+                cube = np.ascontiguousarray(np.moveaxis(arr, 4, 1))   # (T, L, Z, Y, X)
                 out_name = "raman.zarr"
                 zarr_path = os.path.join(root_path, out_name)
                 root = zarr.open_group(zarr_path, mode="w")
                 root.create_dataset(
                     "0",
-                    data=arr,
-                    shape=arr.shape,
-                    chunks=(1, 1, 1, 1, min(1024, arr.shape[-1])),
+                    data=cube,
+                    shape=cube.shape,
+                    chunks=(1, cube.shape[1], 1, min(32, cube.shape[3]), min(32, cube.shape[4])),
                     dtype=np.float32,
                     overwrite=True,
                 )
                 root.attrs["multiscales"] = [{
                     "version": "0.4",
-                    "datasets": [{"path": "0"}],
+                    "datasets": [{
+                        "path": "0",
+                        "coordinateTransformations": [{
+                            "type": "scale",
+                            "scale": [1.0, 1.0, float(step_z or 1.0),
+                                      float(step_y or 1.0), float(step_x or 1.0)],
+                        }],
+                    }],
                     "axes": [
                         {"name": "t", "type": "time"},
-                        {"name": "z", "type": "space"},
-                        {"name": "y", "type": "space"},
-                        {"name": "x", "type": "space"},
-                        {"name": "lambda", "type": "spectral"},
+                        {"name": "spectral", "type": "spectral"},
+                        {"name": "z", "type": "space", "unit": "micrometer"},
+                        {"name": "y", "type": "space", "unit": "micrometer"},
+                        {"name": "x", "type": "space", "unit": "micrometer"},
                     ],
                 }]
+                root.attrs["raman_axis"] = axis_block
                 root.attrs["comment"] = comment or ""
 
             metadata["data_files"]["raman"] = out_name

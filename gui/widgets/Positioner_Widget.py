@@ -1,10 +1,10 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout, QLabel, QLineEdit, QMessageBox, QSizePolicy, QCheckBox, QApplication)
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout, QLabel, QLineEdit, QMessageBox, QSizePolicy, QCheckBox, QApplication, QAbstractSpinBox)
 from PySide6.QtCore import Signal, Qt, Slot, QEvent
 from PySide6.QtGui import QIcon
 from functools import partial
 
 from ..managers.Scan_Types import STEPPER_AXIS_DEFAULTS
-from ..managers.Waveplate_Rotator import COMPENSATOR_SETTING_KEYS
+from ..managers.Waveplate_Rotator import QUARTER_WAVE_SETTING_KEYS
 from .Log_Widget import logger
 
 # Vitesse interne fixe des lames Elliptec ELL14 (P(λ/2)/P(λ/4)) : 430°/s.
@@ -139,8 +139,8 @@ def setup_positioner_settings_dialog(dialog):
             tol_layout.addWidget(tol_edit)
             dialog.add_layout(tol_layout)
 
-        # P(λ/2) : un seul nombre. C'est elle qui porte l'azimut, le scan y va
-        # à azimut/2, et rien d'autre n'a besoin d'être réglé.
+        # P(λ/2) : un seul nombre la décrit, l'angle de l'horizontale. Elle ne
+        # participe pas aux états circulaires, qui sont l'affaire de la λ/4.
         if axis_key == "p":
             cur_offset = float(axis_cfg.get("offset_deg", defaults.get("offset_deg", 0.0)))
             off_layout = QHBoxLayout()
@@ -155,12 +155,14 @@ def setup_positioner_settings_dialog(dialog):
             off_layout.addWidget(off_edit)
             dialog.add_layout(off_layout)
 
-        # P(λ/4) : compensateur. Trois positions mesurées, jamais scannées.
+        # P(λ/4) : l'état de polarisation. Trois positions mesurées, jamais
+        # scannées. L'ellipticité de l'optique est corrigée par le compensateur
+        # fixe, hors DeepLight.
         if axis_key == "p4":
             for key, label, tip in (
                 ("linear_deg", "Linear",
-                 "Position compensating the upstream optics, leaving the light\n"
-                 "linear at the sample. A polarisation scan parks the plate here."),
+                 "Position leaving the polarisation linear.\n"
+                 "A polarisation scan parks the plate here."),
                 ("cd_deg", "CD — right circ.",
                  "Position producing right circular polarisation."),
                 ("cg_deg", "CG — left circ.",
@@ -267,7 +269,8 @@ def setup_positioner_settings_dialog(dialog):
 
                 if positioner_widget.axis_settings_manager is not None:
                     positioner_widget.axis_settings_manager.update_axis_settings(
-                        shared_axis_name, offset_deg=offset_deg,
+                        shared_axis_name,
+                        offset_deg=offset_deg,
                     )
 
                 if positioner_widget.manager is not None:
@@ -276,22 +279,22 @@ def setup_positioner_settings_dialog(dialog):
                     except Exception as e:
                         logger.debug(f"[PositionerWidget] zero offset for {axis_key}: {e}")
 
-            # P(λ/4) : les trois positions du compensateur.
+            # P(λ/4) : ses trois positions (linéaire, CD, CG).
             if axis_key == "p4":
                 measured = {
                     state: _read(f"{key}_edit_{axis_key}", 0.0)
-                    for state, key in COMPENSATOR_SETTING_KEYS.items()
+                    for state, key in QUARTER_WAVE_SETTING_KEYS.items()
                 }
 
                 if positioner_widget.axis_settings_manager is not None:
                     positioner_widget.axis_settings_manager.update_axis_settings(
                         shared_axis_name,
                         **{key: measured[state]
-                           for state, key in COMPENSATOR_SETTING_KEYS.items()},
+                           for state, key in QUARTER_WAVE_SETTING_KEYS.items()},
                     )
 
                 if positioner_widget.manager is not None:
-                    positioner_widget.manager.set_compensator_positions(**measured)
+                    positioner_widget.manager.set_quarter_wave_positions(**measured)
 
             # UMS scaling factor : sauvegarde + push manager
             if has_ums:
@@ -719,9 +722,9 @@ class PositionerWidget(QWidget):
                 }
             """)
 
-        # Compensateur (λ/4) : trois positions mesurées. Seule la λ/4 bouge —
-        # l'azimut appartient à la λ/2 et n'a pas à changer quand on passe de
-        # linéaire à circulaire.
+        # λ/4 : trois positions mesurées. Seule la λ/4 bouge — l'azimut
+        # appartient à la λ/2 et n'a pas à changer quand on passe de linéaire
+        # à circulaire.
         _CIRC_BTN_STYLE = """
             QPushButton {
                 background-color: #333;
@@ -734,19 +737,19 @@ class PositionerWidget(QWidget):
             QPushButton:hover { background-color: #444; }
         """
         self.button_linear = QPushButton("Lin")
-        self.button_linear.setToolTip("Compensator to its linear position (λ/4 only).")
+        self.button_linear.setToolTip("Linear polarisation: λ/4 to its linear position (λ/4 only).")
         self.button_linear.setStyleSheet(_CIRC_BTN_STYLE)
-        self.button_linear.clicked.connect(lambda: self.apply_compensator("linear"))
+        self.button_linear.clicked.connect(lambda: self.apply_polarization_state("linear"))
 
         self.button_circular_right = QPushButton("CD")
         self.button_circular_right.setToolTip("Right circular polarisation (λ/4 only).")
         self.button_circular_right.setStyleSheet(_CIRC_BTN_STYLE)
-        self.button_circular_right.clicked.connect(lambda: self.apply_compensator("CD"))
+        self.button_circular_right.clicked.connect(lambda: self.apply_polarization_state("CD"))
 
         self.button_circular_left = QPushButton("CG")
         self.button_circular_left.setToolTip("Left circular polarisation (λ/4 only).")
         self.button_circular_left.setStyleSheet(_CIRC_BTN_STYLE)
-        self.button_circular_left.clicked.connect(lambda: self.apply_compensator("CG"))
+        self.button_circular_left.clicked.connect(lambda: self.apply_polarization_state("CG"))
 
         bottom_row.addWidget(self.stop_all_button)
         bottom_row.addWidget(self.button_linear)
@@ -773,37 +776,47 @@ class PositionerWidget(QWidget):
     # Correspondance axe positioner -> nom partagé (settings) des lames d'onde.
     _WAVEPLATE_SHARED_NAMES = {"p": "Polarization", "p4": "Polarization-L4"}
 
-    def apply_compensator(self, state: str):
-        """Park the quarter-wave plate on one of its three measured positions.
+    def _setting_deg(self, axis_key: str, key: str) -> float:
+        """A measured plate position, from the settings or the built-in default."""
+        shared_name = self._WAVEPLATE_SHARED_NAMES[axis_key]
+        value = float(STEPPER_AXIS_DEFAULTS.get(shared_name, {}).get(key, 0.0))
+        if self.axis_settings_manager is not None:
+            settings = self.axis_settings_manager.get_axis_settings(shared_name) or {}
+            value = float(settings.get(key, value))
+        return value
 
-        Only the λ/4 moves. The azimuth belongs to the half-wave plate and has
-        no reason to change because the ellipticity does.
+    def _move_plate(self, axis_key: str, target_rel: float, label: str) -> bool:
+        if not self.manager.has_axis(axis_key):
+            return False
+        if not self.manager.is_rel_target_allowed(axis_key, target_rel):
+            logger.warning(
+                f"[PositionerWidget] {label} target {target_rel}° out of range "
+                f"for {axis_key} — ignored."
+            )
+            return False
+        try:
+            self.manager.move_to_rel(axis_key, target_rel, ELL14_FIXED_SPEED_DEG_S)
+            return True
+        except Exception as e:
+            logger.error(f"[PositionerWidget] {label} on {axis_key} failed: {e}")
+            return False
+
+    def apply_polarization_state(self, state: str):
+        """Linear, right or left circular: the λ/4 to that measured position.
+
+        Only the λ/4 moves: the azimuth belongs to the λ/2 and has no reason to
+        change because the state does.
         """
         if self.manager is None or not self.manager.has_axis("p4"):
             return
 
-        key = COMPENSATOR_SETTING_KEYS.get(str(state))
+        state = str(state)
+        key = QUARTER_WAVE_SETTING_KEYS.get(state)
         if key is None:
-            logger.warning(f"[PositionerWidget] unknown compensator state {state!r}")
+            logger.warning(f"[PositionerWidget] unknown polarisation state {state!r}")
             return
 
-        shared_name = self._WAVEPLATE_SHARED_NAMES["p4"]
-        target_rel = float(STEPPER_AXIS_DEFAULTS.get(shared_name, {}).get(key, 0.0))
-        if self.axis_settings_manager is not None:
-            settings = self.axis_settings_manager.get_axis_settings(shared_name) or {}
-            target_rel = float(settings.get(key, target_rel))
-
-        if not self.manager.is_rel_target_allowed("p4", target_rel):
-            logger.warning(
-                f"[PositionerWidget] compensator {state} target {target_rel}° "
-                f"out of range — ignored."
-            )
-            return
-
-        try:
-            self.manager.move_to_rel("p4", target_rel, ELL14_FIXED_SPEED_DEG_S)
-        except Exception as e:
-            logger.error(f"[PositionerWidget] apply_compensator({state}) failed: {e}")
+        self._move_plate("p4", self._setting_deg("p4", key), f"λ/4 {state}")
     
     def set_limits(self, axis, min_limit, max_limit, velocity_limit):
         """Set the limits of a given axis."""
@@ -869,16 +882,16 @@ class PositionerWidget(QWidget):
                     except Exception as e:
                         logger.debug(f"[PositionerWidget] zero offset for p: {e}")
                 else:
-                    # Les trois positions du compensateur, poussées au manager
-                    # pour qu'un scan puisse le garer en linéaire tout seul.
+                    # Les trois positions de la λ/4, poussées au manager pour
+                    # qu'un scan de polarisation puisse la garer en linéaire.
                     try:
-                        self.manager.set_compensator_positions(**{
+                        self.manager.set_quarter_wave_positions(**{
                             state: float(s[key])
-                            for state, key in COMPENSATOR_SETTING_KEYS.items()
+                            for state, key in QUARTER_WAVE_SETTING_KEYS.items()
                             if key in s
                         })
                     except Exception as e:
-                        logger.debug(f"[PositionerWidget] compensator positions: {e}")
+                        logger.debug(f"[PositionerWidget] quarter-wave positions: {e}")
 
             tol = float(s.get("tolerance", 0.1))
 
@@ -954,8 +967,11 @@ class PositionerWidget(QWidget):
         if fw is None:
             return False
 
-        # Si on édite un champ texte, on laisse les touches au champ
-        return isinstance(fw, QLineEdit)
+        # Si on édite un champ texte, on laisse les touches au champ. Un spin
+        # box en est un : c'est lui, pas son QLineEdit interne, qui a le focus,
+        # et ses flèches haut/bas changent la valeur (tension du cristal
+        # liquide BIPD, pose...) -- elles ne doivent pas déplacer la platine.
+        return isinstance(fw, (QLineEdit, QAbstractSpinBox))
 
     def _validate_axis_speed(self, axis: str, ui: dict) -> bool:
         speed = self._read_float(ui["speed"], 0.0)

@@ -1,23 +1,18 @@
-"""The polarisation chain: a rotating half-wave plate and a fixed compensator.
+"""The polarisation chain: two motorised plates, each with one job.
 
-Two plates sit before the objective. What each one is for:
+The ellipticity the optics upstream introduce -- dichroics and scan mirrors are
+not neutral -- is corrected by a fixed compensator, calibrated once on this
+microscope and not driven by DeepLight. That leaves the two motorised plates
+one job each, and they never move together:
 
 * The **half-wave plate** sets the azimuth. Rotating it by an angle turns linear
   polarisation by twice that angle, so reaching an azimuth is one halving and
   nothing else. One number describes the mount: the plate angle at which the
   polarisation comes out horizontal.
 
-* The **quarter-wave plate** is a compensator. It corrects the ellipticity the
-  optics upstream introduce -- dichroics and the scan mirrors are not neutral --
-  and it does not scan. It is parked on one of three measured positions:
-  linear, right circular, left circular.
-
-This replaced a calibration table that listed both plate positions for every
-azimuth in ten-degree steps and interpolated between them. That table existed
-because both plates were turned together; with the compensator standing still,
-the azimuth is arithmetic and there is nothing left to tabulate -- no file to
-regenerate when a mount is remounted, and no interpolation between measured
-points to be wrong about.
+* The **quarter-wave plate** sets the state: it is parked on one of three
+  measured positions -- linear, right circular (CD), left circular (CG) -- and
+  never scans.
 
 Adding another brand of mount means writing one WaveplateRotatorBase.
 """
@@ -26,11 +21,11 @@ from __future__ import annotations
 
 from ..widgets.Log_Widget import logger
 
-#: The three positions a compensator is parked on.
-COMPENSATOR_STATES = ("linear", "CD", "CG")
+#: The three positions the quarter-wave plate is parked on.
+QUARTER_WAVE_STATES = ("linear", "CD", "CG")
 
 #: Settings key holding each one, on the quarter-wave plate's axis.
-COMPENSATOR_SETTING_KEYS = {"linear": "linear_deg", "CD": "cd_deg", "CG": "cg_deg"}
+QUARTER_WAVE_SETTING_KEYS = {"linear": "linear_deg", "CD": "cd_deg", "CG": "cg_deg"}
 
 
 def half_wave_angle_for_azimuth(azimuth_deg: float, zero_deg: float = 0.0) -> float:
