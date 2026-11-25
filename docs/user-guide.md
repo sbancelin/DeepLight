@@ -216,9 +216,12 @@ block the light yourself, and the dialog says so.
 
 The *Spectro* tab drives the Brillouin arm (a Princeton Instruments camera) and
 the Raman arm (an IsoPlane 320 spectrograph and a LANSIS camera). **Dark** there
-closes the shutter itself and puts it back as it found it. The EMCCD's dark
-current grows with exposure, and a Brillouin exposure is long, so it matters
-more here than elsewhere.
+closes the shutter itself, saves a sequence of raw frames as a TIFF stack in the
+save folder, and puts the shutter back as it found it. It is a noise reference
+for the processing done afterwards: nothing is subtracted from the Brillouin
+images. A live view running when it starts is paused, and resumed once the
+sequence is complete; **Stop** ends the sequence and keeps the frames already
+taken.
 
 ### Raman
 

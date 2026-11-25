@@ -253,12 +253,14 @@ class SpectroWidget(QWidget):
         self.button_brillouin_reconnect.setStyleSheet(_BUTTON_STYLE)
         row_1.addWidget(self.button_brillouin_reconnect)
 
-        # Le courant d'obscurité de l'EMCCD croît avec le temps de pose, et une
-        # pose Brillouin est longue : le dark compte plus ici qu'ailleurs. Le
-        # shutter se ferme tout seul pendant la mesure.
+        # Séquence d'images brutes, shutter fermé, enregistrée sur disque comme
+        # référence du bruit. Rien n'est soustrait des images : le traitement se
+        # fait après, hors DeepLight. Le shutter se ferme tout seul.
         self.button_brillouin_dark = QPushButton("Dark")
         self.button_brillouin_dark.setToolTip(
-            "Average images with the shutter closed, subtracted from every Brillouin image"
+            "Save a sequence of raw frames with the shutter closed, as a noise\n"
+            "reference (TIFF stack in the save folder). Nothing is subtracted\n"
+            "from the Brillouin images."
         )
         self.button_brillouin_dark.setStyleSheet(_BUTTON_STYLE)
         self.button_brillouin_dark.setFixedWidth(52)

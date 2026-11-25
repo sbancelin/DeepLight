@@ -2922,16 +2922,13 @@ class HardwareManager(QObject):
         self._camera_controller = None
         self._brillouin_camera = None
 
-        self._brillouin_correction = None
-        self._brillouin_correction_enabled = True
-        self._brillouin_geometry_warned = False
-
         # Un seul Picam_Acquire à la fois sur la caméra Brillouin. Le live
-        # tourne dans son QThread, le mapping dans le sien, et le dark part du
-        # thread GUI : deux acquisitions qui se chevauchent sur la même poignée
-        # PICam laissent la caméra armée et inutilisable jusqu'à reconnexion.
-        # Réentrant parce que acquire_brillouin_dark() boucle sur
-        # acquire_brillouin_image_raw(), déjà protégé.
+        # tourne dans son QThread, le mapping dans le sien, la recherche BIPD
+        # dans le sien, et la séquence dark part du thread GUI : deux
+        # acquisitions qui se chevauchent sur la même poignée PICam laissent la
+        # caméra armée et inutilisable jusqu'à reconnexion. (Aucune correction
+        # n'est appliquée aux images Brillouin : le dark est une séquence brute
+        # enregistrée sur disque, cf. MainWindow._on_brillouin_dark_clicked.)
         self._brillouin_cam_lock = RLock()
 
         # Chaîne Raman (spectrographe + détecteur), créée à la première
@@ -3356,78 +3353,6 @@ class HardwareManager(QObject):
                     "re-opened on the next one."
                 )
                 raise
-
-    # ---- Brillouin dark / flat ----------------------------------------
-
-    def set_brillouin_correction(self, correction, enabled: bool = True):
-        """Install the dark/flat reference applied to every Brillouin image."""
-        self._brillouin_correction = correction
-        self._brillouin_correction_enabled = bool(enabled)
-        self._brillouin_geometry_warned = False
-
-    def get_brillouin_correction(self):
-        return getattr(self, "_brillouin_correction", None)
-
-    def apply_brillouin_correction(self, img):
-        """Subtract the dark from a Brillouin image, when one applies.
-
-        The EMCCD's dark current is the reason this matters here more than
-        elsewhere: it grows with exposure, and a Brillouin exposure is long.
-        """
-        correction = getattr(self, "_brillouin_correction", None)
-        if img is None or correction is None:
-            return img
-        if not getattr(self, "_brillouin_correction_enabled", True):
-            return img
-        if not correction.matches(img):
-            # Once, not once per point: a mapping calls this thousands of times,
-            # and a dark taken at another ROI or binning would otherwise bury
-            # the log -- and the panel -- under the same line.
-            if not getattr(self, "_brillouin_geometry_warned", False):
-                self._brillouin_geometry_warned = True
-                logger.warning(
-                    f"[HardwareManager] Brillouin correction ignored: the dark is "
-                    f"{correction.shape} and the images are {getattr(img, 'shape', None)}. "
-                    "Re-measure the dark at the ROI and binning in use."
-                )
-            return img
-        return correction.apply(img)
-
-    def acquire_brillouin_dark(self, params=None, count: int = 8):
-        """Average `count` images with the shutter shut, as a dark reference.
-
-        The shutter is closed here rather than left to the operator: a "dark"
-        taken with the beam on is not a dark, and it would be subtracted from
-        every image afterwards without anything looking wrong.
-        """
-        was_open = self.is_shutter_open()
-        self.set_shutter(False)
-        try:
-            # Held across the whole series: eight frames taken one at a time,
-            # with a live frame slipped in between, are eight frames of
-            # something else. The caller stops the live view anyway -- this is
-            # what makes it not matter if it forgets.
-            with self._brillouin_cam_lock:
-                frames = []
-                for _ in range(max(1, int(count))):
-                    img = self.acquire_brillouin_image_raw(params)
-                    if img is None:
-                        return None
-                    frames.append(img)
-                return average_frames(frames)
-        finally:
-            if was_open:
-                self.set_shutter(True)
-
-    def acquire_brillouin_image_raw(self, params=None):
-        """One Brillouin image with no correction applied.
-
-        What a reference has to be measured from: correcting the frames a dark
-        is built out of would fold the previous dark into the new one.
-        """
-        if self.backend_name != "nidaq":
-            return None
-        return self._brillouin_snap(params)
 
     # ---- Raman ------------------------------------------------------------
 

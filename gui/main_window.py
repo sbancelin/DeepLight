@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
         self._brillouin_dark_params = {}
         self._brillouin_dark_folder = ""
         self._brillouin_dark_shutter_was_open = False
+        self._brillouin_dark_resume_live = False
         self.hardware = HardwareManager(backend_name=self.backend_name, settings_manager=self.settings_manager, parent=self)
         self.laser_manager = self.hardware.create_laser_manager()
         self.camera_controller = self.hardware.create_camera_controller(parent=self)
@@ -602,6 +603,11 @@ class MainWindow(QMainWindow):
         mapping = self.spectro_manager.is_running()
         already_stopping = self.spectro_manager.is_stopping()
 
+        # Séquence dark Brillouin : arrêtée avant sa prochaine image, ce qui a
+        # déjà été acquis est enregistré (cf. _acquire_next_brillouin_dark_frame).
+        if self._brillouin_dark_running:
+            self._brillouin_dark_stop_requested = True
+
         try:
             self.spectro_manager.stop_mapping()
         except Exception as e:
@@ -687,14 +693,6 @@ class MainWindow(QMainWindow):
         if confirm.exec() != QMessageBox.Ok:
             return
 
-        # The live view drives the same camera from its own thread. Two
-        # overlapping acquisitions on one PICam handle leave the camera armed
-        # and unusable until it is reconnected, so the live view stops first and
-        # is put back afterwards -- rather than the operator having to know that.
-        was_live = self.spectro_manager.is_brillouin_live_running()
-        if was_live:
-            self.spectro_manager.stop_live_brillouin()
-
         folder = self.ui.save_widget.folder_line_edit.text().strip()
         if not folder:
             logger.warning("[Brillouin] set a save folder first.")
@@ -704,6 +702,16 @@ class MainWindow(QMainWindow):
         except OSError as e:
             logger.error(f"[Brillouin] could not create {folder}: {e}")
             return
+
+        # The live view drives the same camera from its own thread. Two
+        # overlapping acquisitions on one PICam handle leave the camera armed
+        # and unusable until it is reconnected, so the live view stops first and
+        # is put back once the sequence has completed (not after a Stop or a
+        # failure) -- rather than the operator having to know that.
+        was_live = self.spectro_manager.is_brillouin_live_running()
+        if was_live:
+            self.spectro_manager.stop_live_brillouin()
+        self._brillouin_dark_resume_live = was_live
 
         self._brillouin_dark_params = params
         self._brillouin_dark_frames = []
@@ -768,11 +776,25 @@ class MainWindow(QMainWindow):
         sw = self.ui.spectro_widget
         self._brillouin_dark_running = False
 
+        # Pendant de setOverrideCursor() au lancement : une seule sortie, ici,
+        # quelle que soit la raison de la fin (terminé, Stop, échec).
+        QGuiApplication.restoreOverrideCursor()
+
         try:
             if self._brillouin_dark_shutter_was_open:
                 self.hardware.set_shutter(True)
         except Exception as e:
             logger.debug(f"[MainWindow] ignored exception: {e}")
+
+        # Le live arrêté pour la séquence reprend si elle est allée au bout. Pas
+        # après un Stop (l'opérateur a demandé l'arrêt) ni après un échec (la
+        # caméra qui vient d'échouer ferait échouer le live aussitôt).
+        resume_live, self._brillouin_dark_resume_live = self._brillouin_dark_resume_live, False
+        if resume_live and not stopped and not self.spectro_manager.is_running():
+            try:
+                self.spectro_manager.start_live_brillouin(sw.get_brillouin_parameters())
+            except Exception as e:
+                logger.error(f"[Brillouin] live not resumed after the dark: {e}")
 
         n = len(self._brillouin_dark_frames)
         if n == 0:
