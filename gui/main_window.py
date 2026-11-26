@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self.ui.laser_widget.set_settings_manager(self.settings_manager)
         self.ui.spectro_panel_widget.set_settings_manager(self.settings_manager)
         self.ui.bipd_widget.set_settings_manager(self.settings_manager)
+        self.ui.spectrum_cut_widget.set_settings_manager(self.settings_manager)
 
         self.setDockOptions(
             QMainWindow.AnimatedDocks |
@@ -423,6 +424,10 @@ class MainWindow(QMainWindow):
         bipd.set_manager(bm)
         bipd.attach_image_view(sw.brillouin_image_view)
         cut.set_image_view(sw.brillouin_image_view)
+        # The cut's GHz scale is per camera pixel: it needs the binning to
+        # convert the binned frame's pixels.
+        sw.combo_brillouin_binning.currentTextChanged.connect(cut.set_binning)
+        cut.set_binning(sw.combo_brillouin_binning.currentText())
 
         # Every Brillouin frame (snap, live, map) feeds the cut and the border
         # level, unthrottled: each panel paces itself. The 2 Hz of the image

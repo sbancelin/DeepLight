@@ -542,7 +542,8 @@ class BipdWidget(QWidget):
             self.cb_heater.blockSignals(False)
         temperature = state.get("temperature_c")
         self.label_temperature.setText(
-            "T: -- °C" if temperature is None else f"T: {float(temperature):.2f} °C"
+            # The sensor reads in tenths of a degree: one decimal is all it has.
+            "T: -- °C" if temperature is None else f"T: {float(temperature):.1f} °C"
         )
 
     @Slot(bool)

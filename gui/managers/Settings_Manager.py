@@ -17,6 +17,7 @@ class SettingsManager(QObject):
         self.laser_settings = {}
         self.spectro_settings = {}
         self.bipd_settings = {}
+        self.spectrum_cut_settings = {}
 
     # ---------- Axes ----------
     def get_axis_settings(self, axis_name):
@@ -69,6 +70,13 @@ class SettingsManager(QObject):
     def update_bipd_settings(self, **kwargs):
         self.bipd_settings.update(kwargs)
 
+    # ---------- Brillouin spectrum cut (frequency scale) ----------
+    def get_spectrum_cut_settings(self):
+        return dict(self.spectrum_cut_settings)
+
+    def update_spectrum_cut_settings(self, **kwargs):
+        self.spectrum_cut_settings.update(kwargs)
+
     # ---------- Persistence: "Save value" / "Reset origin" in a settings popup ----------
     #
     # One file, one section per settings popup (axis_settings covers both the
@@ -101,6 +109,7 @@ class SettingsManager(QObject):
             self.update_laser_settings(laser_name, **dict(settings or {}))
         self.spectro_settings = dict(doc.get("spectro", {}) or {})
         self.bipd_settings = dict(doc.get("bipd", {}) or {})
+        self.spectrum_cut_settings = dict(doc.get("spectrum_cut", {}) or {})
 
         # Saying so is the point: a saved value silently overriding a built-in
         # default is exactly what makes a calibration behave differently on two
@@ -113,7 +122,7 @@ class SettingsManager(QObject):
             names = sorted(dict(doc.get(section, {}) or {}).keys())
             if names:
                 restored.append(f"{label}: {', '.join(names)}")
-        for section in ("spectro", "bipd"):
+        for section in ("spectro", "bipd", "spectrum_cut"):
             if doc.get(section):
                 restored.append(f"{section}: " + ", ".join(
                     f"{k}={v}" for k, v in sorted(dict(doc[section]).items())
@@ -144,3 +153,7 @@ class SettingsManager(QObject):
 
     def save_bipd_settings(self):
         self.save_section("bipd", self.get_bipd_settings())
+
+    def save_spectrum_cut_settings(self):
+        """Written as soon as the scale changes: a calibration is not a draft."""
+        self.save_section("spectrum_cut", self.get_spectrum_cut_settings())

@@ -106,6 +106,7 @@ def test_the_real_filter_drives_libspecto_as_documented(monkeypatch):
         def lc_set_enabled(self, on): calls.append(("lc_enabled", on))
         def lc_set_level(self, mv): calls.append(("lc_level", mv))
         def heater_get_enabled(self): return True
+        def heater_get_actual_temperature(self): return 392.0   # as read on the bench
         def rotator_move_absolute(self, deg): calls.append(("rotator", deg))
         def rotator_get_position(self): return 7.5
         def close(self): calls.append(("close",))
@@ -119,6 +120,8 @@ def test_the_real_filter_drives_libspecto_as_documented(monkeypatch):
     assert calls[0] == ("open", ("COM4",), {"init_rotator_move_home": False})
     assert bipd.lc_level_mv() == 1500.0          # starts from the device's setpoint
     assert bipd.heater_enabled() is True
+    # libspecto 0.1.1 reads tenths of a degree; DeepLight carries degrees.
+    assert bipd.heater_temperature_c() == pytest.approx(39.2)
 
     bipd.set_lc_level_mv(6000.0)
     assert ("lc_enabled", True) in calls          # enabled before the first level
@@ -322,3 +325,114 @@ def test_the_cut_ignores_what_falls_outside_the_frame():
     inside = values[np.isfinite(values)]
     assert inside.size > 0 and np.all(inside == 1.0)
     assert np.isnan(values[0]) and np.isnan(values[-1])
+
+
+# ----------------------------------------------------------------------------
+# measuring on the spectrum
+# ----------------------------------------------------------------------------
+
+class _Settings:
+    """The SettingsManager calls the cut panel makes, without the file."""
+
+    def __init__(self, saved=None):
+        self.data = dict(saved or {})
+        self.saves = 0
+
+    def get_spectrum_cut_settings(self):
+        return dict(self.data)
+
+    def update_spectrum_cut_settings(self, **kwargs):
+        self.data.update(kwargs)
+
+    def save_spectrum_cut_settings(self):
+        self.saves += 1
+
+
+def test_the_binning_is_read_from_its_label():
+    from DeepLight.gui.widgets.Spectrum_Cut_Widget import binning_factor
+
+    assert binning_factor("1x1") == 1
+    assert binning_factor("4x4") == 4
+    assert binning_factor(2) == 2
+    assert binning_factor("nonsense") == 1
+
+
+def test_a_segment_reads_pixels_until_the_scale_is_set(qapp):
+    from DeepLight.gui.widgets.Spectrum_Cut_Widget import SpectrumCutWidget
+
+    cut = SpectrumCutWidget()
+    segment = cut.add_segment((100.0, 50.0), (300.0, 80.0))
+    assert segment.dx() == pytest.approx(200.0)          # along x only
+    assert segment.label.toPlainText() == "Δ 200.0 px"
+    assert cut.ghz_per_frame_px() is None
+
+
+def test_calibrating_on_a_segment_makes_it_read_the_known_spacing(qapp):
+    from DeepLight.gui.widgets.Spectrum_Cut_Widget import SpectrumCutWidget
+
+    cut = SpectrumCutWidget()
+    settings = _Settings()
+    cut.set_settings_manager(settings)
+    fsr = cut.add_segment((100.0, 0.0), (700.0, 0.0))    # two elastic orders
+    peaks = cut.add_segment((200.0, 0.0), (300.0, 0.0))
+
+    assert cut.calibrate(30.0, fsr)
+    assert fsr.label.toPlainText() == "Δ 30.00 GHz"
+    assert peaks.label.toPlainText() == "Δ 5.00 GHz"
+    # Saved at once, with the spacing to offer next time.
+    assert settings.saves >= 1
+    assert settings.data["ghz_per_px"] == pytest.approx(0.05)
+    assert settings.data["calibration_ghz"] == pytest.approx(30.0)
+
+
+def test_the_scale_is_per_camera_pixel_so_it_survives_a_change_of_binning(qapp):
+    from DeepLight.gui.widgets.Spectrum_Cut_Widget import SpectrumCutWidget
+
+    cut = SpectrumCutWidget()
+    cut.set_binning("1x1")
+    fsr = cut.add_segment((0.0, 0.0), (600.0, 0.0))
+    cut.calibrate(30.0, fsr)
+
+    # The same two orders, in a 2x2-binned frame: half as many pixels apart.
+    cut.set_binning("2x2")
+    binned = cut.add_segment((0.0, 0.0), (300.0, 0.0))
+    assert binned.label.toPlainText() == "Δ 30.00 GHz"
+    assert cut.spin_scale.value() == pytest.approx(0.05)
+
+
+def test_the_saved_scale_comes_back(qapp):
+    from DeepLight.gui.widgets.Spectrum_Cut_Widget import SpectrumCutWidget
+
+    cut = SpectrumCutWidget()
+    cut.set_settings_manager(_Settings({"ghz_per_px": 0.05, "calibration_ghz": 33.3}))
+    segment = cut.add_segment((0.0, 0.0), (100.0, 0.0))
+    assert segment.label.toPlainText() == "Δ 5.00 GHz"
+    assert cut.plot.getAxis("bottom").labelUnits == "GHz"
+
+
+def test_segments_keep_their_spacing_through_the_log_scale(qapp):
+    from DeepLight.gui.widgets.Spectrum_Cut_Widget import SpectrumCutWidget
+
+    cut = SpectrumCutWidget()
+    segment = cut.add_segment((10.0, 1000.0), (60.0, 100.0))
+    cut.cb_log.setChecked(True)
+    p0, p1 = segment.ends()
+    assert (p0.y(), p1.y()) == (pytest.approx(3.0), pytest.approx(2.0))
+    assert segment.dx() == pytest.approx(50.0)
+    cut.cb_log.setChecked(False)
+    p0, _ = segment.ends()
+    assert p0.y() == pytest.approx(1000.0)
+
+
+def test_removing_a_segment_hands_calibration_to_the_previous_one(qapp):
+    from DeepLight.gui.widgets.Spectrum_Cut_Widget import SpectrumCutWidget
+
+    cut = SpectrumCutWidget()
+    first = cut.add_segment((0.0, 0.0), (10.0, 0.0))
+    second = cut.add_segment((0.0, 0.0), (20.0, 0.0))
+    cut.remove_segment(second)
+    assert cut.segments() == [first]
+    assert cut.calibrate(1.0)                            # uses `first`
+    assert first.label.toPlainText() == "Δ 1.00 GHz"
+    cut.clear_segments()
+    assert cut.segments() == [] and not cut.calibrate(1.0)

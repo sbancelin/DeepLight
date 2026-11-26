@@ -207,6 +207,13 @@ class SpectoBipdFilter(BipdFilterBase):
 
     kind = "Specto BIPD (81Watts)"
 
+    #: libspecto 0.1.1 reads the heater temperature in tenths of a degree,
+    #: though it returns a float and its own RANGE_HEATER_TEMPERATURE is in
+    #: degrees (10.0, 50.0): a heater regulating near 40 °C read 392-441.
+    #: Converted here, once, so the panel and the saved provenance both carry
+    #: degrees Celsius.
+    HEATER_TEMPERATURE_SCALE = 0.1
+
     #: How the vendor module is installed, repeated in every error about it.
     INSTALL_HINT = (
         "install the vendor wheel kept in DeepLight/Controle_BIPD "
@@ -335,7 +342,8 @@ class SpectoBipdFilter(BipdFilterBase):
         if not self.connected:
             return None
         with self._lock:
-            return float(self._dev().heater_get_actual_temperature())
+            raw = float(self._dev().heater_get_actual_temperature())
+        return raw * self.HEATER_TEMPERATURE_SCALE
 
     def describe(self) -> dict:
         return {"kind": self.kind, "port": self.port or "auto", "firmware": self._firmware}
